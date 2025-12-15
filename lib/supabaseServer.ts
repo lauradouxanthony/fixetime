@@ -1,31 +1,32 @@
-// lib/supabaseServer.ts
-import { createServerClient } from "@supabase/ssr";
 import { cookies } from "next/headers";
+import { createServerClient } from "@supabase/auth-helpers-nextjs";
 
-export function supabaseServer() {
-  const cookieStore = cookies(); // In Next.js 16, this is async-like
+export async function supabaseServer() {
+  const cookieStore = await cookies();
 
   return createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get: async (name: string) => {
-          const all = await cookieStore;
-          const cookie = all.get(name);
-          return cookie?.value;
+        get(name: string) {
+          const cookie = cookieStore.get(name);
+          return cookie?.value ?? null; // NEXT.JS 16 : renvoyer la valeur uniquement
         },
-        getAll: async () => {
-          const all = await cookieStore;
-          return all.getAll().map((cookie) => ({
-            name: cookie.name,
-            value: cookie.value,
-          }));
+        set(name: string, value: string, options?: any) {
+          try {
+            cookieStore.set(name, value, options); // OK
+          } catch {
+            // Ignorer en edge runtime
+          }
         },
-        // Next.js 16 doesn't allow setting cookies from RSC safely → no-op
-        set: async () => {},
-        setAll: async () => {},
-        remove: async () => {},
+        remove(name: string) {
+          try {
+            cookieStore.delete(name); // ⭐ NEXT.JS 16 : UN SEUL PARAMÈTRE
+          } catch {
+            // Ignorer les erreurs edge
+          }
+        },
       },
     }
   );

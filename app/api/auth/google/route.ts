@@ -1,34 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
 
-const GOOGLE_OAUTH_ENDPOINT = "https://accounts.google.com/o/oauth2/v2/auth";
-
 export async function GET(request: NextRequest) {
-  const supabase = supabaseServer();
+  const supabase = await supabaseServer(); // ✅ CORRECTION
+
+  // Vérifier l'utilisateur connecté
   const { data, error } = await supabase.auth.getUser();
 
-  // Si l'utilisateur n'est pas connecté, on le renvoie vers le login
   if (error || !data.user) {
     return NextResponse.redirect(new URL("/auth/login", request.url));
   }
 
-  const scopes = [
-    "https://www.googleapis.com/auth/gmail.readonly",
-    "https://www.googleapis.com/auth/calendar.readonly",
-    "https://www.googleapis.com/auth/userinfo.email",
-  ];
+  const redirectUri = process.env.NEXT_PUBLIC_GOOGLE_REDIRECT_URI!;
+  const clientId = process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID!;
 
-  const params = new URLSearchParams({
-    client_id: process.env.GOOGLE_CLIENT_ID!,
-    redirect_uri: process.env.GOOGLE_REDIRECT_URI!,
-    response_type: "code",
-    access_type: "offline",
-    prompt: "consent",
-    scope: scopes.join(" "),
-    include_granted_scopes: "true",
-  });
+  const googleOAuthUrl = new URL("https://accounts.google.com/o/oauth2/v2/auth");
+  googleOAuthUrl.searchParams.set("client_id", clientId);
+  googleOAuthUrl.searchParams.set("redirect_uri", redirectUri);
+  googleOAuthUrl.searchParams.set("response_type", "code");
+  googleOAuthUrl.searchParams.set(
+    "scope",
+    "https://www.googleapis.com/auth/gmail.readonly https://www.googleapis.com/auth/calendar.readonly openid email"
+  );
+  googleOAuthUrl.searchParams.set("access_type", "offline");
+  googleOAuthUrl.searchParams.set("prompt", "consent");
 
-  const url = `${GOOGLE_OAUTH_ENDPOINT}?${params.toString()}`;
-
-  return NextResponse.redirect(url);
+  return NextResponse.redirect(googleOAuthUrl.toString());
 }

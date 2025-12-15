@@ -3,7 +3,8 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { redirect } from "next/navigation";
 
 export default async function OnboardingPage() {
-  const supabase = supabaseServer();
+  const supabase = await supabaseServer(); // ⭐⭐⭐ SEULE CHOSE MODIFIÉE
+
   const { data: userData } = await supabase.auth.getUser();
 
   // 1) Redirection si pas connecté
