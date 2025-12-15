@@ -1,0 +1,3 @@
+[[crons]]
+name = "sync_every_15_minutes"
+schedule = "*/15 * * * *"
