@@ -1,55 +1,67 @@
-import { NextRequest, NextResponse } from "next/server";
-import { supabaseServer } from "@/lib/supabaseServer";
+import { NextResponse } from "next/server";
+import { cookies, headers } from "next/headers";
 
-export async function GET(request: NextRequest) {
+export async function POST() {
   try {
-    const supabase = await supabaseServer(); // ✅ IMPORTANT
+    // 1) Base URL dynamique (local + prod)
+    const headersList = await headers();
+    const host = headersList.get("host");
+    const protocol = process.env.NODE_ENV === "development" ? "http" : "https";
+    const baseUrl = `${protocol}://${host}`;
 
-    // 1) Vérifier user connecté
-    const { data: authData, error: authError } = await supabase.auth.getUser();
+    // 2) Cookies (session Supabase)
+    const cookieStore = await cookies();
+    const cookieHeader = cookieStore
+      .getAll()
+      .map((c) => `${c.name}=${c.value}`)
+      .join("; ");
 
-    if (authError || !authData.user) {
-      console.error("AUTH ERROR:", authError);
-      return NextResponse.json(
-        { error: "NOT_AUTHENTICATED" },
-        { status: 401 }
-      );
-    }
+    console.log("[SYNC ALL] Base URL:", baseUrl);
+    console.log("[SYNC ALL] Starting global sync");
 
-    const userId = authData.user.id;
-
-    // 2) Vérifier token Google
-    const { data: tokenRow, error: tokenError } = await supabase
-      .from("gmail_tokens")
-      .select("*")
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    if (tokenError || !tokenRow) {
-      return NextResponse.json(
-        { error: "NO_GOOGLE_TOKEN" },
-        { status: 400 }
-      );
-    }
-
-    // 3) Appels des anciennes routes
-    const baseUrl = request.nextUrl.origin;
-
-    const gmailSync = await fetch(`${baseUrl}/api/gmail/sync`);
-    const calendarSync = await fetch(`${baseUrl}/api/calendar/sync`);
-
-    const gmailJson = await gmailSync.json();
-    const calendarJson = await calendarSync.json();
-
-    return NextResponse.json({
-      success: true,
-      gmail: gmailJson,
-      calendar: calendarJson,
+    // 3) Gmail sync
+    const gmailRes = await fetch(`${baseUrl}/api/gmail/sync`, {
+      method: "GET",
+      headers: {
+        cookie: cookieHeader,
+      },
     });
-  } catch (err) {
-    console.error("SYNC_ALL_ERROR:", err);
+
+    if (!gmailRes.ok) {
+      const text = await gmailRes.text();
+      console.error("[SYNC ALL] Gmail sync failed:", text);
+      return NextResponse.json(
+        { error: "Gmail sync failed" },
+        { status: 500 }
+      );
+    }
+
+    console.log("[SYNC ALL] Gmail sync OK");
+
+    // 4) Calendar sync
+    const calendarRes = await fetch(`${baseUrl}/api/calendar/sync`, {
+      method: "GET",
+      headers: {
+        cookie: cookieHeader,
+      },
+    });
+
+    if (!calendarRes.ok) {
+      const text = await calendarRes.text();
+      console.error("[SYNC ALL] Calendar sync failed:", text);
+      return NextResponse.json(
+        { error: "Calendar sync failed" },
+        { status: 500 }
+      );
+    }
+
+    console.log("[SYNC ALL] Calendar sync OK");
+
+    return NextResponse.json({ success: true });
+  } catch (error) {
+    console.error("[SYNC ALL] Global sync error:", error);
     return NextResponse.json(
-      { error: "SYNC_ALL_FAILED" },
+      { error: "Global sync failed" },
       { status: 500 }
     );
   }

@@ -1,52 +1,87 @@
 import { NextRequest, NextResponse } from "next/server";
-import { supabaseServer } from "@/lib/supabaseServer";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
-export async function GET(request: NextRequest) {
-  const supabase = await supabaseServer(); // ✅ CORRECTION
+export async function GET(req: NextRequest) {
+  try {
+    // 1) Récupération des paramètres Google
+    const code = req.nextUrl.searchParams.get("code");
+    const userId = req.nextUrl.searchParams.get("state"); // user_id Supabase
 
-  // Récupérer l'utilisateur Supabase
-  const { data: authData, error: authError } = await supabase.auth.getUser();
-  if (authError || !authData.user) {
-    return NextResponse.redirect(new URL("/auth/login", request.url));
+    if (!code || !userId) {
+      return NextResponse.json(
+        { error: "NO_CODE_OR_USER_ID" },
+        { status: 400 }
+      );
+    }
+
+    // 2) Échange code → tokens Google
+    const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/x-www-form-urlencoded",
+      },
+      body: new URLSearchParams({
+        client_id: process.env.GOOGLE_CLIENT_ID!,
+        client_secret: process.env.GOOGLE_CLIENT_SECRET!,
+        redirect_uri: process.env.GOOGLE_REDIRECT_URI!,
+        grant_type: "authorization_code",
+        code,
+      }),
+    });
+
+    const tokenData = await tokenRes.json();
+
+    if (!tokenRes.ok) {
+      return NextResponse.json(
+        { error: "GOOGLE_TOKEN_ERROR", details: tokenData },
+        { status: 400 }
+      );
+    }
+
+    // 3) Récupération de l’email Google
+    const userInfoRes = await fetch(
+      "https://www.googleapis.com/oauth2/v2/userinfo",
+      {
+        headers: {
+          Authorization: `Bearer ${tokenData.access_token}`,
+        },
+      }
+    );
+
+    const userInfo = await userInfoRes.json();
+
+    if (!userInfo?.email) {
+      return NextResponse.json(
+        { error: "NO_GOOGLE_EMAIL" },
+        { status: 400 }
+      );
+    }
+
+    // 4) UPSERT DANS gmail_tokens (COLONNES RÉELLES)
+    await supabaseAdmin.from("gmail_tokens").upsert(
+      {
+        user_id: userId,
+        user_email: userInfo.email, // ✅ BON NOM DE COLONNE
+        access_token: tokenData.access_token,
+        refresh_token: tokenData.refresh_token,
+        expires_at: new Date(
+          Date.now() + tokenData.expires_in * 1000
+        ).toISOString(),
+      },
+      {
+        onConflict: "user_id",
+      }
+    );
+
+    // 5) REDIRECTION FINALE
+    return NextResponse.redirect(
+      new URL("/home", process.env.NEXT_PUBLIC_SITE_URL)
+    );
+  } catch (error) {
+    console.error("GOOGLE_CALLBACK_ERROR:", error);
+    return NextResponse.json(
+      { error: "INTERNAL_SERVER_ERROR" },
+      { status: 500 }
+    );
   }
-
-  const user = authData.user;
-
-  // Récupérer le code de Google dans l'URL
-  const code = request.nextUrl.searchParams.get("code");
-  if (!code) {
-    return NextResponse.redirect(new URL("/onboarding", request.url));
-  }
-
-  // Échanger le code contre les tokens Google
-  const tokenRes = await fetch("https://oauth2.googleapis.com/token", {
-    method: "POST",
-    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-    body: new URLSearchParams({
-      code,
-      client_id: process.env.NEXT_PUBLIC_GOOGLE_CLIENT_ID!,
-      client_secret: process.env.GOOGLE_CLIENT_SECRET!,
-      redirect_uri: process.env.NEXT_PUBLIC_GOOGLE_REDIRECT_URI!,
-      grant_type: "authorization_code",
-    }),
-  });
-
-  const tokenJson = await tokenRes.json();
-
-  if (!tokenJson.access_token) {
-    console.error("Google token exchange failed:", tokenJson);
-    return NextResponse.redirect(new URL("/onboarding", request.url));
-  }
-
-  // Enregistrer dans Supabase
-  await supabase.from("gmail_tokens").upsert({
-    user_id: user.id,
-    access_token: tokenJson.access_token,
-    refresh_token: tokenJson.refresh_token,
-    user_email: user.email,
-    expires_at: Math.floor(Date.now() / 1000) + tokenJson.expires_in,
-  });
-
-  // Redirection vers le dashboard
-  return NextResponse.redirect(new URL("/home", request.url));
 }

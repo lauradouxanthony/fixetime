@@ -1,5 +1,5 @@
 import { cookies } from "next/headers";
-import { createServerClient } from "@supabase/auth-helpers-nextjs";
+import { createServerClient } from "@supabase/ssr";
 
 export async function supabaseServer() {
   const cookieStore = await cookies();
@@ -10,21 +10,20 @@ export async function supabaseServer() {
     {
       cookies: {
         get(name: string) {
-          const cookie = cookieStore.get(name);
-          return cookie?.value ?? null; // NEXT.JS 16 : renvoyer la valeur uniquement
+          return cookieStore.get(name)?.value;
         },
-        set(name: string, value: string, options?: any) {
+        set(name: string, value: string, options: any) {
           try {
-            cookieStore.set(name, value, options); // OK
+            cookieStore.set({ name, value, ...options });
           } catch {
-            // Ignorer en edge runtime
+            // Ignore si appelé depuis un Server Component
           }
         },
-        remove(name: string) {
+        remove(name: string, options: any) {
           try {
-            cookieStore.delete(name); // ⭐ NEXT.JS 16 : UN SEUL PARAMÈTRE
+            cookieStore.set({ name, value: "", ...options });
           } catch {
-            // Ignorer les erreurs edge
+            // Ignore si appelé depuis un Server Component
           }
         },
       },
