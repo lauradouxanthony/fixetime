@@ -17,10 +17,7 @@ const navItems = [
   { label: "Home", href: "/home", icon: LayoutDashboard },
   { label: "Emails", href: "/emails", icon: Mail },
   { label: "Calendrier", href: "/calendar", icon: CalendarDays },
-  { label: "Assistant IA", href: "/assistant", icon: BotMessageSquare },
-  { label: "Tâches", href: "/tasks", icon: CheckSquare },
   { label: "Paramètres", href: "/settings", icon: Settings },
-  { label: "Facturation", href: "/billing", icon: CreditCard },
 ];
 
 export function Sidebar() {

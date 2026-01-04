@@ -1,7 +1,107 @@
 @import "tailwindcss";
 
 html, body {
-  background-color: #020617;
-  color: #f8fafc;
   height: 100%;
 }
+
+/* =========================
+   🌞 MODE CLAIR (fallback)
+   ========================= */
+
+   :root {
+    --background: 249 250 251;
+    --foreground: 15 23 42;
+  
+    --card: 255 255 255;
+    --card-foreground: 15 23 42;
+  
+    --border: 226 232 240;
+  
+    --muted: 243 244 246;
+    --muted-foreground: 75 85 99;
+  
+    --primary: 37 99 235;
+    --primary-foreground: 255 255 255;
+  }
+  
+/* =========================
+   🌙 MODE SOMBRE (PRIORITAIRE)
+   ========================= */
+
+html.dark {
+  /* Fond & texte */
+  --background: 2 6 23;
+  --foreground: 248 250 252;
+
+  /* Surfaces */
+  --card: 15 23 42;
+  --card-foreground: 248 250 252;
+
+  /* Bordures */
+  --border: 30 41 59;
+
+  /* Textes secondaires */
+  --muted: 15 23 42;
+  --muted-foreground: 148 163 184;
+
+  /* Action */
+  --primary: 59 130 246;
+  --primary-foreground: 2 6 23;
+}
+
+/* =========================
+   🔒 APPLICATION GLOBALE
+   ========================= */
+
+html, body {
+  background: rgb(var(--background));
+  color: rgb(var(--foreground));
+}
+
+/* =========================
+   🩹 COMPATIBILITÉ (legacy)
+   ========================= */
+/* À garder tant que des bg-white / text-slate-* existent */
+
+/* =========================
+   🎨 ALIAS UI (OBLIGATOIRES)
+   ========================= */
+
+   .bg-surface {
+    background-color: rgb(var(--card));
+  }
+  
+  .text-main {
+    color: rgb(var(--foreground));
+  }
+  
+  .text-secondary {
+    color: rgb(var(--muted-foreground));
+  }
+  
+  .border-surface {
+    border-color: rgb(var(--border));
+  }
+  
+/* =========================
+   🔁 FORÇAGE GLOBAL UI
+   ========================= */
+
+   .bg-card {
+    background-color: rgb(var(--card));
+  }
+  
+  .text-muted {
+    color: rgb(var(--muted-foreground));
+  }
+  
+  .border-default {
+    border-color: rgb(var(--border));
+  }
+  
+  /* Boutons désactivés lisibles */
+  button:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  

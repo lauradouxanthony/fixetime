@@ -3,117 +3,123 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getValidGoogleAccessToken } from "@/lib/google/getValidAccessToken";
 
-export async function GET(request: NextRequest) {
+export async function POST(req: NextRequest) {
   try {
-    // 1️⃣ User via session Supabase
-    const supabase = await supabaseServer();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    // ✅ 1) Récupérer user_id: soit cookie session, soit body JSON
+    let userId: string | null = null;
 
-    if (!user) {
-      return NextResponse.json(
-        { error: "NOT_AUTHENTICATED" },
-        { status: 401 }
-      );
+    // session cookie (stable pour le bouton dans l’app)
+    try {
+      const supabase = await supabaseServer();
+      const { data } = await supabase.auth.getUser();
+      if (data?.user?.id) userId = data.user.id;
+    } catch {}
+
+    // fallback body JSON (pour tests curl)
+    if (!userId) {
+      try {
+        const body = await req.json();
+        if (body?.user_id) userId = body.user_id;
+      } catch {}
     }
 
-    const userId = user.id;
-
-    // 2️⃣ Vérifier token Google
-    const { data: tokenRow } = await supabaseAdmin
-      .from("gmail_tokens")
-      .select("*")
-      .eq("user_id", userId)
-      .maybeSingle();
-
-    if (!tokenRow) {
-      return NextResponse.json(
-        { error: "NO_GOOGLE_TOKEN" },
-        { status: 400 }
-      );
+    if (!userId) {
+      return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
     }
 
-    // 3️⃣ Access token TOUJOURS valide (🔥 clé)
-    const accessToken = await getValidGoogleAccessToken(userId);
+    // ✅ 2) Token Google valide + retry si Gmail renvoie 401
+    let accessToken = await getValidGoogleAccessToken(userId);
 
-    // 4️⃣ Lister les emails récents
-    const listRes = await fetch(
-      "https://gmail.googleapis.com/gmail/v1/users/me/messages?maxResults=20",
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
+    const callList = (token: string, pageToken?: string) => {
+      const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+      url.searchParams.set("maxResults", "100");
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+
+      // ⚠️ PAS de q (car certains tokens “metadata-only” font planter q)
+      return fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+    };
+
+    let pageToken: string | undefined = undefined;
+    let fetched = 0;
+    let upserted = 0;
+
+    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+
+    while (true) {
+      let listRes = await callList(accessToken, pageToken);
+
+      // retry 1 fois si 401
+      if (listRes.status === 401) {
+        accessToken = await getValidGoogleAccessToken(userId);
+        listRes = await callList(accessToken, pageToken);
       }
-    );
 
-    if (!listRes.ok) {
-      const txt = await listRes.text();
-      console.error("GMAIL_LIST_ERROR", txt);
-      return NextResponse.json(
-        { error: "GMAIL_LIST_ERROR", details: txt },
-        { status: 400 }
-      );
-    }
+      if (!listRes.ok) {
+        const txt = await listRes.text();
+        return NextResponse.json({ error: "GMAIL_LIST_ERROR", details: txt }, { status: 400 });
+      }
 
-    const listJson = await listRes.json();
-    const messages = listJson.messages ?? [];
+      const listJson = await listRes.json();
+      const messages = listJson.messages ?? [];
+      pageToken = listJson.nextPageToken;
 
-    console.log(`[GMAIL SYNC] Messages trouvés: ${messages.length}`);
+      if (!messages.length) break;
 
-    let inserted = 0;
+      for (const msg of messages) {
+        // on récupère internalDate + headers avec metadata (plus léger)
+        const detailRes = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
+        );
 
-    // 5️⃣ Détails + insertion
-    for (const msg of messages) {
-      const detailRes = await fetch(
-        `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata`,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
+        if (!detailRes.ok) continue;
+
+        const detail = await detailRes.json();
+        const internalDate = Number(detail.internalDate ?? 0);
+
+        // ✅ filtre 30j côté serveur (stable)
+        if (internalDate && Date.now() - internalDate > THIRTY_DAYS) {
+          continue;
         }
-      );
 
-      if (!detailRes.ok) continue;
+        const headers = detail.payload?.headers || [];
+        const from = headers.find((h: any) => h.name === "From")?.value ?? "Inconnu";
+        const subject = headers.find((h: any) => h.name === "Subject")?.value ?? "(Sans objet)";
+        const date = headers.find((h: any) => h.name === "Date")?.value;
 
-      const detail = await detailRes.json();
-      const headers = detail.payload?.headers || [];
+        const receivedAt = date ? new Date(date).toISOString() : new Date().toISOString();
 
-      const dateHeader = headers.find((h: any) => h.name === "Date");
-      const fromHeader = headers.find((h: any) => h.name === "From");
-      const subjectHeader = headers.find((h: any) => h.name === "Subject");
-
-      const receivedAt = dateHeader
-        ? new Date(dateHeader.value).toISOString()
-        : new Date().toISOString();
-
-      const { error: upsertError } = await supabaseAdmin
-        .from("emails")
-        .upsert(
+        const { error } = await supabaseAdmin.from("emails").upsert(
           {
             user_id: userId,
             gmail_message_id: msg.id,
-            sender: fromHeader?.value ?? "Inconnu",
-            subject: subjectHeader?.value ?? "(Sans objet)",
-            summary: "",
+            sender: from,
+            subject,
             received_at: receivedAt,
-            is_urgent: false,
           },
           { onConflict: "gmail_message_id" }
         );
 
-      if (!upsertError) inserted++;
+        fetched++;
+        if (!error) upserted++;
+
+        // sécurité perf
+        if (fetched >= 300) break;
+      }
+
+      if (fetched >= 300) break;
+      if (!pageToken) break;
     }
 
-    return NextResponse.json({
-      success: true,
-      total_messages: messages.length,
-      inserted,
-    });
-  } catch (err) {
-    console.error("GMAIL_SYNC_FATAL", err);
+    return NextResponse.json({ success: true, fetched, upserted });
+  } catch (error: any) {
+    console.error("[GMAIL SYNC] FULL ERROR:", error);
     return NextResponse.json(
-      { error: "GMAIL_SYNC_FAILED" },
+      {
+        error: "GMAIL_SYNC_FAILED",
+        message: error?.message ?? null,
+        stack: error?.stack ?? null,
+      },
       { status: 500 }
     );
   }

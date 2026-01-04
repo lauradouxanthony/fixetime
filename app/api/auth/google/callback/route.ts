@@ -61,17 +61,17 @@ export async function GET(req: NextRequest) {
     await supabaseAdmin.from("gmail_tokens").upsert(
       {
         user_id: userId,
-        user_email: userInfo.email, // ✅ BON NOM DE COLONNE
+        user_email: userInfo.email,
         access_token: tokenData.access_token,
         refresh_token: tokenData.refresh_token,
         expires_at: new Date(
           Date.now() + tokenData.expires_in * 1000
         ).toISOString(),
+        last_history_id: null, // 🔥 TRÈS IMPORTANT
       },
-      {
-        onConflict: "user_id",
-      }
+      { onConflict: "user_id" }
     );
+    
 
     // 5) REDIRECTION FINALE
     return NextResponse.redirect(

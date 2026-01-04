@@ -46,12 +46,27 @@ export default function DashboardClient() {
   async function refreshNow() {
     try {
       setLoading(true);
-      await fetch("/api/sync/all", { method: "POST" });
+  
+      const res = await fetch("/api/sync/all", {
+        method: "POST",
+      });
+  
+      if (!res.ok) {
+        const text = await res.text();
+        console.error("❌ SYNC ALL FAILED:", text);
+        alert("Erreur lors de la synchronisation. Regarde la console.");
+        return;
+      }
+  
       await loadDashboard();
+    } catch (error) {
+      console.error("❌ SYNC ALL ERROR:", error);
+      alert("Erreur serveur ou réseau.");
     } finally {
       setLoading(false);
     }
   }
+  
 
   useEffect(() => {
     loadDashboard();
@@ -73,93 +88,94 @@ export default function DashboardClient() {
   return (
     <div className="space-y-6">
 
+      {/* 🔥 PRIORITÉ DU JOUR */}
+<section className="rounded-2xl border border-emerald-500/30 bg-emerald-950/30 p-5">
+  <p className="text-xs uppercase tracking-wide text-emerald-400">
+    Aujourd’hui, FixTime recommande
+  </p>
+
+  <p className="mt-2 text-lg font-semibold text-white">
+    Traiter vos emails prioritaires
+  </p>
+
+  <p className="mt-1 text-sm text-emerald-200">
+    ⏱️ 5 à 10 minutes · Impact élevé sur votre charge mentale
+  </p>
+
+  <a
+    href="/emails"
+    className="inline-block mt-4 rounded-lg bg-emerald-500 px-4 py-2 text-sm font-semibold text-black hover:bg-emerald-400"
+  >
+    Voir l’action recommandée →
+  </a>
+</section>
+
+
       {/* HEADER */}
       <section className="flex items-center justify-between">
-        <div>
-          <p className="text-sm text-slate-400">
-            Voici votre journée optimisée.
-          </p>
-          <p className="text-xs text-slate-500">
-            Mise à jour basée sur vos emails et votre calendrier synchronisés.
-          </p>
-        </div>
+  <div>
+    <p className="text-sm text-slate-400">
+      Voici votre journée optimisée.
+    </p>
+    <p className="text-xs text-slate-500">
+      Mise à jour basée sur vos emails et votre calendrier synchronisés.
+    </p>
+  </div>
 
-        <button
-          onClick={refreshNow}
-          disabled={loading}
-          className="rounded-xl border border-sky-700 bg-sky-900/40 px-4 py-2 text-xs font-semibold text-sky-300 hover:bg-sky-900/60 disabled:opacity-50"
-        >
-          {loading ? "Actualisation…" : "🔄 Actualiser maintenant"}
-        </button>
-      </section>
+  <p className="text-xs text-slate-500">
+    Dernière analyse automatique en arrière-plan
+  </p>
+</section>
 
       {/* STATS */}
-      <section className="grid grid-cols-1 md:grid-cols-4 gap-4">
-        <Stat
-          title="Emails reçus aujourd’hui"
-          value={emailsToday}
-          subtitle="analysés automatiquement par l’assistant"
-        />
+      <section className="grid grid-cols-1 md:grid-cols-2 gap-4">
+  <Stat
+    title="Emails à traiter aujourd’hui"
+    value={urgentEmails}
+    accent="rose"
+    subtitle="prioritaires selon FixTime"
+  />
 
-        <Stat
-          title="Emails urgents"
-          value={urgentEmails}
-          accent="rose"
-          subtitle="nécessitent votre attention rapide"
-        />
-
-        <Stat
-          title="Heures gagnées"
-          value={hoursSaved}
-          accent="emerald"
-          subtitle="estimation basée sur 2 min économisées par email"
-        />
-
-        <Stat
-          title="Réunions aujourd’hui"
-          value={meetingsToday}
-          accent="amber"
-          subtitle="tous calendriers confondus"
-        />
-      </section>
+  <Stat
+    title="Temps libéré aujourd’hui"
+    value={hoursSaved}
+    accent="emerald"
+    subtitle="grâce aux décisions automatiques"
+  />
+</section>
 
       {/* CONTENT */}
       <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
 
         {/* EMAILS */}
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">
-          <div className="flex items-center justify-between mb-3">
-            <h3 className="text-sm font-semibold">Vos emails importants</h3>
-            <a
-              href="/emails"
-              className="text-xs text-sky-400 hover:underline"
-            >
-              Voir tous les emails
-            </a>
-          </div>
+        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
+  <p className="text-xs uppercase tracking-wide text-slate-400">
+    Email prioritaire du jour
+  </p>
 
-          <div className="space-y-3">
-            {data.importantEmails.length > 0 ? (
-              data.importantEmails.map((mail) => (
-                <div
-                  key={mail.id}
-                  className="rounded-xl border border-slate-800 bg-slate-900 px-3 py-2"
-                >
-                  <p className="text-[10px] uppercase tracking-wide text-slate-400">
-                    {mail.sender || "Expéditeur inconnu"}
-                  </p>
-                  <p className="text-sm font-medium mt-1">
-                    {mail.subject || "Sans objet"}
-                  </p>
-                </div>
-              ))
-            ) : (
-              <p className="text-xs text-slate-500">
-                Aucun email important aujourd’hui.
-              </p>
-            )}
-          </div>
-        </div>
+  {data.importantEmails.length > 0 ? (
+    <>
+      <p className="mt-3 text-sm text-slate-400">
+        De : {data.importantEmails[0].sender || "Expéditeur inconnu"}
+      </p>
+
+      <p className="mt-1 text-lg font-semibold text-white">
+        {data.importantEmails[0].subject || "Sans objet"}
+      </p>
+
+      <a
+        href="/emails"
+        className="inline-block mt-4 rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500"
+      >
+        Traiter cet email →
+      </a>
+    </>
+  ) : (
+    <p className="mt-3 text-sm text-slate-500">
+      Aucun email prioritaire détecté aujourd’hui.
+    </p>
+  )}
+</div>
 
         {/* PLANNING */}
         <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-4">

@@ -21,11 +21,10 @@ export async function POST() {
 
     // 3) Gmail sync
     const gmailRes = await fetch(`${baseUrl}/api/gmail/sync`, {
-      method: "GET",
-      headers: {
-        cookie: cookieHeader,
-      },
+      method: "POST",
+      headers: { cookie: cookieHeader },
     });
+    
 
     if (!gmailRes.ok) {
       const text = await gmailRes.text();
@@ -40,11 +39,10 @@ export async function POST() {
 
     // 4) Calendar sync
     const calendarRes = await fetch(`${baseUrl}/api/calendar/sync`, {
-      method: "GET",
-      headers: {
-        cookie: cookieHeader,
-      },
+      method: "POST",
+      headers: { cookie: cookieHeader },
     });
+    
 
     if (!calendarRes.ok) {
       const text = await calendarRes.text();
