@@ -1,10 +1,21 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
-import { logTime } from "@/lib/time/logTime";
+import { logTime, type TimeEventType } from "@/lib/time/logTime";
+
+const allowedTypes: TimeEventType[] = [
+  "email_analyzed",
+  "email_ignored",
+  "email_classified",
+  "ai_reply_generated",
+  "reply_planned",
+];
 
 export async function POST(req: Request) {
   try {
-    const { type, emailId } = await req.json();
+    const body = await req.json();
+
+    const type = body?.type as unknown;
+    const emailId = body?.emailId ?? null;
 
     const supabase = await supabaseServer();
     const {
@@ -15,14 +26,19 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "NO_USER" }, { status: 401 });
     }
 
-    if (!type || typeof type !== "string") {
+    if (
+      typeof type !== "string" ||
+      !allowedTypes.includes(type as TimeEventType)
+    ) {
       return NextResponse.json({ error: "BAD_TYPE" }, { status: 400 });
     }
 
+    const safeType = type as TimeEventType;
+
     await logTime({
       userId: user.id,
-      type,
-      emailId: emailId ?? null,
+      type: safeType,
+      emailId,
     });
 
     return NextResponse.json({ success: true });
