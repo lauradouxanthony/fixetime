@@ -24,7 +24,12 @@ export type SettingsV1 = {
   automation_level: AutomationLevel;
   assistant_enabled: boolean;
   email_rules: EmailRules;
+
+  // ✅ ajout safe (optionnel) pour SettingsClient.tsx
+  language?: "fr" | "en";
+  time_format?: "12h" | "24h";
 };
+
 
 function applyTheme(theme: Theme) {
   document.documentElement.classList.toggle("dark", theme === "dark");

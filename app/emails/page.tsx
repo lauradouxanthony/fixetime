@@ -9,28 +9,15 @@ import { EmailDetailPanel } from "@/components/emails/EmailDetailPanel";
 import { TodayTasks } from "@/components/tasks/TodayTasks";
 import { ExecutiveSummary } from "@/components/emails/ExecutiveSummary";
 import { NextBestAction } from "@/components/emails/NextBestAction";
+import type { Email } from "@/types/email";
 
-type Email = {
-  id: string;
-  gmail_message_id?: string | null;
-  sender: string | null;
-  subject: string | null;
-  body: string | null;
-  received_at: string | null;
-
-  summary?: string | null;
-  estimated_time?: number | null;
-  recommended_action?: string | null;
-  decision?: string | null;
-
-  category?: string | null;
-  is_archived?: boolean | null;
-};
 
 type Period = "today" | "7d" | "30d";
 // 🔒 Fondation logique FixTime
 // Toute décision non explicite = silence
-function normalizeDecision(decision?: string | null) {
+function normalizeDecision(
+  decision?: string | null
+): "traiter" | "planifier" | "ignorer" | null {
   if (!decision) return null;
 
   const d = decision.toLowerCase();
@@ -123,10 +110,11 @@ export default function EmailsPage() {
     }
 
     if (data) {
-      const normalized = data.map((email) => ({
+      const normalized: Email[] = data.map((email) => ({
         ...email,
         decision: normalizeDecision(email.decision),
       }));
+      
     
       setEmails(normalized);
       setSelectedEmail(null);    
@@ -210,7 +198,7 @@ export default function EmailsPage() {
           <EmailsList
             emails={emails}
             selectedEmailId={selectedEmail?.id || null}
-            onSelect={(email) => setSelectedEmail(email)}
+            onSelect={(email) => setSelectedEmail(email as Email)}
             loading={loading}
           />
         </div>

@@ -7,6 +7,7 @@ import {
 } from "@/components/calendar/getOptimalSlotForEmail";
 import { supabase } from "@/lib/supabaseClient";
 import type { CalendarEvent } from "@/components/calendar/calendarUtils";
+import type { Email } from "@/types/email";
 
 /* ===================== HELPERS ===================== */
 
@@ -94,25 +95,6 @@ function getGmailUrl(gmailMessageId?: string | null) {
   if (!gmailMessageId) return null;
   return `https://mail.google.com/mail/u/0/#inbox/${gmailMessageId}`;
 }
-
-/* ===================== TYPES ===================== */
-
-type Email = {
-  classification_reason?: string | null
-  id: string;
-  gmail_message_id?: string | null;
-
-  sender: string | null;
-  subject: string | null;
-  received_at: string | null;
-
-  body?: string | null;
-
-  summary?: string | null;
-  decision?: "ignorer" | "traiter" | "planifier" | null;
-  estimated_time?: number | null;
-  recommended_action?: "reply" | "schedule" | "archive" | null;
-};
 
 /* ===================== COMPONENT ===================== */
 

@@ -1,6 +1,6 @@
 "use client";
 
-import { useSettings } from "@/lib/hooks/useSettings";
+import { useSettings } from "@/hooks/useSettings";
 
 export default function SettingsClient() {
   const { settings, loading, updateSettings } = useSettings();
