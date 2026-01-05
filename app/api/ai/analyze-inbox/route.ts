@@ -3,6 +3,8 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { supabaseServer } from "@/lib/supabaseServer";
 import OpenAI from "openai";
 
+export const runtime = "nodejs";
+
 function isInternalCron(req: Request) {
   const key = req.headers.get("x-fixetime-cron-key");
   return key === process.env.FIXETIME_INTERNAL_CRON_KEY;

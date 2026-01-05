@@ -3,6 +3,8 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getValidGoogleAccessToken } from "@/lib/google/getValidAccessToken";
 
+export const runtime = "nodejs";
+
 export async function POST(req: NextRequest) {
   try {
     // ✅ 1) Récupérer user_id: soit cookie session, soit body JSON
