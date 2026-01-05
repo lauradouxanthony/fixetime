@@ -138,6 +138,7 @@ export default function EmailsPage() {
   }, [filter, period]);
 
   // ⚠️ NE PAS TOUCHER : tu as dit que c’était sensible, donc on garde strictement ton flux actuel.
+  
   const handleRefresh = async () => {
     try {
       setRefreshing(true);
@@ -148,16 +149,20 @@ export default function EmailsPage() {
       });
   
       const json = await res.json();
-      console.log("📩 SYNC RESPONSE", json);
+      console.log("📩 ANALYZE TRIGGERED", json);
   
-      // ❗ UNE SEULE FOIS
-      await fetchEmails();
+      // 🔁 IMPORTANT :
+      // On ne fetch PAS immédiatement les emails
+      // L’analyse est asynchrone (prod-safe)
+      // Les données arriveront progressivement
+  
     } catch (e) {
       console.error("❌ REFRESH ERROR", e);
     } finally {
       setRefreshing(false);
     }
   };
+  
   
   
 
