@@ -4,6 +4,7 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import OpenAI from "openai";
 
 export const runtime = "nodejs";
+export const maxDuration = 60; // ← À AJOUTER (CRITIQUE)
 
 function isInternalCron(req: Request) {
   const key = req.headers.get("x-fixetime-cron-key");
