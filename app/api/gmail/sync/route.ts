@@ -107,7 +107,7 @@ export async function POST(req: NextRequest) {
 
         // sécurité perf
 // limite hard par exécution (SAFE Vercel)
-if (fetched >= 100) break;
+if (fetched >= 300) break;
       }
 
       if (fetched >= 300) break;

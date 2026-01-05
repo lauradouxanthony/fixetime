@@ -1,30 +1,16 @@
 import { NextResponse } from "next/server";
 
-export const runtime = "nodejs";
-
 export async function POST(req: Request) {
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_SITE_URL!;
+    const baseUrl =
+      process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
 
-    // 1) Sync Gmail (on garde ton endpoint inchangé)
-    const syncRes = await fetch(`${baseUrl}/api/gmail/sync`, {
-      method: "POST",
-      headers: {
-        cookie: req.headers.get("cookie") ?? "",
-      },
-      cache: "no-store",
-    });
+    // ⚠️ IMPORTANT
+    // Le sync Gmail est volontairement retiré ici
+    // pour éviter les timeouts en prod (Vercel).
+    // Le sync doit être fait via cron / job backend.
 
-    const syncJson = await syncRes.json().catch(() => ({}));
-
-    if (!syncRes.ok) {
-      return NextResponse.json(
-        { error: "SYNC_FAILED", details: syncJson },
-        { status: 500 }
-      );
-    }
-
-    // 2) Analyse IA (même cookie, même user)
+    // 1) Analyse IA uniquement
     const aiRes = await fetch(`${baseUrl}/api/ai/analyze-inbox`, {
       method: "POST",
       headers: {
@@ -37,19 +23,21 @@ export async function POST(req: Request) {
 
     if (!aiRes.ok) {
       return NextResponse.json(
-        { error: "AI_ANALYZE_FAILED", details: aiJson, sync: syncJson },
+        { error: "AI_ANALYZE_FAILED", details: aiJson },
         { status: 500 }
       );
     }
 
-    // 3) OK
+    // 2) OK
     return NextResponse.json({
       success: true,
-      sync: syncJson,
       ai: aiJson,
     });
   } catch (e) {
     console.error("ANALYZE_NOW_FATAL", e);
-    return NextResponse.json({ error: "ANALYZE_NOW_FAILED" }, { status: 500 });
+    return NextResponse.json(
+      { error: "ANALYZE_NOW_FAILED" },
+      { status: 500 }
+    );
   }
 }
