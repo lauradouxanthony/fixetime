@@ -68,7 +68,7 @@ export async function POST(req: Request) {
       .select("id, user_id, sender, subject, body, created_at")
       .or("decision.is.null,summary.is.null,classification_reason.is.null")
       .order("received_at", { ascending: false })
-      .limit(10);
+      .limit(30);
 
     if (manualUserId) q = q.eq("user_id", manualUserId);
 
