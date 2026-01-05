@@ -143,13 +143,15 @@ export default function EmailsPage() {
     try {
       setRefreshing(true);
       console.log("🔄 REFRESH CLICKED");
-  
-      const res = await fetch("/api/emails/analyze-now", {
+      
+      await fetch("/api/emails/analyze-now", {
         method: "POST",
       });
-  
-      const json = await res.json();
-      console.log("📩 ANALYZE TRIGGERED", json);
+      
+      // ⚠️ NE PAS lire la réponse
+      // En prod, on déclenche seulement
+      console.log("📩 ANALYZE TRIGGERED");
+      
   
       // 🔁 IMPORTANT :
       // On ne fetch PAS immédiatement les emails
