@@ -2,7 +2,7 @@ import { NextResponse } from "next/server";
 
 export async function POST(req: Request) {
   try {
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    const baseUrl = process.env.NEXT_PUBLIC_SITE_URL!;
 
     // 1) Sync Gmail (on garde ton endpoint inchangé)
     const syncRes = await fetch(`${baseUrl}/api/gmail/sync`, {
