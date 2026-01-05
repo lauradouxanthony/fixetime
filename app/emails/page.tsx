@@ -141,34 +141,24 @@ export default function EmailsPage() {
   const handleRefresh = async () => {
     try {
       setRefreshing(true);
-      console.log("🔄 ANALYZE START");
+      console.log("🔄 REFRESH CLICKED");
   
-      let totalAnalyzed = 0;
+      const res = await fetch("/api/emails/analyze-now", {
+        method: "POST",
+      });
   
-      while (true) {
-        const res = await fetch("/api/emails/analyze-now", {
-          method: "POST",
-        });
+      const json = await res.json();
+      console.log("📩 SYNC RESPONSE", json);
   
-        const json = await res.json();
-        console.log("📩 ANALYZE RESPONSE", json);
-  
-        const analyzed = json?.ai?.analyzed ?? 0;
-        totalAnalyzed += analyzed;
-  
-        // 👉 plus rien à analyser = on stop
-        if (analyzed === 0) break;
-      }
-  
-      console.log("✅ ANALYZE DONE", totalAnalyzed);
-  
+      // ❗ UNE SEULE FOIS
       await fetchEmails();
     } catch (e) {
-      console.error("❌ ANALYZE ERROR", e);
+      console.error("❌ REFRESH ERROR", e);
     } finally {
       setRefreshing(false);
     }
   };
+  
   
 
   const actionableCount = useMemo(() => {
