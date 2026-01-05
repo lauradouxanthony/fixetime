@@ -13,7 +13,7 @@ export async function POST() {
       .from("emails")
       .select("id, subject, body, sender")
       .is("decision", null)
-      .limit(10);
+      .limit(30);
 
     if (error || !emails || emails.length === 0) {
       return NextResponse.json({ message: "No emails to analyze" });
