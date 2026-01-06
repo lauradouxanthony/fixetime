@@ -101,12 +101,29 @@ if (targetUserId) {
 }
 
 
-    const { data: emails, error } = await q;
+const { data: emails, error } = await q;
 
-    if (error) {
-      console.error("FETCH_EMAILS_ERROR", error);
-      return NextResponse.json({ error: "FETCH_EMAILS_FAILED" }, { status: 500 });
-    }
+if (error) {
+  console.error("FETCH_EMAILS_ERROR", error);
+  return NextResponse.json({ error: "FETCH_EMAILS_FAILED" }, { status: 500 });
+}
+
+// 🔒 GARANTIE PRODUIT — nettoyage des anciens emails bloqués en "Analyse…"
+// (on exclut ceux qu'on va analyser juste après)
+await supabaseAdmin
+  .from("emails")
+  .update({
+    decision: "ignorer",
+    summary: "Email classé automatiquement.",
+    estimated_time: 0,
+    recommended_action: "archive",
+    classification_reason: "Fallback global FixTime",
+  })
+  .eq("user_id", targetUserId)
+  .lt("received_at", sinceISO)
+  .is("decision", null);
+
+
 
     if (!emails || emails.length === 0) {
       return NextResponse.json({ success: true, analyzed: 0 });
