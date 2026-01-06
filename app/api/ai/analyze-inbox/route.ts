@@ -53,13 +53,16 @@ export async function POST(req: Request) {
 
   try {
     // ✅ Si manuel : on limite aux emails de l'utilisateur connecté
-    let targetUserId: string | null = null;
+    // ✅ utilisateur ciblé (manuel OU cron)
+let targetUserId: string | null = null;
 
+// CAS 1 — CRON / BACKGROUND
 if (isCron && body?.user_id) {
   targetUserId = body.user_id;
 }
 
-if (!targetUserId && isManual) {
+// CAS 2 — MANUEL (frontend avec cookie)
+if (isManual && !targetUserId) {
   const supabase = await supabaseServer();
   const {
     data: { user },
@@ -68,13 +71,14 @@ if (!targetUserId && isManual) {
   if (!user) {
     return NextResponse.json({ error: "NO_USER" }, { status: 401 });
   }
+
   targetUserId = user.id;
 }
 
+// 🔒 SÉCURITÉ ABSOLUE
 if (!targetUserId) {
-  return NextResponse.json({ error: "NO_USER_ID" }, { status: 400 });
+  return NextResponse.json({ error: "NO_TARGET_USER" }, { status: 400 });
 }
-
 
     // 1) Emails à analyser (ceux qui manquent de data)
     const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
@@ -84,12 +88,17 @@ let q = supabaseAdmin
 .from("emails")
 .select("id, user_id, sender, subject, body, received_at")
 .gte("received_at", sinceISO)
-.or("decision.is.null,summary.is.null,classification_reason.is.null")
+.or(
+  "decision.is.null,summary.is.null,classification_reason.is.null",
+  { foreignTable: undefined }
+)
 .order("received_at", { ascending: false })
-.limit(30);
+.limit(500);
 
 // 🔒 utilisateur ciblé (OBLIGATOIRE)
-q = q.eq("user_id", targetUserId);
+if (targetUserId) {
+  q = q.eq("user_id", targetUserId);
+}
 
 
     const { data: emails, error } = await q;
