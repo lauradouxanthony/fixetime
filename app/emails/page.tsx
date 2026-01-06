@@ -174,6 +174,13 @@ export default function EmailsPage() {
       return d === "traiter" || d === "planifier";
     }).length;
   }, [emails]);
+  useEffect(() => {
+    const interval = setInterval(() => {
+      fetchEmails();
+    }, 5000); // toutes les 5s
+  
+    return () => clearInterval(interval);
+  }, []);
   
   return (
     <div className="h-full flex flex-col p-6 gap-4">
