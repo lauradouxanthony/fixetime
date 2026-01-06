@@ -1,10 +1,20 @@
 import { NextResponse } from "next/server";
+import { supabaseServer } from "@/lib/supabaseServer";
 
 // Flag auto Vercel (true en prod Vercel, false en local)
 const IS_VERCEL = process.env.VERCEL === "1";
 
 export async function POST(req: Request) {
   try {
+    const supabase = await supabaseServer();
+const {
+  data: { user },
+} = await supabase.auth.getUser();
+
+if (!user) {
+  return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
+}
+
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
     const cookie = req.headers.get("cookie") ?? "";
 
@@ -13,9 +23,15 @@ export async function POST(req: Request) {
     // =========================
     const syncPromise = fetch(`${baseUrl}/api/gmail/sync`, {
       method: "POST",
-      headers: { cookie },
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        user_id: user.id,
+      }),
       cache: "no-store",
     });
+    
 
     let syncRes: Response | null = null;
     let syncJson: any = null;
@@ -38,9 +54,20 @@ export async function POST(req: Request) {
     // =========================
     const aiPromise = fetch(`${baseUrl}/api/ai/analyze-inbox`, {
       method: "POST",
-      headers: { cookie },
+      headers: {
+        "Content-Type": "application/json",
+        // ✅ autorise l'endpoint même sans cookie (prod-safe)
+        "x-fixetime-cron-key": process.env.FIXETIME_INTERNAL_CRON_KEY || "",
+      },
+      body: JSON.stringify({
+        user_id: user.id,
+        // optionnel : période analysée
+        period: "30d",
+      }),
       cache: "no-store",
     });
+    
+    
 
     let aiRes: Response | null = null;
     let aiJson: any = null;

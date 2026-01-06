@@ -42,35 +42,55 @@ function fallbackDecision(email: { subject?: string | null; sender?: string | nu
 export async function POST(req: Request) {
   const isCron = isInternalCron(req);
   const isManual = isManualRequest(req);
-
+  let body: any = null;
+  try {
+    body = await req.json();
+  } catch {}
+  
   if (!isCron && !isManual) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
   try {
     // ✅ Si manuel : on limite aux emails de l'utilisateur connecté
-    let manualUserId: string | null = null;
-    if (isManual) {
-      const supabase = await supabaseServer();
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
+    let targetUserId: string | null = null;
 
-      if (!user) {
-        return NextResponse.json({ error: "NO_USER" }, { status: 401 });
-      }
-      manualUserId = user.id;
-    }
+if (isCron && body?.user_id) {
+  targetUserId = body.user_id;
+}
+
+if (!targetUserId && isManual) {
+  const supabase = await supabaseServer();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (!user) {
+    return NextResponse.json({ error: "NO_USER" }, { status: 401 });
+  }
+  targetUserId = user.id;
+}
+
+if (!targetUserId) {
+  return NextResponse.json({ error: "NO_USER_ID" }, { status: 400 });
+}
+
 
     // 1) Emails à analyser (ceux qui manquent de data)
-    let q = supabaseAdmin
-      .from("emails")
-      .select("id, user_id, sender, subject, body, created_at")
-      .or("decision.is.null,summary.is.null,classification_reason.is.null")
-      .order("received_at", { ascending: false })
-      .limit(30);
+    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
+const sinceISO = new Date(Date.now() - THIRTY_DAYS).toISOString();
 
-    if (manualUserId) q = q.eq("user_id", manualUserId);
+let q = supabaseAdmin
+.from("emails")
+.select("id, user_id, sender, subject, body, received_at")
+.gte("received_at", sinceISO)
+.or("decision.is.null,summary.is.null,classification_reason.is.null")
+.order("received_at", { ascending: false })
+.limit(30);
+
+// 🔒 utilisateur ciblé (OBLIGATOIRE)
+q = q.eq("user_id", targetUserId);
+
 
     const { data: emails, error } = await q;
 
