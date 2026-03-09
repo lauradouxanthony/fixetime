@@ -493,38 +493,63 @@ setSuggestedSlots(suggestions);
       </div>
 
       {/* Actions réponse IA */}
-      <div className="flex gap-2">
+      <div className="flex gap-2 flex-wrap">
         <button
           onClick={async () => {
             navigator.clipboard.writeText(aiReply);
             notify("Réponse copiée 📋");
             await logTimeEvent("copy_reply", 1);
-          }}          
+          }}
           className="px-3 py-1 rounded-md bg-gray-700 text-xs hover:bg-gray-600"
         >
           Copier la réponse
         </button>
 
         <button
-onClick={async () => {
-  if (!email || !aiReply) return;
+          onClick={async () => {
+            if (!email || !aiReply) return;
+            const to = encodeURIComponent(email.sender ?? "");
+            const subject = encodeURIComponent(`Re: ${email.subject ?? ""}`);
+            const body = encodeURIComponent(aiReply);
+            window.open(
+              `https://mail.google.com/mail/?view=cm&fs=1&to=${to}&su=${subject}&body=${body}`,
+              "_blank"
+            );
+            await logTimeEvent("open_draft", 2);
+          }}
+          className="px-3 py-1 rounded-md bg-green-600 text-xs hover:bg-green-500 text-black font-medium"
+        >
+          ✉️ Ouvrir le brouillon Gmail
+        </button>
 
-    const to = encodeURIComponent(email.sender ?? "");
-    const subject = encodeURIComponent(`Re: ${email.subject ?? ""}`);
-    const body = encodeURIComponent(aiReply);
-
-    const url =
-      `https://mail.google.com/mail/?view=cm&fs=1&to=${to}&su=${subject}&body=${body}`;
-
-    window.open(url, "_blank");
-    await logTimeEvent("open_draft", 2);
-
-  }}
-  className="px-3 py-1 rounded-md bg-green-600 text-xs hover:bg-green-500 text-black font-medium"
->
-  ✉️ Ouvrir le brouillon Gmail
-</button>
-
+        {/* Bouton DRAFT — envoyer directement sans ouvrir Gmail */}
+        <button
+          onClick={async () => {
+            if (!email?.id || !aiReply) return;
+            setBusy("archive"); // réutilise l'état busy pour bloquer les doubles-clics
+            try {
+              const res = await fetch("/api/gmail/send", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ emailId: email.id }),
+              });
+              if (res.ok) {
+                notify("Réponse envoyée via Gmail ✅");
+                await logTimeEvent("send_draft", 2);
+              } else {
+                notify("Erreur lors de l'envoi.");
+              }
+            } catch {
+              notify("Erreur réseau lors de l'envoi.");
+            } finally {
+              setBusy(null);
+            }
+          }}
+          disabled={busy !== null}
+          className="px-3 py-1 rounded-md bg-blue-600 text-xs hover:bg-blue-500 text-white font-medium disabled:opacity-50"
+        >
+          🚀 Envoyer maintenant
+        </button>
       </div>
     </div>
   )}

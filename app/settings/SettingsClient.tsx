@@ -67,24 +67,38 @@ export default function SettingsClient() {
         </h2>
 
         {[
-          { key: "suggestions", label: "Suggestions uniquement" },
-          { key: "semi", label: "Semi-automatique" },
-          { key: "advanced", label: "Automatisation avancée" },
+          {
+            key: "suggestions",
+            label: "Analyse uniquement",
+            description: "L'IA classe vos emails. Aucun envoi automatique.",
+          },
+          {
+            key: "semi",
+            label: "Mode DRAFT",
+            description:
+              "L'IA génère un brouillon de réponse. Vous approuvez avant d'envoyer.",
+          },
+          {
+            key: "advanced",
+            label: "Mode AUTOPILOTE",
+            description:
+              "L'IA envoie les réponses automatiquement et bloque les créneaux calendrier.",
+          },
         ].map((opt) => (
           <label
             key={opt.key}
-            className="flex items-center gap-3 rounded-lg border border-slate-700 p-3 cursor-pointer"
+            className="flex items-start gap-3 rounded-lg border border-slate-700 p-3 cursor-pointer"
           >
             <input
               type="radio"
+              className="mt-0.5"
               checked={settings.automation_level === opt.key}
-              onChange={() =>
-                updateSettings({
-                  automation_level: opt.key as any,
-                })
-              }
+              onChange={() => updateSettings({ automation_level: opt.key as any })}
             />
-            <span className="text-sm">{opt.label}</span>
+            <div>
+              <span className="text-sm font-medium">{opt.label}</span>
+              <p className="text-xs text-slate-400 mt-0.5">{opt.description}</p>
+            </div>
           </label>
         ))}
       </section>
