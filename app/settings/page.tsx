@@ -1,7 +1,9 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
+import { useToast } from "@/components/ui/Toast";
 
 type Tab = "locatif" | "faq" | "calendrier" | "ia";
 type FaqEntry = { id: string; question: string; reponse: string };
@@ -21,7 +23,6 @@ async function loadSection<T>(section: string, defaultVal: T): Promise<T> {
       }
     }
   } catch { /* silent */ }
-  // Fallback to localStorage
   try {
     const stored = localStorage.getItem(`fixetime_${section}`);
     if (stored) return JSON.parse(stored) as T;
@@ -30,11 +31,8 @@ async function loadSection<T>(section: string, defaultVal: T): Promise<T> {
 }
 
 async function saveSection(section: string, data: unknown): Promise<void> {
-  // Always save to localStorage
   try { localStorage.setItem(`fixetime_${section}`, JSON.stringify(data)); } catch { /* silent */ }
-  // Save to API
   try {
-    // Read current email_rules first
     const res = await fetch("/api/settings", { cache: "no-store" });
     const current = res.ok ? await res.json() : {};
     const currentRules = (current?.email_rules && typeof current.email_rules === "object")
@@ -44,7 +42,7 @@ async function saveSection(section: string, data: unknown): Promise<void> {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ email_rules: { ...currentRules, [`ft_${section}`]: data } }),
     });
-  } catch { /* silent - localStorage is the fallback */ }
+  } catch { /* silent */ }
 }
 
 /* ── COMPOSANTS UI ── */
@@ -102,6 +100,7 @@ function SaveButton({ onClick, saved, loading }: { onClick: () => void; saved: b
 
 /* ── TAB 1 : RÈGLES LOCATIVES ── */
 function TabLocatif() {
+  const { toast } = useToast();
   const [multiplicateur, setMultiplicateur] = useState(3);
   const [profils, setProfils] = useState({ cdi: true, cdd: true, auto: false, retraite: true, garant: true });
   const [docs, setDocs] = useState({ fiches_paie: true, contrat: true, avis_imposition: true, piece_identite: true, rib: false });
@@ -109,10 +108,10 @@ function TabLocatif() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    loadSection("locatif", { multiplicateur: 3, profils, docs }).then((d: any) => {
-      if (d.multiplicateur) setMultiplicateur(d.multiplicateur);
-      if (d.profils) setProfils(d.profils);
-      if (d.docs) setDocs(d.docs);
+    loadSection("locatif", { multiplicateur: 3, profils, docs }).then((d: Record<string, unknown>) => {
+      if (d.multiplicateur) setMultiplicateur(d.multiplicateur as number);
+      if (d.profils) setProfils(d.profils as typeof profils);
+      if (d.docs) setDocs(d.docs as typeof docs);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -122,6 +121,7 @@ function TabLocatif() {
     await saveSection("locatif", { multiplicateur, profils, docs });
     setSaving(false);
     setSaved(true);
+    toast("Règles locatives sauvegardées", "success");
     setTimeout(() => setSaved(false), 2000);
   };
 
@@ -198,12 +198,14 @@ function TabLocatif() {
 
 /* ── TAB 2 : FAQ AGENCE ── */
 function TabFaq() {
+  const { toast } = useToast();
   const [entries, setEntries] = useState<FaqEntry[]>([
     { id: "1", question: "Les charges sont-elles comprises ?", reponse: "Non, les charges sont en supplément." },
     { id: "2", question: "Animaux acceptés ?", reponse: "Selon le propriétaire, à préciser lors de la visite." },
   ]);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [generating, setGenerating] = useState(false);
 
   useEffect(() => {
     loadSection<FaqEntry[]>("faq", entries).then((d) => { if (d.length > 0) setEntries(d); });
@@ -215,7 +217,31 @@ function TabFaq() {
     await saveSection("faq", entries);
     setSaving(false);
     setSaved(true);
+    toast("FAQ sauvegardée", "success");
     setTimeout(() => setSaved(false), 2000);
+  };
+
+  const generateFaq = async () => {
+    setGenerating(true);
+    try {
+      const res = await fetch("/api/settings/generate-faq", { method: "POST" });
+      const data = await res.json();
+      if (data.suggestions?.length > 0) {
+        const newEntries: FaqEntry[] = data.suggestions.map((s: { question: string; reponse: string }) => ({
+          id: `${Date.now()}-${Math.random()}`,
+          question: s.question,
+          reponse: s.reponse,
+        }));
+        setEntries((prev) => [...prev, ...newEntries]);
+        toast(`${newEntries.length} questions générées par l'IA ✨`, "success");
+      } else {
+        toast("Aucune suggestion générée", "warning");
+      }
+    } catch {
+      toast("Erreur lors de la génération", "error");
+    } finally {
+      setGenerating(false);
+    }
   };
 
   const add = () => setEntries([...entries, { id: Date.now().toString(), question: "", reponse: "" }]);
@@ -226,12 +252,33 @@ function TabFaq() {
   return (
     <div className="space-y-4">
       <Card title="Questions / Réponses fréquentes">
-        <p className="text-xs" style={{ color: "rgb(100 116 139)" }}>
-          L'IA utilise ces réponses pour traiter les emails de type "Info" automatiquement.
-        </p>
+        <div className="flex items-start justify-between gap-3">
+          <p className="text-xs flex-1" style={{ color: "rgb(100 116 139)" }}>
+            L'IA utilise ces réponses pour traiter les emails de type "Info" automatiquement.
+          </p>
+          <button
+            onClick={generateFaq}
+            disabled={generating}
+            className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-50 flex-shrink-0"
+            style={{ background: generating ? "rgb(238 242 255)" : "rgb(238 242 255)", color: "rgb(79 70 229)", border: "1px solid rgb(199 210 254)" }}
+          >
+            {generating ? (
+              <>
+                <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Génération…
+              </>
+            ) : (
+              <>✨ Générer FAQ IA</>
+            )}
+          </button>
+        </div>
+
         <div className="space-y-3">
           {entries.map((entry) => (
-            <div key={entry.id} className="rounded-lg border p-3 space-y-2" style={{ borderColor: "rgb(226 232 240)" }}>
+            <div key={entry.id} className="rounded-lg border p-3 space-y-2 animate-fade-in" style={{ borderColor: "rgb(226 232 240)" }}>
               <div>
                 <Label>Question</Label>
                 <Input value={entry.question} onChange={(v) => update(entry.id, "question", v)} placeholder="Ex: Charges comprises ?" />
@@ -261,6 +308,7 @@ function TabFaq() {
 
 /* ── TAB 3 : CALENDRIER ── */
 function TabCalendrier() {
+  const { toast } = useToast();
   const [dureeVisite, setDureeVisite] = useState(60);
   const [heureDebut, setHeureDebut] = useState(9);
   const [heureFin, setHeureFin] = useState(18);
@@ -270,12 +318,12 @@ function TabCalendrier() {
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    loadSection("calendrier", { dureeVisite, heureDebut, heureFin, delaiPrevenanceH, joursExclus }).then((d: any) => {
-      if (d.dureeVisite) setDureeVisite(d.dureeVisite);
-      if (d.heureDebut !== undefined) setHeureDebut(d.heureDebut);
-      if (d.heureFin !== undefined) setHeureFin(d.heureFin);
-      if (d.delaiPrevenanceH) setDelaiPrevenanceH(d.delaiPrevenanceH);
-      if (d.joursExclus) setJoursExclus(d.joursExclus);
+    loadSection("calendrier", { dureeVisite, heureDebut, heureFin, delaiPrevenanceH, joursExclus }).then((d: Record<string, unknown>) => {
+      if (d.dureeVisite) setDureeVisite(d.dureeVisite as number);
+      if (d.heureDebut !== undefined) setHeureDebut(d.heureDebut as number);
+      if (d.heureFin !== undefined) setHeureFin(d.heureFin as number);
+      if (d.delaiPrevenanceH) setDelaiPrevenanceH(d.delaiPrevenanceH as number);
+      if (d.joursExclus) setJoursExclus(d.joursExclus as number[]);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -285,6 +333,7 @@ function TabCalendrier() {
     await saveSection("calendrier", { dureeVisite, heureDebut, heureFin, delaiPrevenanceH, joursExclus });
     setSaving(false);
     setSaved(true);
+    toast("Calendrier sauvegardé", "success");
     setTimeout(() => setSaved(false), 2000);
   };
 
@@ -380,22 +429,24 @@ function TabCalendrier() {
 
 /* ── TAB 4 : CONFIG IA ── */
 function TabIA() {
+  const { toast } = useToast();
+  const router = useRouter();
   const [instructions, setInstructions] = useState("");
   const [mode, setMode] = useState<"DRAFT" | "AUTOPILOTE">("DRAFT");
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
+  const [testLoading, setTestLoading] = useState(false);
+  const [testResult, setTestResult] = useState<string | null>(null);
 
   useEffect(() => {
-    // Load pipeline_mode from API
     fetch("/api/settings", { cache: "no-store" })
       .then((r) => r.json())
       .then((data) => {
         if (data?.pipeline_mode === "AUTOPILOTE") setMode("AUTOPILOTE");
       })
       .catch(() => {});
-    // Load instructions
-    loadSection("ia", { instructions: "" }).then((d: any) => {
-      if (d.instructions) setInstructions(d.instructions);
+    loadSection("ia", { instructions: "" }).then((d: Record<string, unknown>) => {
+      if (d.instructions) setInstructions(d.instructions as string);
     });
   }, []);
 
@@ -411,7 +462,36 @@ function TabIA() {
     ]);
     setSaving(false);
     setSaved(true);
+    toast("Configuration IA sauvegardée", "success");
     setTimeout(() => setSaved(false), 2000);
+  };
+
+  const testIA = async () => {
+    setTestLoading(true);
+    setTestResult(null);
+    try {
+      const res = await fetch("/api/ai/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          message: "Bonjour ! Donne-moi un résumé rapide de l'activité de mon agence.",
+          history: [],
+        }),
+      });
+      const data = await res.json();
+      if (data.reply) {
+        setTestResult(data.reply);
+        toast("Test IA réussi ✓", "success");
+      } else {
+        setTestResult("Erreur : " + (data.error ?? "Réponse vide"));
+        toast("Erreur lors du test", "error");
+      }
+    } catch {
+      setTestResult("Erreur de connexion à l'API.");
+      toast("Erreur de connexion", "error");
+    } finally {
+      setTestLoading(false);
+    }
   };
 
   return (
@@ -455,6 +535,53 @@ function TabIA() {
           className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none resize-none"
           style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
         />
+      </Card>
+
+      {/* Tester l'IA */}
+      <Card title="🧪 Tester l'IA">
+        <p className="text-xs" style={{ color: "rgb(100 116 139)" }}>
+          Envoyez un message test pour vérifier que l'IA a accès à votre contexte agence.
+        </p>
+        <div className="flex gap-2">
+          <button
+            onClick={testIA}
+            disabled={testLoading}
+            className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all disabled:opacity-50"
+            style={{ background: "rgb(238 242 255)", color: "rgb(79 70 229)", border: "1px solid rgb(199 210 254)" }}
+          >
+            {testLoading ? (
+              <>
+                <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                  <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                  <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                </svg>
+                Test en cours…
+              </>
+            ) : (
+              <>🧪 Tester l'IA</>
+            )}
+          </button>
+          <button
+            onClick={() => router.push("/chat")}
+            className="px-4 py-2 rounded-lg text-sm font-medium transition-all"
+            style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
+          >
+            Ouvrir le chat →
+          </button>
+        </div>
+
+        {testResult && (
+          <div
+            className="rounded-lg p-3 text-sm whitespace-pre-wrap leading-relaxed animate-fade-in"
+            style={{ background: "rgb(248 250 252)", color: "rgb(30 41 59)", border: "1px solid rgb(226 232 240)" }}
+          >
+            <div className="flex items-center gap-1.5 mb-2">
+              <div className="w-5 h-5 rounded flex items-center justify-center text-white text-xs font-bold" style={{ background: "rgb(79 70 229)" }}>IA</div>
+              <span className="text-xs font-medium" style={{ color: "rgb(100 116 139)" }}>Réponse de l'assistant</span>
+            </div>
+            {testResult}
+          </div>
+        )}
       </Card>
 
       <div className="flex justify-end"><SaveButton onClick={save} saved={saved} loading={saving} /></div>
