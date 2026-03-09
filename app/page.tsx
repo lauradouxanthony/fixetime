@@ -1,7 +1,15 @@
-export default function Home() {
-  return (
-    <div className="h-screen flex items-center justify-center">
-      <h1 className="text-3xl font-bold">Home OK ✔️</h1>
-    </div>
-  );
+import { redirect } from "next/navigation";
+import { supabaseServer } from "@/lib/supabaseServer";
+
+export default async function RootPage() {
+  const supabase = await supabaseServer();
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  if (user) {
+    redirect("/home");
+  } else {
+    redirect("/auth/login");
+  }
 }
