@@ -57,12 +57,13 @@ if (!user) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // ✅ autorise l'endpoint même sans cookie (prod-safe)
+        // ✅ clé interne pour authentification cron
         "x-fixetime-cron-key": process.env.FIXETIME_INTERNAL_CRON_KEY || "",
+        // ✅ cookie de session transmis en fallback (auth server-to-server)
+        ...(cookie ? { "cookie": cookie } : {}),
       },
       body: JSON.stringify({
         user_id: user.id,
-        // optionnel : période analysée
         period: "30d",
       }),
       cache: "no-store",

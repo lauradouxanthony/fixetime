@@ -9,11 +9,15 @@ export const maxDuration = 60; // ← À AJOUTER (CRITIQUE)
 
 function isInternalCron(req: Request) {
   const key = req.headers.get("x-fixetime-cron-key");
-  return key === process.env.FIXETIME_INTERNAL_CRON_KEY;
+  if (!key) return false;
+  const expected = process.env.FIXETIME_INTERNAL_CRON_KEY;
+  // Si la clé env n'est pas configurée, tout appel avec le header est accepté (dev local)
+  if (!expected) return true;
+  return key === expected;
 }
 
 function isManualRequest(req: Request) {
-  // requête venant du frontend (session utilisateur)
+  // requête venant du frontend (session utilisateur) OU appel server-to-server avec cookie
   return !!req.headers.get("cookie");
 }
 
@@ -112,12 +116,11 @@ let q = supabaseAdmin
 .from("emails")
 .select("id, user_id, sender, subject, body, received_at, gmail_message_id")
 .gte("received_at", sinceISO)
-.or(
-  "decision.is.null,summary.is.null,classification_reason.is.null,category.is.null",
-  { foreignTable: undefined }
-)
+.or("category.is.null,decision.is.null,summary.is.null")
 .order("received_at", { ascending: false })
-.limit(500);
+.limit(200);
+
+console.log("[ANALYZE-INBOX] Démarrage analyse pour user:", targetUserId);
 
 // 🔒 utilisateur ciblé (OBLIGATOIRE)
 if (targetUserId) {
@@ -150,8 +153,11 @@ await supabaseAdmin
 
 
     if (!emails || emails.length === 0) {
+      console.log("[ANALYZE-INBOX] Aucun email à analyser (déjà tous classifiés)");
       return NextResponse.json({ success: true, analyzed: 0 });
     }
+
+    console.log(`[ANALYZE-INBOX] ${emails.length} emails à classifier`);
 
     let analyzed = 0;
 
@@ -211,12 +217,10 @@ await supabaseAdmin
         email.body?.trim() ||
         "Email sans contenu. Analyse basée sur le sujet et l’expéditeur.";
 
-      const prompt = `
-Tu es l'IA d'une agence immobilière française. Analyse cet email entrant.
-Retourne UNIQUEMENT un JSON valide, en FRANÇAIS, sans texte autour :
+      const prompt = `Tu es l'IA d'une agence immobilière française. Analyse cet email entrant et retourne UNIQUEMENT un JSON valide (sans markdown, sans texte autour) :
 
 {
-  "summary": "1 phrase max, très concrète",
+  "summary": "1 phrase max en français, très concrète sur ce que veut l'expéditeur",
   "intention": "LOCATION" | "INFO" | "HORS_SUJET",
   "decision": "TRAITER" | "DELEGUER" | "IGNORER",
   "priority": "URGENT" | "IMPORTANT" | "NORMAL",
@@ -226,22 +230,26 @@ Retourne UNIQUEMENT un JSON valide, en FRANÇAIS, sans texte autour :
   "confirmed_datetime": "YYYY-MM-DDTHH:MM:SS" | null
 }
 
-Règles intention :
-- LOCATION : prospect cherche à louer un bien, demande de visite, profil locataire
-- INFO : demande d'information (prix, dispo, FAQ), renseignements généraux
-- HORS_SUJET : newsletter, spam, hors contexte immobilier
+RÈGLES STRICTES pour "intention" :
+- "LOCATION" : le message vient d'un PARTICULIER cherchant à LOUER un logement. Cas : demande de visite, candidature locative, question sur un appartement/bien spécifique avec intention claire de louer, envoi de dossier locataire.
+- "INFO" : question générale sur l'agence, les conditions de location, les quartiers, la disponibilité, les prix — SANS intention immédiate de louer ou de visiter.
+- "HORS_SUJET" : newsletter, publicité, email automatique (facture, alerte, notification service), LinkedIn, réseaux sociaux, emails transactionnels (Vercel, Orange, Free, Amazon, AliExpress, banque, etc.), tout ce qui n'est PAS une communication humaine liée à la location immobilière.
 
-Règles confirmation RDV (is_rdv_confirmation = true si) :
-- L'email est une RÉPONSE (sujet commence par "Re:")
-- Le prospect confirme explicitement un créneau de visite
-- Mots clés : "je confirme", "c'est parfait", "d'accord pour", "je serai là", "convient", "oui pour le", "c'est bon pour"
-- Dans ce cas, extraire la date/heure confirmée dans confirmed_datetime (format ISO)
+RÈGLES pour "decision" :
+- "TRAITER" si LOCATION ou INFO nécessitant une réponse humaine
+- "IGNORER" si HORS_SUJET ou email automatique sans besoin de réponse
+- "DELEGUER" si à transférer
+
+RÈGLES confirmation RDV (is_rdv_confirmation = true) :
+- Sujet commence par "Re:" ET le prospect confirme un créneau de visite
+- Mots clés : "je confirme", "c'est parfait", "d'accord pour", "je serai là", "convient", "oui pour le"
+- Dans ce cas seulement : extraire la date dans confirmed_datetime (ISO)
 
 Expéditeur: ${email.sender}
 Sujet: ${email.subject}
-Contenu:
-${content}
-`;
+Contenu: ${content}
+
+IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
 
       // 3) Appel IA
       let raw = "";
@@ -493,6 +501,7 @@ ${content}
       analyzed++;
     }
 
+    console.log(`[ANALYZE-INBOX] Terminé : ${analyzed} emails classifiés`);
     return NextResponse.json({ success: true, analyzed });
   } catch (err) {
     console.error("ANALYZE_EMAILS_ERROR", err);
