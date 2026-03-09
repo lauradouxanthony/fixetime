@@ -21,6 +21,29 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
 
+/** Heuristique simple pour deviner la catégorie quand l'IA n'a pas répondu */
+function guessCategory(email: { subject?: string | null; sender?: string | null }): string {
+  const s = (email.subject || "").toLowerCase();
+  const sender = (email.sender || "").toLowerCase();
+  if (
+    s.includes("location") || s.includes("louer") || s.includes("appartement") ||
+    s.includes("visite") || s.includes("logement") || s.includes("studio") ||
+    s.includes("loyer") || s.includes("locataire") || s.includes("candidature") ||
+    s.includes("dossier") || s.includes("bien") || s.includes("chambre")
+  ) return "LOCATION";
+  if (
+    s.includes("info") || s.includes("question") || s.includes("renseignement") ||
+    s.includes("disponible") || s.includes("prix") || s.includes("tarif") ||
+    s.includes("contact")
+  ) return "INFO";
+  if (
+    sender.includes("newsletter") || sender.includes("no-reply") ||
+    sender.includes("noreply") || sender.includes("linkedin") ||
+    sender.includes("donotreply") || sender.includes("notification")
+  ) return "HORS_SUJET";
+  return "INFO"; // défaut neutre
+}
+
 function fallbackDecision(email: { subject?: string | null; sender?: string | null }) {
   const subject = (email.subject || "").toLowerCase();
   const sender = (email.sender || "").toLowerCase();
@@ -90,7 +113,7 @@ let q = supabaseAdmin
 .select("id, user_id, sender, subject, body, received_at, gmail_message_id")
 .gte("received_at", sinceISO)
 .or(
-  "decision.is.null,summary.is.null,classification_reason.is.null",
+  "decision.is.null,summary.is.null,classification_reason.is.null,category.is.null",
   { foreignTable: undefined }
 )
 .order("received_at", { ascending: false })
@@ -176,6 +199,7 @@ await supabaseAdmin
             estimated_time: forcedDecision === "ignorer" ? 0 : 5,
             recommended_action: forcedDecision === "ignorer" ? "archive" : "reply",
             classification_reason: "Règle utilisateur",
+            category: forcedDecision === "ignorer" ? "HORS_SUJET" : guessCategory(email),
           })
           .eq("id", email.id);
 
@@ -247,6 +271,7 @@ ${content}
             recommended_action: fb.decision === "ignorer" ? "archive" : "reply",
             is_urgent: fb.is_urgent,
             is_important: fb.is_important,
+            category: guessCategory(email),
             classification_reason: "Fallback : réponse IA non exploitable (JSON).",
           })
           .eq("id", email.id);
@@ -274,6 +299,7 @@ ${content}
             recommended_action: fb.decision === "ignorer" ? "archive" : "reply",
             is_urgent: fb.is_urgent,
             is_important: fb.is_important,
+            category: guessCategory(email),
             classification_reason: "Fallback : JSON IA non parsable.",
           })
           .eq("id", email.id);

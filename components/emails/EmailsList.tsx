@@ -71,13 +71,34 @@ function getIntentionFromCategory(category?: string | null) {
 }
 
 function computeScore(email: Email): number {
+  const cat = (email.category || "").toUpperCase();
+  // RDV confirmé = priorité max
+  if (email.classification_reason === "RDV_CONFIRMÉ") return 10;
+  // Urgent
   if (email.is_urgent) return 9;
-  if (email.is_important && email.decision === "traiter") return 7;
-  if (email.decision === "traiter") return 6;
-  if (email.is_important && email.decision === "planifier") return 5;
+  // Prospects locataires : valeur élevée même si non-urgent
+  if (cat === "LOCATION") {
+    if (email.is_important) return 8;
+    if (email.decision === "traiter") return 7;
+    if (email.decision === "planifier") return 6;
+    return 5; // même "ignorer" = prospect potentiel
+  }
+  // Demandes d'infos : valeur moyenne
+  if (cat === "INFO") {
+    if (email.is_important) return 6;
+    if (email.decision === "traiter") return 5;
+    if (email.decision === "planifier") return 4;
+    return 3;
+  }
+  // Hors sujet = bas score
+  if (cat === "HORS_SUJET") return 2;
+  // Non encore analysé
+  if (!email.decision && !email.category) return 4;
+  // Générique
+  if (email.is_important) return 6;
+  if (email.decision === "traiter") return 5;
   if (email.decision === "planifier") return 4;
-  if (email.decision === "ignorer") return 2;
-  return 5;
+  return 2;
 }
 
 function IntentionBadge({ intention }: { intention: string | null }) {

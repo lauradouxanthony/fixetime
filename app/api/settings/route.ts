@@ -82,13 +82,16 @@ export async function POST(req: Request) {
       updates.pipeline_mode = body.pipeline_mode;
     }
 
+    // upsert : crée la ligne si elle n'existe pas encore, sinon met à jour
     const { error } = await supabase
       .from("settings_v1")
-      .update(updates)
-      .eq("user_id", user.id);
+      .upsert(
+        { user_id: user.id, ...updates },
+        { onConflict: "user_id" }
+      );
 
     if (error) {
-      console.error("SETTINGS_UPDATE_ERROR", error);
+      console.error("SETTINGS_UPSERT_ERROR", error);
       return NextResponse.json(
         { error: "update_failed" },
         { status: 500 }

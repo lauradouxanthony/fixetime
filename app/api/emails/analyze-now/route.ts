@@ -15,7 +15,8 @@ if (!user) {
   return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
 }
 
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    // URL dynamique : utilise l'origin de la requête entrante pour éviter les erreurs de port
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || new URL(req.url).origin;
     const cookie = req.headers.get("cookie") ?? "";
 
     // =========================

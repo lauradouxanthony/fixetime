@@ -9,6 +9,7 @@ import {
   formatHM,
   type CalendarEvent,
 } from "@/components/calendar/calendarUtils";
+import { useToast } from "@/components/ui/Toast";
 
 type DayEvent = CalendarEvent & { start: Date; end: Date };
 
@@ -19,6 +20,27 @@ function minsLabel(n: number) {
   if (h <= 0) return `${m} min`;
   if (r === 0) return `${h}h`;
   return `${h}h${String(r).padStart(2, "0")}`;
+}
+
+function Card({ children, title, right }: { children: React.ReactNode; title?: string; right?: React.ReactNode }) {
+  return (
+    <div
+      className="rounded-xl border bg-white p-4 space-y-3"
+      style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}
+    >
+      {(title || right) && (
+        <div className="flex items-center justify-between gap-3">
+          {title && (
+            <div className="text-sm font-semibold" style={{ color: "rgb(30 41 59)" }}>
+              {title}
+            </div>
+          )}
+          {right}
+        </div>
+      )}
+      {children}
+    </div>
+  );
 }
 
 export function CalendarAIPanel({
@@ -35,12 +57,7 @@ export function CalendarAIPanel({
   onGenerateAI: () => void;
 }) {
   const [busy, setBusy] = useState(false);
-  const [toast, setToast] = useState<string | null>(null);
-
-  const notify = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 2500);
-  };
+  const { toast: showToast } = useToast();
 
   const conflicts = useMemo(() => detectConflicts(events), [events]);
   const slots = useMemo(() => freeSlots(events, date, 8, 18), [events, date]);
@@ -54,21 +71,15 @@ export function CalendarAIPanel({
   const createTask = async (title: string, dueAt: string | null) => {
     try {
       setBusy(true);
-
       const res = await fetch("/api/tasks/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ title, dueAt }),
       });
-
-      if (!res.ok) {
-        notify("Erreur lors de la création de la tâche.");
-        return;
-      }
-
-      notify("Tâche créée ✅");
+      if (!res.ok) { showToast("Erreur lors de la création de la tâche.", "error"); return; }
+      showToast("Tâche créée ✅", "success");
     } catch {
-      notify("Erreur lors de la création de la tâche.");
+      showToast("Erreur lors de la création de la tâche.", "error");
     } finally {
       setBusy(false);
     }
@@ -80,71 +91,90 @@ export function CalendarAIPanel({
     month: "long",
   });
 
+  // Load badge color in light theme
+  const loadBadgeStyle = (): { background: string; color: string } => {
+    const l = load.label?.toLowerCase() ?? "";
+    if (l.includes("chargée") || l.includes("saturée")) return { background: "rgba(220,38,38,0.08)", color: "rgb(220,38,38)" };
+    if (l.includes("moyenne")) return { background: "rgba(234,88,12,0.08)", color: "rgb(234,88,12)" };
+    return { background: "rgba(22,163,74,0.08)", color: "rgb(22,163,74)" };
+  };
+
   return (
     <div className="space-y-3">
-      {toast && (
-        <div className="p-3 rounded-xl bg-gray-900 border border-gray-800 text-sm text-gray-200">
-          {toast}
-        </div>
-      )}
 
-      {/* Carte charge */}
-      <div className="rounded-xl border border-gray-800 bg-gray-900 p-4 space-y-2">
-        <div className="flex items-center justify-between gap-3">
+      {/* Résumé exécutif */}
+      <Card>
+        <div className="flex items-start justify-between gap-3">
           <div>
-            <div className="text-xs text-gray-400">Résumé exécutif</div>
-            <div className="text-lg font-semibold text-white">Journée — {dateLabel}</div>
+            <div className="text-xs font-medium mb-0.5" style={{ color: "rgb(100 116 139)" }}>
+              Résumé exécutif
+            </div>
+            <div className="text-base font-semibold capitalize" style={{ color: "rgb(30 41 59)" }}>
+              {dateLabel}
+            </div>
           </div>
-
-          <div className={`text-xs px-3 py-1 rounded-full border ${load.cls}`}>
+          <span
+            className="text-xs px-2.5 py-1 rounded-full font-medium flex-shrink-0"
+            style={loadBadgeStyle()}
+          >
             {load.label}
-          </div>
+          </span>
         </div>
 
-        <div className="text-sm text-gray-300">
-          ⏱️ Temps en réunions (08:00–18:00) :{" "}
-          <span className="text-white font-semibold">{minsLabel(meetingMins)}</span>
+        <div className="flex items-center gap-2 text-sm" style={{ color: "rgb(71 85 105)" }}>
+          <span>⏱️</span>
+          <span>
+            Réunions 08h–18h :{" "}
+            <span className="font-semibold" style={{ color: "rgb(30 41 59)" }}>
+              {minsLabel(meetingMins)}
+            </span>
+          </span>
         </div>
 
-        <div className="text-xs text-gray-500">
-          Objectif : protéger du temps “deep work” et éviter les journées saturées.
+        <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+          Objectif : protéger du temps "deep work" et éviter les journées saturées.
         </div>
-      </div>
+      </Card>
 
-      {/* Conflits */}
-      <div className="rounded-xl border border-gray-800 bg-gray-900 p-4 space-y-2">
-        <div className="text-sm text-white font-semibold">Conflits détectés</div>
-
+      {/* Conflits détectés */}
+      <Card title="⚠️ Conflits détectés">
         {conflicts.length === 0 ? (
-          <div className="text-sm text-gray-400">✅ Aucun chevauchement.</div>
+          <div className="text-sm" style={{ color: "rgb(22,163,74)" }}>
+            ✅ Aucun chevauchement.
+          </div>
         ) : (
           <div className="space-y-2">
             {conflicts.slice(0, 5).map((c, idx) => (
               <div
                 key={idx}
-                className="text-sm text-red-300 border border-red-800/60 bg-red-900/20 rounded-lg p-2"
+                className="text-sm rounded-lg p-2.5"
+                style={{
+                  background: "rgba(220,38,38,0.05)",
+                  color: "rgb(185,28,28)",
+                  border: "1px solid rgba(220,38,38,0.15)",
+                }}
               >
                 ❗ {c.reason}
               </div>
             ))}
             {conflicts.length > 5 && (
-              <div className="text-xs text-gray-500">
+              <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
                 +{conflicts.length - 5} autres conflits…
               </div>
             )}
           </div>
         )}
-      </div>
+      </Card>
 
       {/* Créneaux libres */}
-      <div className="rounded-xl border border-gray-800 bg-gray-900 p-4 space-y-2">
-        <div className="flex items-center justify-between gap-3">
-          <div className="text-sm text-white font-semibold">Créneaux libres</div>
-          <div className="text-xs text-gray-400">08:00–18:00</div>
-        </div>
-
+      <Card
+        title="🟢 Créneaux libres"
+        right={<span className="text-xs" style={{ color: "rgb(148 163 184)" }}>08:00–18:00</span>}
+      >
         {slots.length === 0 ? (
-          <div className="text-sm text-gray-400">Aucun créneau libre exploitable.</div>
+          <div className="text-sm" style={{ color: "rgb(100 116 139)" }}>
+            Aucun créneau libre exploitable.
+          </div>
         ) : (
           <div className="space-y-2">
             {slots.slice(0, 6).map((s, idx) => {
@@ -152,9 +182,12 @@ export function CalendarAIPanel({
               return (
                 <div
                   key={idx}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-950 p-2"
+                  className="flex items-center justify-between gap-3 rounded-lg p-2.5"
+                  style={{ background: "rgb(248 250 252)", border: "1px solid rgb(226 232 240)" }}
                 >
-                  <div className="text-sm text-gray-200">{label}</div>
+                  <div className="text-sm" style={{ color: "rgb(51 65 85)" }}>
+                    {label}
+                  </div>
                   <button
                     disabled={busy}
                     onClick={() =>
@@ -163,84 +196,93 @@ export function CalendarAIPanel({
                         s.start.toISOString()
                       )
                     }
-                    className="px-3 py-1.5 rounded-md bg-gray-800 text-xs hover:bg-gray-700 disabled:opacity-50"
+                    className="px-2.5 py-1 rounded-md text-xs font-medium transition-all disabled:opacity-50"
+                    style={{ background: "rgb(238 242 255)", color: "rgb(79 70 229)" }}
                   >
-                    {busy ? "..." : "Créer une tâche"}
+                    {busy ? "…" : "+ Tâche"}
                   </button>
                 </div>
               );
             })}
             {slots.length > 6 && (
-              <div className="text-xs text-gray-500">
+              <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
                 +{slots.length - 6} autres créneaux…
               </div>
             )}
           </div>
         )}
-
-        <div className="text-xs text-gray-500">
-          Astuce : FixTime propose des tâches “deep work” pour protéger du temps de focus.
+        <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+          FixTime peut réserver ces créneaux pour du temps de focus.
         </div>
-      </div>
+      </Card>
 
-      {/* IA */}
-      <div className="rounded-xl border border-gray-800 bg-gray-900 p-4 space-y-3">
-        <div className="flex items-center justify-between gap-3">
-          <div>
-            <div className="text-xs text-gray-400">Assistant IA</div>
-            <div className="text-sm text-white font-semibold">Insights & recommandations</div>
-          </div>
-
+      {/* IA Insights */}
+      <Card
+        title="✨ Insights IA"
+        right={
           <button
             onClick={onGenerateAI}
             disabled={loadingAI}
-            className="px-3 py-2 rounded-md bg-blue-600 text-sm disabled:opacity-50"
+            className="px-3 py-1.5 rounded-lg text-xs font-medium text-white transition-all disabled:opacity-50"
+            style={{ background: "rgb(79 70 229)" }}
           >
             {loadingAI ? "Analyse…" : "Générer"}
           </button>
-        </div>
-
-        {/* Résumé */}
-        <div className="rounded-lg border border-gray-800 bg-gray-950 p-3">
-          <div className="text-xs text-gray-400 mb-1">Résumé IA</div>
-          <div className="text-sm text-gray-200 leading-relaxed">
+        }
+      >
+        {/* Résumé IA */}
+        <div
+          className="rounded-lg p-3"
+          style={{ background: "rgb(248 250 252)", border: "1px solid rgb(226 232 240)" }}
+        >
+          <div className="text-xs font-medium mb-1" style={{ color: "rgb(100 116 139)" }}>
+            Résumé
+          </div>
+          <div className="text-sm leading-relaxed" style={{ color: "rgb(51 65 85)" }}>
             {ai?.summary?.trim()
               ? ai.summary
-              : "Cliquez sur “Générer” pour obtenir un résumé exécutif et des recommandations."}
+              : "Cliquez sur « Générer » pour obtenir un résumé exécutif et des recommandations."}
           </div>
         </div>
 
-        {/* Recos actionnables */}
-        <div className="rounded-lg border border-gray-800 bg-gray-950 p-3 space-y-2">
-          <div className="text-xs text-gray-400">Recommandations</div>
+        {/* Recommandations */}
+        <div
+          className="rounded-lg p-3 space-y-2"
+          style={{ background: "rgb(248 250 252)", border: "1px solid rgb(226 232 240)" }}
+        >
+          <div className="text-xs font-medium" style={{ color: "rgb(100 116 139)" }}>
+            Recommandations
+          </div>
 
           {ai?.recommendations?.length ? (
             <div className="space-y-2">
               {ai.recommendations.slice(0, 6).map((r, idx) => (
                 <div
                   key={idx}
-                  className="flex items-center justify-between gap-3 rounded-lg border border-gray-800 bg-gray-900 p-2"
+                  className="flex items-center justify-between gap-3 rounded-lg p-2.5"
+                  style={{ background: "white", border: "1px solid rgb(226 232 240)" }}
                 >
-                  <div className="text-sm text-gray-200">{r}</div>
+                  <div className="text-sm" style={{ color: "rgb(51 65 85)" }}>
+                    {r}
+                  </div>
                   <button
                     disabled={busy}
-                    onClick={() =>
-                      createTask(`Action recommandée — ${dateLabel}`, null)
-                    }
-                    className="px-3 py-1.5 rounded-md bg-gray-800 text-xs hover:bg-gray-700 disabled:opacity-50"
+                    onClick={() => createTask(`Action recommandée — ${dateLabel}`, null)}
+                    className="px-2.5 py-1 rounded-md text-xs font-medium transition-all disabled:opacity-50 flex-shrink-0"
+                    style={{ background: "rgb(238 242 255)", color: "rgb(79 70 229)" }}
                   >
-                    {busy ? "..." : "Créer tâche"}
+                    {busy ? "…" : "+ Tâche"}
                   </button>
                 </div>
               ))}
             </div>
           ) : (
-            <div className="text-sm text-gray-500">
-              Aucune recommandation générée pour l’instant.
+            <div className="text-sm" style={{ color: "rgb(148 163 184)" }}>
+              Aucune recommandation générée pour l'instant.
             </div>
           )}
         </div>
-      </div>
+      </Card>
     </div>
   );
 }

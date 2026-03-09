@@ -11,6 +11,7 @@ import {
   LogOut,
   Users,
   MessageSquare,
+  Building2,
 } from "lucide-react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useRouter } from "next/navigation";
@@ -58,12 +59,12 @@ export function Sidebar() {
     <aside className="flex h-screen w-60 flex-col border-r bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
       {/* Logo / Brand */}
       <div className="flex items-center gap-3 px-5 py-5 border-b" style={{ borderColor: "rgb(226 232 240)" }}>
-        <div className="flex h-8 w-8 items-center justify-center rounded-lg text-white text-sm font-bold" style={{ background: "rgb(79 70 229)" }}>
-          FT
+        <div className="flex h-8 w-8 items-center justify-center flex-shrink-0" style={{ color: "rgb(79 70 229)" }}>
+          <Building2 className="h-6 w-6" />
         </div>
         <div className="flex flex-col">
-          <span className="font-semibold text-sm tracking-tight" style={{ color: "rgb(30 41 59)" }}>FixTime</span>
-          <span className="text-xs" style={{ color: "rgb(100 116 139)" }}>Agence IA</span>
+          <span className="font-bold text-sm tracking-tight" style={{ color: "rgb(30 41 59)" }}>FixTime</span>
+          <span className="text-xs font-medium" style={{ color: "rgb(79 70 229)" }}>Assistant IA</span>
         </div>
       </div>
 

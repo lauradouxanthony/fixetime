@@ -133,15 +133,45 @@ function SolvabiliteWidget({ body }: { body: string | null | undefined }) {
       </div>
 
       {ratio !== null && (
-        <div
-          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium"
-          style={{
-            background: solvable ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.08)",
-            color: solvable ? "rgb(22,163,74)" : "rgb(220,38,38)",
-          }}
-        >
-          <span>{solvable ? "✅" : "❌"}</span>
-          <span>Ratio {ratio.toFixed(1)}x — {solvable ? "Dossier solvable" : "Solvabilité insuffisante (< 3x)"}</span>
+        <div className="space-y-2">
+          {/* Barre de ratio visuelle */}
+          <div>
+            <div className="flex justify-between text-xs mb-1" style={{ color: "rgb(100 116 139)" }}>
+              <span>Ratio revenus / loyer</span>
+              <span style={{ color: solvable ? "rgb(22,163,74)" : "rgb(220,38,38)", fontWeight: 600 }}>
+                {ratio.toFixed(1)}x
+              </span>
+            </div>
+            <div className="relative h-2 rounded-full overflow-hidden" style={{ background: "rgb(226 232 240)" }}>
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{
+                  width: `${Math.min((ratio / 5) * 100, 100)}%`,
+                  background: solvable ? "rgb(22,163,74)" : "rgb(220,38,38)",
+                }}
+              />
+              {/* Marqueur seuil 3x = 60% */}
+              <div
+                className="absolute top-0 h-full w-0.5"
+                style={{ left: "60%", background: "rgb(79 70 229)", opacity: 0.6 }}
+              />
+            </div>
+            <div className="flex justify-between text-xs mt-1" style={{ color: "rgb(148 163 184)" }}>
+              <span>0x</span>
+              <span style={{ color: "rgb(79 70 229)" }}>Seuil 3x</span>
+              <span>5x+</span>
+            </div>
+          </div>
+          <div
+            className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium"
+            style={{
+              background: solvable ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.08)",
+              color: solvable ? "rgb(22,163,74)" : "rgb(220,38,38)",
+            }}
+          >
+            <span>{solvable ? "✅" : "❌"}</span>
+            <span>Ratio {ratio.toFixed(1)}x — {solvable ? "Dossier solvable" : "Solvabilité insuffisante (< 3x)"}</span>
+          </div>
         </div>
       )}
     </Section>
@@ -213,6 +243,52 @@ function DossierWidget({ body }: { body: string | null | undefined }) {
           );
         })}
       </div>
+    </Section>
+  );
+}
+
+function DocumentsTemplateWidget() {
+  const { toast: showToast } = useToast();
+
+  const docsRequired = [
+    "3 dernières fiches de paie",
+    "Contrat de travail (CDI / CDD / indépendant)",
+    "Dernier avis d'imposition",
+    "Pièce d'identité en cours de validité",
+    "2 derniers relevés bancaires",
+  ];
+  const guarantorDocs = [
+    "Pièce d'identité du garant",
+    "3 dernières fiches de paie du garant",
+    "Dernier avis d'imposition du garant",
+  ];
+
+  const template = `Bonjour,\n\nMerci pour votre candidature à la location. Afin de constituer votre dossier, merci de nous faire parvenir les documents suivants :\n\n📄 Dossier candidat :\n${docsRequired.map((d) => `• ${d}`).join("\n")}\n\n👥 Dossier garant (si applicable) :\n${guarantorDocs.map((d) => `• ${d}`).join("\n")}\n\nMerci de nous transmettre ces documents dès que possible afin de traiter votre candidature dans les meilleurs délais.\n\nCordialement,\nL'équipe de l'agence`;
+
+  return (
+    <Section title="📄 Documents requis — Template">
+      <div
+        className="text-sm whitespace-pre-line rounded-lg p-3 mb-3"
+        style={{
+          background: "rgb(248 250 252)",
+          color: "rgb(51 65 85)",
+          border: "1px solid rgb(226 232 240)",
+          maxHeight: "180px",
+          overflowY: "auto",
+        }}
+      >
+        {template}
+      </div>
+      <button
+        onClick={() => {
+          navigator.clipboard.writeText(template);
+          showToast("Template copié ✅", "success");
+        }}
+        className="text-xs px-3 py-1.5 rounded-lg transition-colors"
+        style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
+      >
+        📋 Copier ce template
+      </button>
     </Section>
   );
 }
@@ -339,6 +415,9 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
   const [replyLoading, setReplyLoading] = useState(false);
   const [busy, setBusy] = useState<null | "archive" | "task">(null);
   const [showFullBody, setShowFullBody] = useState(false);
+  const [emailSent, setEmailSent] = useState(false);
+  const [sending, setSending] = useState(false);
+  const [reclassifyOpen, setReclassifyOpen] = useState(false);
 
   const intention = getIntention(email);
   const decision = email?.decision ?? fallbackDecision(email);
@@ -353,6 +432,9 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
     setAiReply((email as any)?.ai_reply ?? null);
     setReplyOpen(false);
     setShowFullBody(false);
+    setEmailSent(false);
+    setSending(false);
+    setReclassifyOpen(false);
   }, [email?.id]);
 
   // Fetch body à la demande
@@ -394,6 +476,32 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
     setBusy(null);
     if (!res.ok) { notify("Erreur archivage", "error"); return; }
     notify("Email archivé ✅", "success");
+  };
+
+  const sendNow = async () => {
+    if (!email || !aiReply || sending) return;
+    setSending(true);
+    try {
+      const res = await fetch("/api/gmail/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailId: email.id, reply: aiReply }),
+      });
+      if (!res.ok) throw new Error("Envoi échoué");
+      setEmailSent(true);
+      notify("Email envoyé ✅", "success");
+    } catch {
+      notify("Erreur lors de l'envoi", "error");
+    } finally {
+      setSending(false);
+    }
+  };
+
+  const reclassify = async (newCategory: string) => {
+    if (!email) return;
+    await supabase.from("emails").update({ category: newCategory }).eq("id", email.id);
+    notify(`Reclassifié → ${newCategory} ✅`, "success");
+    setReclassifyOpen(false);
   };
 
   const handleBookingApprove = async (slot: { start: Date; end: Date }) => {
@@ -476,6 +584,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
         <>
           <SolvabiliteWidget body={body || email.body} />
           <DossierWidget body={body || email.body} />
+          <DocumentsTemplateWidget />
           <BookingWidget email={email} mode={mode} onApprove={handleBookingApprove} />
         </>
       )}
@@ -496,51 +605,111 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
         </Section>
       )}
 
-      {/* ── Réponse IA générée ── */}
-      <Section title="Réponse générée par l'IA">
-        <button
-          onClick={() => { if (!aiReply) { generateReply(); } else { setReplyOpen((v) => !v); } }}
-          className="flex items-center justify-between w-full text-left"
-        >
-          <span className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
-            Brouillon de réponse
-          </span>
-          <span className="text-xs px-2 py-1 rounded-md" style={{ background: "rgb(248 250 252)", color: "rgb(100 116 139)" }}>
-            {replyLoading ? "Génération…" : replyOpen ? "Masquer" : aiReply ? "Afficher" : "Générer"}
-          </span>
-        </button>
-
-        {replyOpen && aiReply && (
-          <div className="mt-3 space-y-2">
-            <div
-              className="text-sm whitespace-pre-line rounded-lg p-3"
-              style={{ background: "rgb(248 250 252)", color: "rgb(51 65 85)", border: "1px solid rgb(226 232 240)" }}
+      {/* ── Réponse IA générée / Email ignoré ── */}
+      {intention === "HORS_SUJET" ? (
+        <Section title="Email ignoré par l'IA">
+          <p className="text-sm mb-3" style={{ color: "rgb(71 85 105)" }}>
+            🚫 Cet email a été identifié comme hors sujet — aucun brouillon n'a été généré automatiquement.
+          </p>
+          {!reclassifyOpen ? (
+            <button
+              onClick={() => setReclassifyOpen(true)}
+              className="text-xs px-3 py-1.5 rounded-lg transition-colors"
+              style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
             >
-              {aiReply}
-            </div>
-            <div className="flex gap-2">
+              🔄 Reclassifier cet email
+            </button>
+          ) : (
+            <div className="flex flex-wrap gap-2">
               <button
-                onClick={() => { navigator.clipboard.writeText(aiReply); notify("Copié dans le presse-papiers", "success"); }}
-                className="text-xs px-3 py-1.5 rounded-lg transition-colors"
-                style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
+                onClick={() => reclassify("LOCATION")}
+                className="text-xs px-3 py-1.5 rounded-lg font-medium"
+                style={{ background: "rgba(59,130,246,0.1)", color: "rgb(37,99,235)" }}
               >
-                Copier
+                🏠 LOCATION
               </button>
-              {gmailUrl && (
-                <a
-                  href={`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(email.sender ?? "")}&su=${encodeURIComponent("Re: " + (email.subject ?? ""))}&body=${encodeURIComponent(aiReply)}`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-xs px-3 py-1.5 rounded-lg font-medium text-white transition-colors"
-                  style={{ background: "rgb(79 70 229)" }}
+              <button
+                onClick={() => reclassify("INFO")}
+                className="text-xs px-3 py-1.5 rounded-lg font-medium"
+                style={{ background: "rgba(100,116,139,0.1)", color: "rgb(71,85,105)" }}
+              >
+                ℹ️ INFO
+              </button>
+              <button
+                onClick={() => setReclassifyOpen(false)}
+                className="text-xs px-3 py-1.5 rounded-lg"
+                style={{ color: "rgb(148 163 184)" }}
+              >
+                Annuler
+              </button>
+            </div>
+          )}
+        </Section>
+      ) : (
+        <Section title="Réponse générée par l'IA">
+          <button
+            onClick={() => { if (!aiReply) { generateReply(); } else { setReplyOpen((v) => !v); } }}
+            className="flex items-center justify-between w-full text-left"
+          >
+            <span className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+              Brouillon de réponse
+            </span>
+            <span className="text-xs px-2 py-1 rounded-md" style={{ background: "rgb(248 250 252)", color: "rgb(100 116 139)" }}>
+              {replyLoading ? "Génération…" : replyOpen ? "Masquer" : aiReply ? "Afficher" : "Générer"}
+            </span>
+          </button>
+
+          {replyOpen && aiReply && (
+            <div className="mt-3 space-y-2">
+              {emailSent ? (
+                <div
+                  className="text-sm font-medium px-3 py-2 rounded-lg"
+                  style={{ background: "rgba(22,163,74,0.08)", color: "rgb(22,163,74)" }}
                 >
-                  ✉️ Ouvrir dans Gmail
-                </a>
+                  ✅ Email envoyé avec succès
+                </div>
+              ) : (
+                <>
+                  <div
+                    className="text-sm whitespace-pre-line rounded-lg p-3"
+                    style={{ background: "rgb(248 250 252)", color: "rgb(51 65 85)", border: "1px solid rgb(226 232 240)" }}
+                  >
+                    {aiReply}
+                  </div>
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      onClick={() => { navigator.clipboard.writeText(aiReply); notify("Copié dans le presse-papiers", "success"); }}
+                      className="text-xs px-3 py-1.5 rounded-lg transition-colors"
+                      style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
+                    >
+                      📋 Copier
+                    </button>
+                    <button
+                      onClick={sendNow}
+                      disabled={sending}
+                      className="text-xs px-3 py-1.5 rounded-lg font-medium text-white transition-opacity disabled:opacity-50"
+                      style={{ background: "rgb(79 70 229)" }}
+                    >
+                      {sending ? "Envoi…" : "✉️ Envoyer maintenant"}
+                    </button>
+                    {gmailUrl && (
+                      <a
+                        href={`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(email.sender ?? "")}&su=${encodeURIComponent("Re: " + (email.subject ?? ""))}&body=${encodeURIComponent(aiReply)}`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-xs px-3 py-1.5 rounded-lg transition-colors"
+                        style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
+                      >
+                        🔗 Ouvrir dans Gmail
+                      </a>
+                    )}
+                  </div>
+                </>
               )}
             </div>
-          </div>
-        )}
-      </Section>
+          )}
+        </Section>
+      )}
 
       {/* ── Corps de l'email ── */}
       {(body || email.body) && (
