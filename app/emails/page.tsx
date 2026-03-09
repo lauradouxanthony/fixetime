@@ -1,21 +1,17 @@
 "use client";
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useRef, useState, useMemo, useCallback } from "react";
 import { supabase } from "@/lib/supabaseClient";
-
-import { EmailsHeader } from "@/components/emails/EmailsHeader";
 import { EmailsList } from "@/components/emails/EmailsList";
 import { EmailDetailPanel } from "@/components/emails/EmailDetailPanel";
-import { TodayTasks } from "@/components/tasks/TodayTasks";
-import { ExecutiveSummary } from "@/components/emails/ExecutiveSummary";
-import { NextBestAction } from "@/components/emails/NextBestAction";
 import type { Email } from "@/types/email";
+import AppShell from "@/components/layout/AppShell";
 
 type Period = "today" | "7d" | "30d";
+type PipelineMode = "DRAFT" | "AUTOPILOTE";
+type IntentionFilter = "all" | "LOCATION" | "INFO" | "HORS_SUJET";
 
-function normalizeDecision(
-  decision?: string | null
-): "traiter" | "planifier" | "ignorer" | null {
+function normalizeDecision(decision?: string | null): "traiter" | "planifier" | "ignorer" | null {
   if (!decision) return null;
   const d = decision.toLowerCase();
   if (d === "traiter") return "traiter";
@@ -24,312 +20,368 @@ function normalizeDecision(
   return null;
 }
 
-export default function EmailsPage() {
+function timeAgo(date: Date): string {
+  const seconds = Math.floor((Date.now() - date.getTime()) / 1000);
+  if (seconds < 60) return `il y a ${seconds}s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `il y a ${minutes}min`;
+  return `il y a ${Math.floor(minutes / 60)}h`;
+}
+
+export default function PipelinePage() {
   const [emails, setEmails] = useState<Email[]>([]);
   const [selectedEmail, setSelectedEmail] = useState<Email | null>(null);
   const [loading, setLoading] = useState(true);
-  const [filter, setFilter] = useState<
-    "all" | "urgent" | "important" | "traiter" | "planifier"
-  >("all");
-  const [period, setPeriod] = useState<Period>("7d");
   const [refreshing, setRefreshing] = useState(false);
+  const [intentionFilter, setIntentionFilter] = useState<IntentionFilter>("all");
+  const [period, setPeriod] = useState<Period>("7d");
+  const [mode, setMode] = useState<PipelineMode>("DRAFT");
   const [lastSync, setLastSync] = useState<Date | null>(null);
-  const [lastSyncText, setLastSyncText] = useState<string>("");
+  const [now, setNow] = useState(new Date());
 
-  const [stats, setStats] = useState<{ emailsAnalyzed: number; timeSaved: number }>({
-    emailsAnalyzed: 0,
-    timeSaved: 0,
-  });
+  // Tick toutes les 10s pour mettre à jour "il y a Xs"
+  useEffect(() => {
+    const t = setInterval(() => setNow(new Date()), 10_000);
+    return () => clearInterval(t);
+  }, []);
 
-  // Refs for stable access inside interval/realtime callbacks
-  const filterRef = useRef(filter);
-  const periodRef = useRef(period);
-  useEffect(() => { filterRef.current = filter; }, [filter]);
-  useEffect(() => { periodRef.current = period; }, [period]);
+  // Charger le mode depuis les settings
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => r.json())
+      .then((data) => {
+        if (data?.pipeline_mode === "AUTOPILOTE") setMode("AUTOPILOTE");
+      })
+      .catch(() => {});
+  }, []);
 
-  // ─── Core fetch ──────────────────────────────────────────────────────────────
-  const fetchEmails = async (silent = false) => {
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
-
-    if (!user) {
-      window.location.href = "/auth/login";
-      return;
-    }
-
-    if (!silent) setLoading(true);
+  // Fetch emails (avec reset loading + selectedEmail = pour changements de filtre)
+  const fetchEmails = useCallback(async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { window.location.href = "/auth/login"; return; }
 
     const now = new Date();
     let fromDate: Date | null = null;
-    const currentPeriod = silent ? periodRef.current : period;
-    const currentFilter = silent ? filterRef.current : filter;
-
-    if (currentPeriod === "today") {
-      fromDate = new Date();
-      fromDate.setHours(0, 0, 0, 0);
-    } else if (currentPeriod === "7d") {
-      fromDate = new Date();
-      fromDate.setDate(now.getDate() - 7);
-    } else if (currentPeriod === "30d") {
-      fromDate = new Date();
-      fromDate.setDate(now.getDate() - 30);
-    }
+    if (period === "today") { fromDate = new Date(); fromDate.setHours(0, 0, 0, 0); }
+    if (period === "7d") { fromDate = new Date(); fromDate.setDate(now.getDate() - 7); }
+    if (period === "30d") { fromDate = new Date(); fromDate.setDate(now.getDate() - 30); }
 
     let query = supabase
       .from("emails")
-      .select(
-        "id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply"
-      )
+      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply")
       .eq("user_id", user.id)
+      .eq("is_archived", false)
       .order("received_at", { ascending: false });
 
-    if (fromDate) {
-      query = query.gte("received_at", fromDate.toISOString());
-    }
-
-    if (currentFilter === "urgent") {
-      query = query.eq("decision", "traiter").eq("is_urgent", true);
-    } else if (currentFilter === "important") {
-      query = query.in("decision", ["traiter", "planifier"]).eq("is_important", true);
-    } else if (currentFilter === "traiter") {
-      query = query.eq("decision", "traiter");
-    } else if (currentFilter === "planifier") {
-      query = query.eq("decision", "planifier");
-    }
+    if (fromDate) query = query.gte("received_at", fromDate.toISOString());
+    if (intentionFilter !== "all") query = query.eq("category", intentionFilter);
 
     const { data, error } = await query;
+    if (error) { console.error("FETCH_EMAILS_ERROR", error); setLoading(false); return; }
 
-    if (error) {
-      console.error("FETCH EMAILS ERROR", error);
-    }
+    const normalized: Email[] = (data || []).map((e) => ({
+      ...e,
+      decision: normalizeDecision(e.decision),
+    }));
 
-    if (data) {
-      const normalized: Email[] = data.map((email) => ({
-        ...email,
-        decision: normalizeDecision(email.decision),
-      }));
+    setEmails(normalized);
+    setLoading(false);
+  }, [period, intentionFilter]);
 
-      setEmails(normalized);
-      if (!silent) setSelectedEmail(null);
+  // Fetch silencieux (sans reset selectedEmail ni loading) — pour polling
+  const fetchEmailsSilent = useCallback(async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return;
 
-      const analyzed = data.filter(
-        (e) => e.decision || e.recommended_action || e.estimated_time
-      );
-      const totalTime = analyzed.reduce((sum, e) => sum + (e.estimated_time ?? 0), 0);
+    const now = new Date();
+    let fromDate: Date | null = null;
+    if (period === "today") { fromDate = new Date(); fromDate.setHours(0, 0, 0, 0); }
+    if (period === "7d") { fromDate = new Date(); fromDate.setDate(now.getDate() - 7); }
+    if (period === "30d") { fromDate = new Date(); fromDate.setDate(now.getDate() - 30); }
 
-      setStats({
-        emailsAnalyzed: analyzed.length,
-        timeSaved: totalTime,
-      });
-    }
+    let query = supabase
+      .from("emails")
+      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply")
+      .eq("user_id", user.id)
+      .eq("is_archived", false)
+      .order("received_at", { ascending: false });
 
-    if (!silent) setLoading(false);
-  };
+    if (fromDate) query = query.gte("received_at", fromDate.toISOString());
+    if (intentionFilter !== "all") query = query.eq("category", intentionFilter);
 
-  // ─── Initial load + filter/period change ─────────────────────────────────────
+    const { data } = await query;
+    if (!data) return;
+
+    const normalized: Email[] = data.map((e) => ({
+      ...e,
+      decision: normalizeDecision(e.decision),
+    }));
+
+    setEmails(normalized);
+
+    // Mettre à jour l'email sélectionné si nouveau résultat disponible
+    setSelectedEmail((prev) => {
+      if (!prev) return prev;
+      const updated = normalized.find((e) => e.id === prev.id);
+      return updated ?? prev;
+    });
+  }, [period, intentionFilter]);
+
+  // Chargement initial + changement filtre/période
   useEffect(() => {
     setLoading(true);
-    fetchEmails(false).finally(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filter, period]);
+    setSelectedEmail(null);
+    fetchEmails();
+  }, [fetchEmails]);
 
-  // ─── Auto-sync toutes les 60s ─────────────────────────────────────────────────
+  // Polling toutes les 60s
   useEffect(() => {
-    const runAutoSync = async () => {
+    const interval = setInterval(async () => {
       try {
+        // 1) Déclenche l'analyse (fire & forget)
         await fetch("/api/emails/analyze-now", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ trigger: "auto" }),
         });
-        setLastSync(new Date());
-        // Laisser ~3s au backend pour écrire les résultats, puis re-fetch silencieux
-        setTimeout(() => fetchEmails(true), 3000);
+
+        // 2) Refresh silencieux après 3s (laisse le temps à l'analyse de démarrer)
+        setTimeout(async () => {
+          await fetchEmailsSilent();
+          setLastSync(new Date());
+        }, 3000);
       } catch (e) {
-        console.error("AUTO_SYNC_ERROR", e);
+        console.error("POLLING_ERROR", e);
       }
-    };
+    }, 60_000);
 
-    const interval = setInterval(runAutoSync, 60_000);
     return () => clearInterval(interval);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [fetchEmailsSilent]);
 
-  // ─── "Dernière sync : il y a Xs" ──────────────────────────────────────────────
-  useEffect(() => {
-    if (!lastSync) return;
-
-    const tick = () => {
-      const secs = Math.floor((Date.now() - lastSync.getTime()) / 1000);
-      if (secs < 60) {
-        setLastSyncText(`il y a ${secs}s`);
-      } else {
-        setLastSyncText(`il y a ${Math.floor(secs / 60)}min`);
-      }
-    };
-
-    tick();
-    const t = setInterval(tick, 5_000);
-    return () => clearInterval(t);
-  }, [lastSync]);
-
-  // ─── Realtime Supabase ────────────────────────────────────────────────────────
-  useEffect(() => {
-    let channel: ReturnType<typeof supabase.channel> | null = null;
-
-    const setup = async () => {
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-      if (!user) return;
-
-      channel = supabase
-        .channel(`emails-realtime-${user.id}`)
-        .on(
-          "postgres_changes" as any,
-          {
-            event: "UPDATE",
-            schema: "public",
-            table: "emails",
-            filter: `user_id=eq.${user.id}`,
-          },
-          (payload: any) => {
-            const updated = payload.new;
-            setEmails((prev) =>
-              prev.map((e) =>
-                e.id === updated.id
-                  ? {
-                      ...e,
-                      ...updated,
-                      decision: normalizeDecision(updated.decision),
-                    }
-                  : e
-              )
-            );
-          }
-        )
-        .on(
-          "postgres_changes" as any,
-          {
-            event: "INSERT",
-            schema: "public",
-            table: "emails",
-            filter: `user_id=eq.${user.id}`,
-          },
-          () => {
-            // Nouvel email inséré → re-fetch silencieux pour respecter les filtres actifs
-            fetchEmails(true);
-          }
-        )
-        .subscribe();
-    };
-
-    setup();
-
-    return () => {
-      if (channel) supabase.removeChannel(channel);
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
-
-  // ─── Refresh manuel (bouton) ──────────────────────────────────────────────────
+  // Refresh manuel
   const handleRefresh = async () => {
+    if (refreshing) return;
+    setRefreshing(true);
     try {
-      setRefreshing(true);
-
       await fetch("/api/emails/analyze-now", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ trigger: "manual" }),
       });
-
-      setLastSync(new Date());
-      setTimeout(() => fetchEmails(true), 3000);
+      setTimeout(async () => {
+        await fetchEmailsSilent();
+        setLastSync(new Date());
+        setRefreshing(false);
+      }, 3000);
     } catch (e) {
-      console.error("❌ REFRESH ERROR", e);
-    } finally {
+      console.error("REFRESH_ERROR", e);
       setRefreshing(false);
     }
   };
 
-  // ─── Computed ─────────────────────────────────────────────────────────────────
-  const actionableCount = useMemo(() => {
-    return emails.filter((e) => {
-      const d = normalizeDecision(e.decision);
-      return d === "traiter" || d === "planifier";
-    }).length;
+  // Toggle mode DRAFT / AUTOPILOTE
+  const toggleMode = async () => {
+    const newMode: PipelineMode = mode === "DRAFT" ? "AUTOPILOTE" : "DRAFT";
+    setMode(newMode);
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pipeline_mode: newMode }),
+    }).catch(() => {});
+  };
+
+  const stats = useMemo(() => {
+    const location = emails.filter((e) => e.category === "LOCATION").length;
+    const info = emails.filter((e) => e.category === "INFO").length;
+    const horssujet = emails.filter((e) => e.category === "HORS_SUJET").length;
+    return { location, info, horssujet, total: emails.length };
   }, [emails]);
 
-  // ─── Render ───────────────────────────────────────────────────────────────────
   return (
-    <div className="h-full flex flex-col p-6 gap-4">
-      <div className="text-sm text-gray-400">
-        FixTime vous montre{" "}
-        <span className="text-white font-medium">quels emails traiter, planifier ou ignorer</span>{" "}
-        — sans tous les ouvrir.
-      </div>
+    <AppShell>
+      <div className="flex flex-col h-full" style={{ background: "rgb(250 250 250)" }}>
 
-      <div className="sticky top-0 z-20 bg-gradient-to-b from-black/95 to-black/80 backdrop-blur border-b border-gray-800 pb-4">
-        <NextBestAction emails={emails} />
-      </div>
+        {/* ── HEADER ── */}
+        <div className="px-6 py-4 border-b bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
+          <div className="flex items-center justify-between gap-4">
 
-      <EmailsHeader
-        activeFilter={filter}
-        onChangeFilter={setFilter}
-        onRefresh={handleRefresh}
-        refreshing={refreshing}
-        period={period}
-        onChangePeriod={setPeriod}
-      />
+            {/* Titre + sync */}
+            <div>
+              <h1 className="text-lg font-semibold" style={{ color: "rgb(30 41 59)" }}>
+                Pipeline emails
+              </h1>
+              {lastSync && (
+                <p className="text-xs mt-0.5" style={{ color: "rgb(148 163 184)" }}>
+                  Dernière sync : {timeAgo(lastSync)}
+                </p>
+              )}
+            </div>
 
-      <div className="flex flex-1 border border-gray-800 rounded-xl overflow-hidden">
-        <div className="w-1/3 border-r border-gray-800 overflow-y-auto">
-          <EmailsList
-            emails={emails}
-            selectedEmailId={selectedEmail?.id || null}
-            onSelect={(email) => setSelectedEmail(email as Email)}
-            loading={loading}
-          />
+            {/* Switch DRAFT / AUTOPILOTE + refresh */}
+            <div className="flex items-center gap-4">
+              {/* Switch */}
+              <div className="flex items-center gap-2">
+                <span
+                  className="text-xs font-medium"
+                  style={{ color: mode === "DRAFT" ? "rgb(79 70 229)" : "rgb(148 163 184)" }}
+                >
+                  DRAFT
+                </span>
+                <button
+                  onClick={toggleMode}
+                  className="relative w-11 h-6 rounded-full transition-colors duration-200 focus:outline-none"
+                  style={{ background: mode === "AUTOPILOTE" ? "rgb(79 70 229)" : "rgb(226 232 240)" }}
+                  title={mode === "DRAFT" ? "Passer en AUTOPILOTE" : "Passer en DRAFT"}
+                >
+                  <span
+                    className="absolute top-1 w-4 h-4 bg-white rounded-full shadow transition-all duration-200"
+                    style={{ left: mode === "AUTOPILOTE" ? "1.375rem" : "0.25rem" }}
+                  />
+                </button>
+                <span
+                  className="text-xs font-medium"
+                  style={{ color: mode === "AUTOPILOTE" ? "rgb(79 70 229)" : "rgb(148 163 184)" }}
+                >
+                  AUTOPILOTE
+                </span>
+              </div>
+
+              {/* Refresh */}
+              <button
+                onClick={handleRefresh}
+                disabled={refreshing}
+                className="p-1.5 rounded-lg transition-colors"
+                style={{ color: "rgb(100 116 139)" }}
+                title="Rafraîchir"
+                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgb(248 250 252)"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+              >
+                <span className={refreshing ? "animate-spin inline-block" : ""}>🔄</span>
+              </button>
+            </div>
+          </div>
+
+          {/* Mode description */}
+          <div className="mt-2 text-xs" style={{ color: "rgb(100 116 139)" }}>
+            {mode === "DRAFT"
+              ? "Mode DRAFT — l'IA génère des brouillons, vous approuvez avant envoi."
+              : "Mode AUTOPILOTE — l'IA gère la conversation jusqu'au RDV confirmé."}
+          </div>
         </div>
 
-        <div className="flex-1 p-6 overflow-y-auto">
-          <EmailDetailPanel email={selectedEmail} />
+        {/* ── FILTRES ── */}
+        <div
+          className="px-6 py-3 flex items-center justify-between gap-4 border-b bg-white"
+          style={{ borderColor: "rgb(226 232 240)" }}
+        >
+          {/* Filtres intention */}
+          <div className="flex items-center gap-1.5">
+            {(["all", "LOCATION", "INFO", "HORS_SUJET"] as const).map((f) => {
+              const labels = { all: "Tous", LOCATION: "Location", INFO: "Info", HORS_SUJET: "Hors sujet" };
+              const counts = {
+                all: stats.total,
+                LOCATION: stats.location,
+                INFO: stats.info,
+                HORS_SUJET: stats.horssujet,
+              };
+              const isActive = intentionFilter === f;
+              return (
+                <button
+                  key={f}
+                  onClick={() => setIntentionFilter(f)}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-all"
+                  style={isActive ? {
+                    background: "rgb(238 242 255)",
+                    color: "rgb(79 70 229)",
+                  } : {
+                    color: "rgb(100 116 139)",
+                  }}
+                  onMouseEnter={(e) => {
+                    if (!isActive) (e.currentTarget as HTMLElement).style.background = "rgb(248 250 252)";
+                  }}
+                  onMouseLeave={(e) => {
+                    if (!isActive) (e.currentTarget as HTMLElement).style.background = "transparent";
+                  }}
+                >
+                  {labels[f]}
+                  <span className="ml-1.5 opacity-60">{counts[f]}</span>
+                </button>
+              );
+            })}
+          </div>
+
+          {/* Période */}
+          <div className="flex items-center gap-1">
+            {(["today", "7d", "30d"] as const).map((p) => {
+              const labels = { today: "Auj.", "7d": "7j", "30d": "30j" };
+              const isActive = period === p;
+              return (
+                <button
+                  key={p}
+                  onClick={() => setPeriod(p)}
+                  className="px-2.5 py-1 rounded-md text-xs transition-all"
+                  style={isActive ? {
+                    background: "rgb(79 70 229)",
+                    color: "white",
+                    fontWeight: 500,
+                  } : {
+                    color: "rgb(100 116 139)",
+                  }}
+                >
+                  {labels[p]}
+                </button>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* ── CORPS ── */}
+        <div className="flex flex-1 overflow-hidden">
+          {/* Liste emails */}
+          <div
+            className="w-80 border-r overflow-y-auto flex-shrink-0"
+            style={{ borderColor: "rgb(226 232 240)", background: "white" }}
+          >
+            <EmailsList
+              emails={emails}
+              selectedEmailId={selectedEmail?.id || null}
+              onSelect={(email) => setSelectedEmail(email as Email)}
+              loading={loading}
+            />
+          </div>
+
+          {/* Détail email */}
+          <div className="flex-1 overflow-y-auto">
+            <EmailDetailPanel email={selectedEmail} mode={mode} />
+          </div>
+        </div>
+
+        {/* ── PIED DE PAGE : stats discrets ── */}
+        <div
+          className="px-6 py-2 border-t flex items-center gap-4"
+          style={{ borderColor: "rgb(226 232 240)", background: "white" }}
+        >
+          <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+            {stats.total} emails
+          </span>
+          <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>·</span>
+          <span className="text-xs" style={{ color: "rgb(37 99 235)" }}>
+            {stats.location} location
+          </span>
+          <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>·</span>
+          <span className="text-xs" style={{ color: "rgb(100 116 139)" }}>
+            {stats.info} info
+          </span>
+          {lastSync && (
+            <>
+              <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>·</span>
+              <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+                Sync auto toutes les 60s
+              </span>
+            </>
+          )}
         </div>
       </div>
-
-      <div className="flex flex-wrap gap-3">
-        <div className="px-4 py-2 rounded-xl bg-gray-900 border border-gray-800 text-sm">
-          ✅ <span className="font-semibold">{stats.emailsAnalyzed}</span> emails analysés
-        </div>
-
-        <div className="px-4 py-2 rounded-xl bg-gray-900 border border-gray-800 text-sm">
-          ⏱️ <span className="font-semibold">{stats.timeSaved}</span> min estimées
-        </div>
-
-        <div className="px-4 py-2 rounded-xl bg-gray-900 border border-gray-800 text-sm">
-          🎯 <span className="font-semibold">{actionableCount}</span> actionnables
-        </div>
-      </div>
-
-      {stats.emailsAnalyzed === 0 && (
-        <div className="p-4 rounded-xl bg-gray-900 border border-gray-800 text-sm text-gray-300">
-          👉 Cliquez sur{" "}
-          <span className="font-semibold text-green-400">"Analyser maintenant"</span> pour générer
-          décisions + résumés — ou attendez la sync automatique (toutes les 60s).
-        </div>
-      )}
-
-      <div className="pt-2">
-        <TodayTasks />
-      </div>
-
-      {/* Dernière sync — discret, en bas */}
-      <div className="text-xs text-gray-600 text-right">
-        {lastSync
-          ? `Dernière sync : ${lastSyncText}`
-          : "Sync automatique toutes les 60s"}
-      </div>
-    </div>
+    </AppShell>
   );
 }

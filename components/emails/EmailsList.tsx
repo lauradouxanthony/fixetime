@@ -5,14 +5,14 @@ type Email = {
   sender: string | null;
   subject: string | null;
   received_at: string | null;
-
   decision?: string | null;
   estimated_time?: number | null;
   recommended_action?: string | null;
   summary?: string | null;
-
   is_urgent?: boolean | null;
   is_important?: boolean | null;
+  category?: string | null;
+  classification_reason?: string | null;
 };
 
 type EmailsListProps = {
@@ -24,159 +24,182 @@ type EmailsListProps = {
 
 /* -------------------- HELPERS -------------------- */
 
-function normalizeDecision(
-  decision?: string | null
-): "traiter" | "ignorer" | "planifier" | null {
+function normalizeDecision(decision?: string | null): "traiter" | "ignorer" | "planifier" | null {
   if (!decision) return null;
   const d = String(decision).trim().toLowerCase();
-
   if (d.includes("trait")) return "traiter";
   if (d.includes("ignor")) return "ignorer";
   if (d.includes("deleg") || d.includes("planif")) return "planifier";
-
   return null;
 }
 
-function fallbackDecisionFromSubject(email: Email) {
-  const subject = (email.subject || "").toLowerCase();
-  const sender = (email.sender || "").toLowerCase();
-
-  if (subject.includes("urgent") || subject.includes("demain") || subject.includes("asap"))
-    return "traiter";
-  if (subject.includes("réunion") || subject.includes("rdv"))
-    return "traiter";
-
-  if (
-    sender.includes("newsletter") ||
-    sender.includes("no-reply") ||
-    sender.includes("noreply") ||
-    subject.includes("promo") ||
-    subject.includes("offre")
-  )
-    return "ignorer";
-
+function getIntentionFromCategory(category?: string | null) {
+  const c = (category || "").toUpperCase();
+  if (c === "LOCATION") return "LOCATION";
+  if (c === "INFO") return "INFO";
+  if (c === "HORS_SUJET") return "HORS_SUJET";
   return null;
 }
 
-function labelDecision(decision: "traiter" | "ignorer" | "planifier" | null) {
-  if (decision === "traiter") return "À traiter";
-  if (decision === "planifier") return "À planifier";
-  if (decision === "ignorer") return "À ignorer";
-  return "Analyse…";
-}
-
-function classDecision(decision: "traiter" | "ignorer" | "planifier" | null) {
-  if (decision === "traiter") return "bg-red-600 text-white";
-  if (decision === "planifier") return "bg-yellow-500 text-black";
-  if (decision === "ignorer") return "bg-gray-700 text-white";
-  return "bg-gray-800 text-gray-300";
-}
-
-function safeMinutes(email: Email) {
-  if (email.estimated_time !== null && email.estimated_time !== undefined) {
-    return email.estimated_time;
-  }
-
-  // fallback UNIQUEMENT si pas encore analysé
+function computeScore(email: Email): number {
+  if (email.is_urgent) return 9;
+  if (email.is_important && email.decision === "traiter") return 7;
+  if (email.decision === "traiter") return 6;
+  if (email.is_important && email.decision === "planifier") return 5;
+  if (email.decision === "planifier") return 4;
+  if (email.decision === "ignorer") return 2;
   return 5;
 }
 
+function IntentionBadge({ intention }: { intention: string | null }) {
+  if (!intention) return null;
 
-function getEmailPreview(email: Email, decision: string | null) {
+  const styles: Record<string, { bg: string; text: string; label: string }> = {
+    LOCATION: { bg: "rgba(59,130,246,0.1)", text: "rgb(37,99,235)", label: "Location" },
+    INFO: { bg: "rgba(100,116,139,0.1)", text: "rgb(71,85,105)", label: "Info" },
+    HORS_SUJET: { bg: "rgba(15,23,42,0.08)", text: "rgb(51,65,85)", label: "Hors sujet" },
+  };
+
+  const s = styles[intention];
+  if (!s) return null;
+
+  return (
+    <span
+      className="text-xs px-2 py-0.5 rounded-full font-medium"
+      style={{ background: s.bg, color: s.text }}
+    >
+      {s.label}
+    </span>
+  );
+}
+
+function ScoreBadge({ score }: { score: number }) {
+  const color =
+    score >= 8 ? "rgb(220,38,38)" :
+    score >= 6 ? "rgb(234,88,12)" :
+    score >= 4 ? "rgb(100,116,139)" :
+    "rgb(148,163,184)";
+
+  return (
+    <span className="text-xs font-semibold" style={{ color }}>
+      {score}/10
+    </span>
+  );
+}
+
+function getEmailPreview(email: Email) {
   if (email.summary) return email.summary;
-
-  if (decision === "traiter") return "Action requise — réponse attendue";
-  if (decision === "planifier") return "À planifier — réponse ultérieure";
-  if (decision === "ignorer") return "Email ignoré automatiquement";
-
-  return "Email analysé automatiquement par FixTime";
+  const d = normalizeDecision(email.decision);
+  if (d === "traiter") return "Action requise — réponse attendue";
+  if (d === "planifier") return "À planifier — réponse ultérieure";
+  if (d === "ignorer") return "Email ignoré automatiquement";
+  return "Analyse en cours…";
 }
 
 /* -------------------- COMPONENT -------------------- */
 
-export function EmailsList({
-  emails,
-  selectedEmailId,
-  onSelect,
-  loading,
-}: EmailsListProps) {
+export function EmailsList({ emails, selectedEmailId, onSelect, loading }: EmailsListProps) {
   if (loading) {
-    return <div className="p-4 text-sm text-gray-500">Chargement…</div>;
+    return (
+      <div className="p-6 space-y-4">
+        {[1, 2, 3].map((i) => (
+          <div key={i} className="animate-pulse space-y-2">
+            <div className="h-3 rounded" style={{ background: "rgb(226 232 240)", width: "60%" }} />
+            <div className="h-3 rounded" style={{ background: "rgb(226 232 240)", width: "80%" }} />
+            <div className="h-3 rounded" style={{ background: "rgb(226 232 240)", width: "40%" }} />
+          </div>
+        ))}
+      </div>
+    );
   }
 
   if (emails.length === 0) {
-    return <div className="p-4 text-sm text-gray-500">Aucun email trouvé.</div>;
+    return (
+      <div className="p-8 text-center" style={{ color: "rgb(100 116 139)" }}>
+        <div className="text-2xl mb-2">📭</div>
+        <div className="text-sm">Aucun email trouvé</div>
+      </div>
+    );
   }
 
   return (
     <div>
       {emails.map((email) => {
-        const decision =
-        email.decision !== null && email.decision !== undefined
-          ? normalizeDecision(email.decision)
-          : fallbackDecisionFromSubject(email);
-      
-        const minutes = safeMinutes(email);
-        const preview = getEmailPreview(email, decision);
+        const decision = normalizeDecision(email.decision);
+        const intention = getIntentionFromCategory(email.category);
+        const score = computeScore(email);
+        const preview = getEmailPreview(email);
+        const isSelected = selectedEmailId === email.id;
+        const isRdvConfirme = email.classification_reason === "RDV_CONFIRMÉ";
 
         return (
           <div
             key={email.id}
             onClick={() => onSelect(email)}
-            className={[
-              "p-4 border-b border-gray-800 cursor-pointer space-y-2",
-              selectedEmailId === email.id
-                ? "bg-gray-900"
-                : "hover:bg-gray-900",
-            ].join(" ")}
+            className="px-4 py-3 border-b cursor-pointer transition-colors"
+            style={{
+              borderColor: "rgb(226 232 240)",
+              background: isSelected ? "rgb(238 242 255)" : "transparent",
+            }}
+            onMouseEnter={(e) => {
+              if (!isSelected) (e.currentTarget as HTMLElement).style.background = "rgb(248 250 252)";
+            }}
+            onMouseLeave={(e) => {
+              if (!isSelected) (e.currentTarget as HTMLElement).style.background = "transparent";
+            }}
           >
-            {/* Ligne 1 : badges + temps */}
-            <div className="flex items-center justify-between gap-3">
-              <div className="flex items-center gap-2 min-w-0">
-                <span
-                  className={`text-xs px-2 py-0.5 rounded-full ${classDecision(
-                    decision
-                  )}`}
-                >
-                  {labelDecision(decision)}
-                </span>
-
-                {email.is_urgent && (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-red-900/40 text-red-300 border border-red-800/60">
+            {/* Ligne 1 : intention + score + urgence */}
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <div className="flex items-center gap-1.5 min-w-0">
+                {isRdvConfirme ? (
+                  <span className="text-xs px-2 py-0.5 rounded-full font-medium"
+                    style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22,163,74)" }}>
+                    ✅ RDV Confirmé
+                  </span>
+                ) : (
+                  <IntentionBadge intention={intention} />
+                )}
+                {email.is_urgent && !isRdvConfirme && (
+                  <span className="text-xs px-2 py-0.5 rounded-full font-medium"
+                    style={{ background: "rgba(220,38,38,0.1)", color: "rgb(220,38,38)" }}>
                     Urgent
                   </span>
                 )}
-
-                {email.is_important && (
-                  <span className="text-xs px-2 py-0.5 rounded-full bg-blue-900/40 text-blue-300 border border-blue-800/60">
-                    Important
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <ScoreBadge score={score} />
+                {email.estimated_time !== null && email.estimated_time !== undefined && (
+                  <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+                    {email.estimated_time}min
                   </span>
                 )}
-              </div>
-
-              <div className="text-xs text-gray-400 whitespace-nowrap">
-                ⏱️ {minutes} min
               </div>
             </div>
 
             {/* Ligne 2 : sujet */}
-            <div className="text-sm font-semibold text-white truncate">
+            <div
+              className="text-sm font-semibold truncate mb-1"
+              style={{ color: isSelected ? "rgb(79 70 229)" : "rgb(30 41 59)" }}
+            >
               {email.subject || "(Sans objet)"}
             </div>
 
-            {/* Ligne 3 : preview intelligente */}
-            <div className="text-xs text-gray-400 line-clamp-2">
+            {/* Ligne 3 : résumé IA */}
+            <div className="text-xs line-clamp-1 mb-1.5" style={{ color: "rgb(100 116 139)" }}>
               {preview}
             </div>
 
-            {/* Ligne 4 : sender + date */}
-            <div className="flex items-center justify-between gap-3">
-              <div className="text-xs text-gray-400 truncate">
+            {/* Ligne 4 : expéditeur + date */}
+            <div className="flex items-center justify-between gap-2">
+              <div className="text-xs truncate" style={{ color: "rgb(148 163 184)" }}>
                 {email.sender || "Expéditeur inconnu"}
               </div>
-              <div className="text-xs text-gray-500 whitespace-nowrap">
+              <div className="text-xs whitespace-nowrap" style={{ color: "rgb(148 163 184)" }}>
                 {email.received_at
-                  ? new Date(email.received_at).toLocaleString()
+                  ? new Date(email.received_at).toLocaleDateString("fr-FR", {
+                      day: "numeric",
+                      month: "short",
+                    })
                   : ""}
               </div>
             </div>

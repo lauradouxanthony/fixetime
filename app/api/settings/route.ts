@@ -18,15 +18,16 @@ export async function GET() {
 
     const { data, error } = await supabase
       .from("settings_v1")
-      .select("theme, automation_level, assistant_enabled, email_rules")
+      .select("theme, automation_level, assistant_enabled, email_rules, pipeline_mode")
       .eq("user_id", user.id)
-      .single();
+      .maybeSingle();
 
-    if (error || !data) {
-      return NextResponse.json(
-        { error: "settings_not_found" },
-        { status: 404 }
-      );
+    if (error) {
+      return NextResponse.json({ error: "settings_not_found" }, { status: 404 });
+    }
+
+    if (!data) {
+      return NextResponse.json({});
     }
 
     return NextResponse.json(data);
@@ -75,6 +76,10 @@ export async function POST(req: Request) {
 
     if (body.email_rules !== undefined) {
       updates.email_rules = body.email_rules;
+    }
+
+    if (body.pipeline_mode !== undefined) {
+      updates.pipeline_mode = body.pipeline_mode;
     }
 
     const { error } = await supabase

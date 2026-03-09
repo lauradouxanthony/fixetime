@@ -1,793 +1,599 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
+import { supabase } from "@/lib/supabaseClient";
+import type { Email } from "@/types/email";
 import {
   getOptimalSlotForEmail,
   getSuggestedSlotsForEmail,
 } from "@/components/calendar/getOptimalSlotForEmail";
-import { supabase } from "@/lib/supabaseClient";
-import type { CalendarEvent } from "@/components/calendar/calendarUtils";
-import type { Email } from "@/types/email";
+
+type PipelineMode = "DRAFT" | "AUTOPILOTE";
 
 /* ===================== HELPERS ===================== */
 
-function getEmailPreview(body?: string | null) {
-  if (!body) return null;
-
-  const cleaned = body
-    .replace(/\r\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .trim();
-
-  if (!cleaned) return null;
-
-  const MAX_LENGTH = 400;
-  return cleaned.length > MAX_LENGTH
-    ? cleaned.slice(0, MAX_LENGTH) + "…"
-    : cleaned;
-}
-
-const fallbackDecision = (email: any): "traiter" | "ignorer" | "planifier" | null => {
+function getIntention(email: Email | null): "LOCATION" | "INFO" | "HORS_SUJET" | null {
   if (!email) return null;
-
-  const subject = email.subject?.toLowerCase() || "";
-  const sender = email.sender?.toLowerCase() || "";
-
-  if (subject.includes("urgent") || subject.includes("demain") || subject.includes("asap")) {
-    return "traiter";
-  }
-
-  if (subject.includes("réunion") || subject.includes("rdv")) {
-    return "traiter";
-  }
-
-  if (
-    sender.includes("newsletter") ||
-    sender.includes("linkedin") ||
-    sender.includes("no-reply")
-  ) {
-    return "ignorer";
-  }
-
+  const c = (email.category || "").toUpperCase();
+  if (c === "LOCATION") return "LOCATION";
+  if (c === "INFO") return "INFO";
+  if (c === "HORS_SUJET") return "HORS_SUJET";
   return null;
-};
+}
 
-const fallbackAction = (email: any) => {
-  const decision = fallbackDecision(email);
-  if (decision === "traiter") return "reply";
-  if (decision === "planifier") return "schedule";
-  if (decision === "ignorer") return "archive";
+function fallbackDecision(email: Email | null): "traiter" | "ignorer" | "planifier" | null {
+  if (!email) return null;
+  const s = (email.subject || "").toLowerCase();
+  const sender = (email.sender || "").toLowerCase();
+  if (s.includes("urgent") || s.includes("demain")) return "traiter";
+  if (s.includes("réunion") || s.includes("rdv") || s.includes("visite")) return "traiter";
+  if (sender.includes("newsletter") || sender.includes("no-reply")) return "ignorer";
   return null;
-};
-
-const fallbackTime = (email: any) => {
-  const decision = email.decision ?? fallbackDecision(email);
-
-  if (decision === "ignorer") return 0.5;       // 30 secondes
-  if (decision === "planifier") return 2;       // décision + action
-  if (decision === "traiter") return 5;         // réponse classique
-
-  return 2; // fallback ultra safe
-};
-
-
-function labelDecision(decision?: "ignorer" | "traiter" | "planifier" | null) {
-  if (decision === "traiter") return "À traiter";
-  if (decision === "planifier") return "À planifier";
-  if (decision === "ignorer") return "À ignorer";
-  return "Non analysé";
 }
 
-function colorDecision(decision?: "ignorer" | "traiter" | "planifier" | null) {
-  if (decision === "traiter") return "bg-red-600 text-white";
-  if (decision === "planifier") return "bg-yellow-500 text-black";
-  if (decision === "ignorer") return "bg-gray-700 text-white";
-  return "bg-gray-700 text-white";
+function fallbackTime(email: Email | null): number {
+  if (!email) return 5;
+  const d = email.decision ?? fallbackDecision(email);
+  if (d === "ignorer") return 1;
+  if (d === "planifier") return 2;
+  return 5;
 }
 
-function labelAction(action?: "reply" | "schedule" | "archive" | null) {
-  if (action === "reply") return "Répondre";
-  if (action === "schedule") return "Planifier";
-  if (action === "archive") return "Archiver";
-  return "—";
+// Extraction heuristique revenus/loyer depuis le corps de l'email
+function extractSolvabilite(body: string | null | undefined): { revenus: number | null; loyer: number | null } {
+  if (!body) return { revenus: null, loyer: null };
+  const text = body.toLowerCase();
+
+  // Cherche des patterns: "3000 euros", "3 000 €", "3000€/mois"
+  const moneyPattern = /(\d[\d\s]*(?:[,\.]\d+)?)\s*(?:€|euros?|eur)/gi;
+  const matches = [...text.matchAll(moneyPattern)].map((m) => parseFloat(m[1].replace(/\s/g, "").replace(",", ".")));
+
+  // Heuristique : loyer = montant mentionné avec "loyer" | "appartement" | "bien"
+  let loyer: number | null = null;
+  let revenus: number | null = null;
+
+  const lLines = body.split("\n");
+  for (const line of lLines) {
+    const l = line.toLowerCase();
+    const m = line.match(/(\d[\d\s]*)\s*€/);
+    if (!m) continue;
+    const val = parseFloat(m[1].replace(/\s/g, ""));
+    if (!val || val < 100) continue;
+
+    if (l.includes("loyer") || l.includes("loue") || l.includes("appartement") || l.includes("mensuel")) {
+      if (!loyer) loyer = val;
+    } else if (l.includes("revenu") || l.includes("salaire") || l.includes("gagne") || l.includes("revenu")) {
+      if (!revenus) revenus = val;
+    }
+  }
+
+  // Fallback : prendre les 2 premiers montants si rien trouvé
+  if (!loyer && matches.length >= 1) loyer = matches[0];
+  if (!revenus && matches.length >= 2) revenus = matches[1];
+
+  return { revenus, loyer };
 }
-function getGmailUrl(gmailMessageId?: string | null) {
-  if (!gmailMessageId) return null;
-  return `https://mail.google.com/mail/u/0/#inbox/${gmailMessageId}`;
+
+/* ===================== SOUS-COMPOSANTS ===================== */
+
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
+  return (
+    <div className="rounded-xl border p-4" style={{ borderColor: "rgb(226 232 240)", background: "white" }}>
+      <div className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: "rgb(100 116 139)" }}>
+        {title}
+      </div>
+      {children}
+    </div>
+  );
 }
 
-/* ===================== COMPONENT ===================== */
+function SolvabiliteWidget({ body }: { body: string | null | undefined }) {
+  const [revenus, setRevenus] = useState<string>("");
+  const [loyer, setLoyer] = useState<string>("");
 
-export function EmailDetailPanel({ email }: { email: Email | null }) {
-  const [manualPickerOpen, setManualPickerOpen] = useState(false);
-  const [manualDate, setManualDate] = useState("");
-  const [manualTime, setManualTime] = useState("");
-
-  const [busy, setBusy] = useState<null | "archive" | "task" | "plan">(null);
-  const [toast, setToast] = useState<string | null>(null);
-  const [body, setBody] = useState<string | null>(null);
-  const [showFullContent, setShowFullContent] = useState(false);
-  const [aiReply, setAiReply] = useState<string | null>(null);
-const [replyOpen, setReplyOpen] = useState(false);
-const [replyLoading, setReplyLoading] = useState(false);
-  const [optimalSlot, setOptimalSlot] = useState<null | {
-
-    start: Date;
-    end: Date;
-    minutes: number;
-  }>(null);
-  const [suggestedSlots, setSuggestedSlots] = useState<
-  { start: Date; end: Date; minutes: number }[]
->([]);
-
-useEffect(() => {
-  setShowFullContent(false);
-  setBody(email?.body ?? null);
-  setAiReply((email as any)?.ai_reply ?? null);
-  setReplyOpen(false);
-}, [email?.id]);
-
-
-  /* 🔥 FETCH BODY À LA DEMANDE */
   useEffect(() => {
-    if (!email) return;
-    if (email.body) return;
-    if (!email.gmail_message_id) return;
+    const extracted = extractSolvabilite(body);
+    if (extracted.revenus) setRevenus(String(extracted.revenus));
+    if (extracted.loyer) setLoyer(String(extracted.loyer));
+  }, [body]);
 
-    const fetchBody = async () => {
-      try {
-        const res = await fetch("/api/gmail/fetch-body", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({
-            emailId: email.id,
-            gmailMessageId: email.gmail_message_id,
-          }),
-        });
+  const ratio = revenus && loyer ? parseFloat(revenus) / parseFloat(loyer) : null;
+  const solvable = ratio !== null && ratio >= 3;
 
-        const json = await res.json();
+  return (
+    <Section title="Solvabilité">
+      <div className="grid grid-cols-2 gap-3 mb-3">
+        <div>
+          <label className="text-xs mb-1 block" style={{ color: "rgb(100 116 139)" }}>Revenus mensuels (€)</label>
+          <input
+            type="number"
+            value={revenus}
+            onChange={(e) => setRevenus(e.target.value)}
+            placeholder="ex: 3000"
+            className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2"
+            style={{
+              borderColor: "rgb(226 232 240)",
+              color: "rgb(30 41 59)",
+              focusRingColor: "rgb(79 70 229)",
+            }}
+          />
+        </div>
+        <div>
+          <label className="text-xs mb-1 block" style={{ color: "rgb(100 116 139)" }}>Loyer demandé (€/mois)</label>
+          <input
+            type="number"
+            value={loyer}
+            onChange={(e) => setLoyer(e.target.value)}
+            placeholder="ex: 900"
+            className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2"
+            style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+          />
+        </div>
+      </div>
 
-        if (json?.body) {
-          setBody(json.body);
-        }
-        
-      } catch (err) {
-        console.error("FETCH BODY ERROR", err);
-      }
-    };
+      {ratio !== null && (
+        <div
+          className="flex items-center gap-2 rounded-lg px-3 py-2 text-sm font-medium"
+          style={{
+            background: solvable ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.08)",
+            color: solvable ? "rgb(22,163,74)" : "rgb(220,38,38)",
+          }}
+        >
+          <span>{solvable ? "✅" : "❌"}</span>
+          <span>Ratio {ratio.toFixed(1)}x — {solvable ? "Dossier solvable" : "Solvabilité insuffisante (< 3x)"}</span>
+        </div>
+      )}
+    </Section>
+  );
+}
 
-    fetchBody();
-  }, [email]);
+type DocStatus = "recu" | "manquant" | "unknown";
+const DOCS = [
+  { key: "fiches_paie", label: "Fiches de paie (3 derniers mois)" },
+  { key: "contrat", label: "Contrat de travail" },
+  { key: "avis_imposition", label: "Avis d'imposition" },
+  { key: "piece_identite", label: "Pièce d'identité" },
+];
+
+function DossierWidget({ body }: { body: string | null | undefined }) {
+  const [docs, setDocs] = useState<Record<string, DocStatus>>(
+    Object.fromEntries(DOCS.map((d) => [d.key, "unknown"]))
+  );
+
+  useEffect(() => {
+    if (!body) return;
+    const text = body.toLowerCase();
+    const updates: Record<string, DocStatus> = {};
+    if (text.includes("fiche de paie") || text.includes("bulletins") || text.includes("salaire")) {
+      updates.fiches_paie = "recu";
+    }
+    if (text.includes("contrat") || text.includes("cdi") || text.includes("cdd")) {
+      updates.contrat = "recu";
+    }
+    if (text.includes("avis d'imposition") || text.includes("impôt") || text.includes("fiscal")) {
+      updates.avis_imposition = "recu";
+    }
+    if (text.includes("carte d'identité") || text.includes("passeport") || text.includes("identité")) {
+      updates.piece_identite = "recu";
+    }
+    if (Object.keys(updates).length > 0) {
+      setDocs((prev) => ({ ...prev, ...updates }));
+    }
+  }, [body]);
+
+  const toggle = (key: string) => {
+    setDocs((prev) => ({
+      ...prev,
+      [key]: prev[key] === "recu" ? "manquant" : "recu",
+    }));
+  };
+
+  return (
+    <Section title="Dossier locataire">
+      <div className="space-y-2">
+        {DOCS.map((doc) => {
+          const status = docs[doc.key];
+          const isRecu = status === "recu";
+          return (
+            <div
+              key={doc.key}
+              onClick={() => toggle(doc.key)}
+              className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors"
+              style={{ background: isRecu ? "rgba(22,163,74,0.06)" : "rgba(226,232,240,0.5)" }}
+            >
+              <span>{isRecu ? "✅" : "❌"}</span>
+              <span className="text-sm" style={{ color: isRecu ? "rgb(22,163,74)" : "rgb(100,116,139)" }}>
+                {doc.label}
+              </span>
+              <span className="ml-auto text-xs" style={{ color: "rgb(148,163,184)" }}>
+                {isRecu ? "Reçu" : "Manquant"}
+              </span>
+            </div>
+          );
+        })}
+      </div>
+    </Section>
+  );
+}
+
+function BookingWidget({
+  email,
+  mode,
+  onApprove,
+}: {
+  email: Email;
+  mode: PipelineMode;
+  onApprove: (slot: { start: Date; end: Date }) => void;
+}) {
+  const [slots, setSlots] = useState<{ start: Date; end: Date; minutes: number }[]>([]);
+  const [selectedSlot, setSelectedSlot] = useState<number>(0);
+  const [approved, setApproved] = useState(false);
+  const [sending, setSending] = useState(false);
+
   useEffect(() => {
     const run = async () => {
-      if (!email) return;
-  
-      const decision = email.decision ?? fallbackDecision(email);
-      if (decision !== "planifier") {
-        setOptimalSlot(null);
-        return;
-      }
-  
-      const {
-        data: { user },
-      } = await supabase.auth.getUser();
-  
+      const { data: { user } } = await supabase.auth.getUser();
       if (!user) return;
-  
+
       const day = new Date();
       day.setHours(0, 0, 0, 0);
-  
-      const dayStart = new Date(day);
-      dayStart.setHours(8, 0, 0, 0);
-  
-      const dayEnd = new Date(day);
-      dayEnd.setHours(18, 0, 0, 0);
-  
-      const { data, error } = await supabase
-  .from("calendar_events")
-  .select("id, title, description, start_time, end_time, calendar_name")
-  .eq("user_id", user.id)
-  .lt("start_time", dayEnd.toISOString())
-  .gt("end_time", dayStart.toISOString())
-  .order("start_time", { ascending: true });
+      const dayStart = new Date(day); dayStart.setHours(9, 0, 0, 0);
+      const dayEnd = new Date(day); dayEnd.setHours(18, 0, 0, 0);
 
-console.log("CALENDAR EVENTS FETCHED (today):", data);
+      const { data } = await supabase
+        .from("calendar_events")
+        .select("id, title, start_time, end_time")
+        .eq("user_id", user.id)
+        .gte("start_time", dayStart.toISOString())
+        .lte("end_time", dayEnd.toISOString())
+        .order("start_time", { ascending: true });
 
-if (error) {
-  console.error("FETCH CALENDAR_EVENTS ERROR", error);
-  setOptimalSlot(null);
-  return;
-}
-
-  
-      const minMinutes = Math.max(10, email.estimated_time ?? fallbackTime(email));
-      let slot = getOptimalSlotForEmail(data, day, minMinutes);
-
-if (!slot) {
-  const tomorrow = new Date(day);
-  tomorrow.setDate(tomorrow.getDate() + 1);
-
-  // Option 1 (simple) : on réutilise les mêmes events (mais ça ne couvre pas demain)
-  // Donc on refetch les events de demain (mieux)
-  const tStart = new Date(tomorrow);
-  tStart.setHours(8, 0, 0, 0);
-  const tEnd = new Date(tomorrow);
-  tEnd.setHours(18, 0, 0, 0);
-
-  const { data: dataTomorrow, error: errorTomorrow } = await supabase
-  .from("calendar_events")
-  .select("id, title, description, start_time, end_time, calendar_name")
-  .eq("user_id", user.id)
-  .lt("start_time", tEnd.toISOString())
-  .gt("end_time", tStart.toISOString())
-  .order("start_time", { ascending: true });
-
-
-  if (!errorTomorrow) {
-    slot = getOptimalSlotForEmail(
-      dataTomorrow,
-      tomorrow,
-      minMinutes,
-      { now: tStart }
-    );      
-}
-}
-setOptimalSlot(slot);
-
-const suggestions = getSuggestedSlotsForEmail(
-  data,
-  day,
-  minMinutes,
-  { daysAhead: 3 }
-);
-
-setSuggestedSlots(suggestions);
-
-
+      const minMin = Math.max(30, email.estimated_time ?? 60);
+      const suggested = getSuggestedSlotsForEmail(data || [], day, minMin, { daysAhead: 5 });
+      setSlots(suggested.slice(0, 3));
     };
-  
     run();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [email?.id, email?.decision, email?.estimated_time]);
-  const logTimeEvent = async (action: string, minutes: number) => {
-    if (!email?.id) return;
-  
-    try {
-      await fetch("/api/time-events", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          emailId: email.id,
-          action,
-          minutes,
-        }),
-      });
-    } catch (e) {
-      console.error("LOG_TIME_EVENT_ERROR", e);
-    }
+  }, [email.id, email.estimated_time]);
+
+  const handleApprove = async () => {
+    if (!slots[selectedSlot]) return;
+    setSending(true);
+    await onApprove(slots[selectedSlot]);
+    setApproved(true);
+    setSending(false);
   };
-  
+
+  const formatSlot = (slot: { start: Date; end: Date }) => {
+    const day = slot.start.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" });
+    const h1 = slot.start.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+    const h2 = slot.end.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+    return `${day} · ${h1}–${h2}`;
+  };
+
+  if (approved) {
+    return (
+      <Section title="Réservation visite">
+        <div className="text-sm font-medium" style={{ color: "rgb(22,163,74)" }}>
+          ✅ Confirmation envoyée — RDV confirmé
+        </div>
+      </Section>
+    );
+  }
+
+  return (
+    <Section title="Proposer une visite">
+      <div className="space-y-2 mb-3">
+        {slots.length === 0 && (
+          <p className="text-sm" style={{ color: "rgb(100 116 139)" }}>Calcul des créneaux…</p>
+        )}
+        {slots.map((slot, i) => (
+          <label
+            key={i}
+            className="flex items-center gap-3 px-3 py-2 rounded-lg cursor-pointer border transition-all"
+            style={{
+              borderColor: selectedSlot === i ? "rgb(79 70 229)" : "rgb(226 232 240)",
+              background: selectedSlot === i ? "rgb(238 242 255)" : "white",
+            }}
+          >
+            <input
+              type="radio"
+              name="slot"
+              checked={selectedSlot === i}
+              onChange={() => setSelectedSlot(i)}
+              className="accent-indigo-600"
+            />
+            <span className="text-sm" style={{ color: "rgb(30 41 59)" }}>
+              {formatSlot(slot)}
+            </span>
+            {i === 0 && (
+              <span className="ml-auto text-xs px-1.5 py-0.5 rounded" style={{ background: "rgb(238 242 255)", color: "rgb(79 70 229)" }}>
+                Optimal
+              </span>
+            )}
+          </label>
+        ))}
+      </div>
+
+      <button
+        onClick={handleApprove}
+        disabled={sending || slots.length === 0}
+        className="w-full py-2 rounded-lg text-sm font-medium text-white transition-opacity disabled:opacity-50"
+        style={{ background: "rgb(79 70 229)" }}
+      >
+        {mode === "DRAFT"
+          ? sending ? "Envoi en cours…" : "✅ Approuver & Envoyer"
+          : sending ? "Envoi en cours…" : "📤 Envoyer la proposition (Autopilote)"}
+      </button>
+    </Section>
+  );
+}
+
+/* ===================== COMPONENT PRINCIPAL ===================== */
+
+export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | null; mode?: PipelineMode }) {
+  const [body, setBody] = useState<string | null>(null);
+  const [toast, setToast] = useState<string | null>(null);
+  const [aiReply, setAiReply] = useState<string | null>(null);
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyLoading, setReplyLoading] = useState(false);
+  const [busy, setBusy] = useState<null | "archive" | "task">(null);
+  const [showFullBody, setShowFullBody] = useState(false);
+
+  const intention = getIntention(email);
+  const decision = email?.decision ?? fallbackDecision(email);
+  const minutes = email?.estimated_time ?? fallbackTime(email);
+
   const notify = (msg: string) => {
     setToast(msg);
     setTimeout(() => setToast(null), 2500);
   };
-  const sendSuggestion = async (
-    type: "sender" | "keyword",
-    value: string | null,
-    action: "important" | "ignore" | "ai"
-  ) => {
-    if (!value) return;
-  
-    await fetch("/api/settings/suggestions", {
+
+  useEffect(() => {
+    setBody(email?.body ?? null);
+    setAiReply((email as any)?.ai_reply ?? null);
+    setReplyOpen(false);
+    setShowFullBody(false);
+  }, [email?.id]);
+
+  // Fetch body à la demande
+  useEffect(() => {
+    if (!email || email.body || !email.gmail_message_id) return;
+    fetch("/api/gmail/fetch-body", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        type,
-        value,
-        action,
-      }),
-    });
-  
-    notify("Préférence enregistrée ✅");
-  };
-  
-  const createTask = async (mode: "task" | "plan") => {
-    if (!email) return;
+      body: JSON.stringify({ emailId: email.id, gmailMessageId: email.gmail_message_id }),
+    })
+      .then((r) => r.json())
+      .then((json) => { if (json?.body) setBody(json.body); })
+      .catch(() => {});
+  }, [email]);
 
-    setBusy(mode);
-  // 🔥 Création de l'événement Google Calendar
-  if (mode === "plan" && optimalSlot) {
-    const start = optimalSlot.start;
-    const end = new Date(
-      start.getTime() +
-        (email.estimated_time ?? fallbackTime(email)) * 60000
-    );
-  
-    const res = await fetch("/api/calendar/create-event", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title: `Répondre : ${email.subject || "Email"}`,
-        start: start.toISOString(),
-        end: end.toISOString(),
-      }),
-    });
-  
-    setBusy(null);
-  
-    if (!res.ok) {
-      notify("Erreur lors de la création de l'événement Google Calendar.");
-      return;
-    }
-  
-    notify("Créneau bloqué dans Google Calendar ✅");
-    return; // ⬅️ ⬅️ ⬅️ CRUCIAL
-  }
-  
-
-    const title =
-      mode === "plan"
-        ? `Planifier une réponse : ${email.subject || "(Sans objet)"}`
-        : `Traiter : ${email.subject || "(Sans objet)"}`;
-
-    let dueAt: string | null = null;
-    if (mode === "plan") {
-      const d = new Date();
-      d.setDate(d.getDate() + 1);
-      d.setHours(9, 0, 0, 0);
-      dueAt = d.toISOString();
-    }
-
-    const res = await fetch("/api/tasks/create", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        title: `Répondre : ${email.subject || "Email"}`,
-        emailId: email.id,
-        dueAt,
-      }),
-    });
-    
-  
-    setBusy(null);
-
-    if (!res.ok) {
-      notify("Erreur lors de la création de la tâche.");
-      return;
-    }
-
-    notify(mode === "plan" ? "Réponse planifiée (tâche créée)." : "Tâche créée.");
-  };
-
-  const archive = async () => {
-    if (!email?.gmail_message_id) {
-      notify("Impossible d’archiver : gmail_message_id manquant.");
-      return;
-    }
-
-    setBusy("archive");
-
-    const res = await fetch("/api/gmail/archive", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        gmailMessageId: email.gmail_message_id,
-        emailId: email.id,
-      }),
-    });
-
-    setBusy(null);
-
-    if (!res.ok) {
-      notify("Erreur lors de l’archivage Gmail.");
-      return;
-    }
-
-    notify("Email archivé ✅");
-  };
-
-  if (!email) {
-    return (
-      <div className="h-full flex items-center justify-center text-gray-500 text-sm">
-        Sélectionne un email pour voir le détail
-      </div>
-    );
-  }
   const generateReply = async () => {
     if (!email || replyLoading) return;
-  
     setReplyLoading(true);
-  
     try {
       const res = await fetch("/api/ai/generate-reply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ emailId: email.id }),
       });
-  
       const json = await res.json();
-  
-      if (json?.reply) {
-        setAiReply(json.reply);
-        setReplyOpen(true);
-      }
-      await fetch("/api/time/log", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          type: "ai_reply_generated",
-          emailId: email.id,
-        }),
-      });
-      
-    } catch (e) {
-      console.error("GENERATE_REPLY_UI_ERROR", e);
-    } finally {
-      setReplyLoading(false);
-    }
+      if (json?.reply) { setAiReply(json.reply); setReplyOpen(true); }
+    } catch (e) { console.error("GENERATE_REPLY_ERROR", e); }
+    finally { setReplyLoading(false); }
   };
-  
-  const decision = email.decision ?? fallbackDecision(email);
-  const action = email.recommended_action ?? fallbackAction(email);
-  const minutes = email.estimated_time ?? fallbackTime(email);
-  const preview = getEmailPreview(email.body);
-  const gmailUrl = getGmailUrl(email.gmail_message_id);
 
+  const archive = async () => {
+    if (!email?.gmail_message_id) { notify("gmail_message_id manquant"); return; }
+    setBusy("archive");
+    const res = await fetch("/api/gmail/archive", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ gmailMessageId: email.gmail_message_id, emailId: email.id }),
+    });
+    setBusy(null);
+    if (!res.ok) { notify("Erreur archivage"); return; }
+    notify("Email archivé ✅");
+  };
+
+  const handleBookingApprove = async (slot: { start: Date; end: Date }) => {
+    if (!email) return;
+    const res = await fetch("/api/calendar/create-event", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        title: `Visite : ${email.subject || "Bien immobilier"}`,
+        start: slot.start.toISOString(),
+        end: slot.end.toISOString(),
+      }),
+    });
+    if (!res.ok) { notify("Erreur création RDV"); return; }
+    notify("RDV créé dans Google Calendar ✅");
+  };
+
+  if (!email) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-3 p-8" style={{ color: "rgb(148 163 184)" }}>
+        <div className="text-4xl">📧</div>
+        <div className="text-sm">Sélectionnez un email pour voir le détail</div>
+      </div>
+    );
+  }
+
+  const gmailUrl = email.gmail_message_id
+    ? `https://mail.google.com/mail/u/0/#inbox/${email.gmail_message_id}`
+    : null;
 
   return (
-    <div className="space-y-5">
+    <div className="p-5 space-y-4 max-w-2xl mx-auto">
+      {/* Toast */}
       {toast && (
-        <div className="p-3 rounded-xl bg-gray-900 border border-gray-800 text-sm text-gray-200">
+        <div className="fixed top-4 right-4 z-50 px-4 py-2.5 rounded-xl text-sm font-medium shadow-lg"
+          style={{ background: "rgb(30 41 59)", color: "white" }}>
           {toast}
         </div>
       )}
 
-      {/* Résumé IA */}
-      <div className="p-4 rounded-xl bg-gray-900 border border-gray-800">
-        <div className="text-xs text-gray-400 mb-1">Résumé IA</div>
-        <p className="text-sm text-gray-200 leading-relaxed">
-          {email.summary && email.summary.trim().length > 0
-            ? email.summary
-            : decision
-            ? `Cet email a été analysé par FixTime et classé comme ${
-                decision === "traiter"
-                  ? "nécessitant une action"
-                  : decision === "planifier"
-                  ? "à planifier ultérieurement"
-                  : "non prioritaire"
-              }.`
-            : "FixTime analyse actuellement cet email afin de déterminer l’action la plus pertinente."}
+      {/* ── En-tête email ── */}
+      <div className="rounded-xl border p-4 bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
+        <div className="flex items-start justify-between gap-4 mb-2">
+          <h2 className="text-base font-semibold" style={{ color: "rgb(30 41 59)" }}>
+            {email.subject || "(Sans objet)"}
+          </h2>
+          {/* Badge intention */}
+          {intention && (
+            <span className="text-xs px-2 py-1 rounded-full font-medium flex-shrink-0"
+              style={{
+                background: intention === "LOCATION" ? "rgba(59,130,246,0.1)" :
+                  intention === "INFO" ? "rgba(100,116,139,0.1)" : "rgba(15,23,42,0.08)",
+                color: intention === "LOCATION" ? "rgb(37,99,235)" :
+                  intention === "INFO" ? "rgb(71,85,105)" : "rgb(51,65,85)",
+              }}>
+              {intention === "LOCATION" ? "🏠 Location" : intention === "INFO" ? "ℹ️ Info" : "🚫 Hors sujet"}
+            </span>
+          )}
+        </div>
+
+        <div className="text-sm mb-0.5" style={{ color: "rgb(100 116 139)" }}>
+          {email.sender || "Expéditeur inconnu"}
+        </div>
+        <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+          {email.received_at ? new Date(email.received_at).toLocaleString("fr-FR") : ""}
+        </div>
+      </div>
+
+      {/* ── Résumé IA ── */}
+      <Section title="Résumé IA">
+        <p className="text-sm leading-relaxed" style={{ color: "rgb(51 65 85)" }}>
+          {email.summary?.trim() ||
+            (decision === "traiter" ? "Action requise — réponse attendue." :
+             decision === "planifier" ? "À planifier — réponse non urgente." :
+             decision === "ignorer" ? "Email non prioritaire, peut être ignoré." :
+             "Analyse en cours…")}
         </p>
-      </div>
-{/* Réponse IA (accordion) */}
-<div className="p-4 rounded-xl bg-gray-900 border border-gray-800">
-  <button
-    onClick={() => {
-      if (!aiReply) {
-        generateReply();
-      } else {
-        setReplyOpen((v) => !v);
-      }
-    }}
-    className="flex items-center justify-between w-full text-left"
-  >
-    <span className="text-sm font-medium text-gray-200">
-      ✉️ Réponse générée par l’IA
-    </span>
-    <span className="text-xs text-gray-400">
-      {replyLoading
-        ? "Génération…"
-        : replyOpen
-        ? "Masquer"
-        : aiReply
-        ? "Afficher"
-        : "Générer"}
-    </span>
-  </button>
+        {minutes > 0 && (
+          <div className="mt-2 text-xs" style={{ color: "rgb(148 163 184)" }}>
+            ⏱️ Temps estimé : {minutes} min
+          </div>
+        )}
+      </Section>
 
-  {replyOpen && aiReply && (
-    <div className="mt-3 space-y-3">
-      {/* Contenu réponse */}
-      <div className="text-sm text-gray-200 whitespace-pre-line bg-gray-800 rounded-md p-3">
-        {aiReply}
-      </div>
+      {/* ── Widgets LOCATION ── */}
+      {intention === "LOCATION" && (
+        <>
+          <SolvabiliteWidget body={body || email.body} />
+          <DossierWidget body={body || email.body} />
+          <BookingWidget email={email} mode={mode} onApprove={handleBookingApprove} />
+        </>
+      )}
 
-      {/* Actions réponse IA */}
-      <div className="flex gap-2 flex-wrap">
-        <button
-          onClick={async () => {
-            navigator.clipboard.writeText(aiReply);
-            notify("Réponse copiée 📋");
-            await logTimeEvent("copy_reply", 1);
-          }}
-          className="px-3 py-1 rounded-md bg-gray-700 text-xs hover:bg-gray-600"
-        >
-          Copier la réponse
-        </button>
-
-        <button
-          onClick={async () => {
-            if (!email || !aiReply) return;
-            const to = encodeURIComponent(email.sender ?? "");
-            const subject = encodeURIComponent(`Re: ${email.subject ?? ""}`);
-            const body = encodeURIComponent(aiReply);
-            window.open(
-              `https://mail.google.com/mail/?view=cm&fs=1&to=${to}&su=${subject}&body=${body}`,
-              "_blank"
-            );
-            await logTimeEvent("open_draft", 2);
-          }}
-          className="px-3 py-1 rounded-md bg-green-600 text-xs hover:bg-green-500 text-black font-medium"
-        >
-          ✉️ Ouvrir le brouillon Gmail
-        </button>
-
-        {/* Bouton DRAFT — envoyer directement sans ouvrir Gmail */}
-        <button
-          onClick={async () => {
-            if (!email?.id || !aiReply) return;
-            setBusy("archive"); // réutilise l'état busy pour bloquer les doubles-clics
-            try {
-              const res = await fetch("/api/gmail/send", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ emailId: email.id }),
-              });
-              if (res.ok) {
-                notify("Réponse envoyée via Gmail ✅");
-                await logTimeEvent("send_draft", 2);
-              } else {
-                notify("Erreur lors de l'envoi.");
-              }
-            } catch {
-              notify("Erreur réseau lors de l'envoi.");
-            } finally {
-              setBusy(null);
-            }
-          }}
-          disabled={busy !== null}
-          className="px-3 py-1 rounded-md bg-blue-600 text-xs hover:bg-blue-500 text-white font-medium disabled:opacity-50"
-        >
-          🚀 Envoyer maintenant
-        </button>
-      </div>
-    </div>
-  )}
-</div>
-
-      {/* Pourquoi */}
-      <div className="p-4 rounded-xl bg-gray-900 border border-gray-800">
-  <div className="text-xs text-gray-400 mb-1">
-    Pourquoi cet email est classé ainsi ?
-  </div>
-
-  <p className="text-sm text-gray-300">
-  {email.classification_reason
-    ? email.classification_reason
-    : email.decision === "traiter"
-    ? "Cet email nécessite une action car son contenu appelle une réponse ou une décision."
-    : email.decision === "planifier"
-    ? "Cet email a été identifié comme nécessitant une action ultérieure, non urgente."
-    : email.decision === "ignorer"
-    ? "Cet email n’apporte pas de valeur immédiate et peut être ignoré."
-    : "Analyse en attente — lance “Analyser maintenant” si nécessaire."}
-</p>
-
-
-</div>
-
-
-      {/* Ligne exécutive */}
-<div className="flex flex-col gap-2 text-sm">
-  <div className="flex flex-wrap items-center gap-3">
-    <span className={`px-3 py-1 rounded-full text-xs ${colorDecision(decision)}`}>
-      {labelDecision(decision)}
-    </span>
-
-    <span className="text-blue-400 font-medium">
-      👉 Action recommandée : {labelAction(action)}
-    </span>
-
-    <span className="text-gray-400">⏱️ {minutes} min</span>
-  </div>
-  
-  {optimalSlot && (
-  <div className="text-sm text-green-400 font-medium">
-    🟢 Créneau optimal détecté —{" "}
-    {optimalSlot.start.toLocaleDateString("fr-FR", {
-      weekday: "long",
-      day: "numeric",
-      month: "long",
-    })}{" "}
-    :{" "}
-    {optimalSlot.start.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}{" "}
-    →{" "}
-    {optimalSlot.end.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}
-  </div>
-)}
-{suggestedSlots.length > 1 && (
-  <div className="mt-3 space-y-2">
-    <div className="text-xs text-gray-400">
-      Autres créneaux suggérés
-    </div>
-
-    <div className="flex flex-col gap-2">
-      {suggestedSlots.map((slot, idx) => {
-        const dayLabel = slot.start.toLocaleDateString("fr-FR", {
-          weekday: "short",
-          day: "numeric",
-          month: "short",
-        });
-
-        return (
-          <button
-            key={idx}
-            onClick={() => setOptimalSlot(slot)}
-            className="text-left px-3 py-2 rounded-md bg-gray-800 hover:bg-gray-700 text-sm"
+      {/* ── Widget INFO ── */}
+      {intention === "INFO" && (
+        <Section title="Réponse IA — Source FAQ">
+          <p className="text-sm mb-3" style={{ color: "rgb(51 65 85)" }}>
+            {email.classification_reason || "L'IA a répondu selon vos paramètres FAQ agence."}
+          </p>
+          <a
+            href="/settings#faq"
+            className="inline-flex items-center gap-1.5 text-xs font-medium px-3 py-1.5 rounded-lg transition-colors"
+            style={{ background: "rgb(248 250 252)", color: "rgb(79 70 229)", border: "1px solid rgb(226 232 240)" }}
           >
-            🕒 {dayLabel} —{" "}
-            {slot.start.toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}{" "}
-            →{" "}
-            {slot.end.toLocaleTimeString([], {
-              hour: "2-digit",
-              minute: "2-digit",
-            })}
+            ✏️ Mettre à jour la FAQ
+          </a>
+        </Section>
+      )}
+
+      {/* ── Réponse IA générée ── */}
+      <Section title="Réponse générée par l'IA">
+        <button
+          onClick={() => { if (!aiReply) { generateReply(); } else { setReplyOpen((v) => !v); } }}
+          className="flex items-center justify-between w-full text-left"
+        >
+          <span className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+            Brouillon de réponse
+          </span>
+          <span className="text-xs px-2 py-1 rounded-md" style={{ background: "rgb(248 250 252)", color: "rgb(100 116 139)" }}>
+            {replyLoading ? "Génération…" : replyOpen ? "Masquer" : aiReply ? "Afficher" : "Générer"}
+          </span>
+        </button>
+
+        {replyOpen && aiReply && (
+          <div className="mt-3 space-y-2">
+            <div
+              className="text-sm whitespace-pre-line rounded-lg p-3"
+              style={{ background: "rgb(248 250 252)", color: "rgb(51 65 85)", border: "1px solid rgb(226 232 240)" }}
+            >
+              {aiReply}
+            </div>
+            <div className="flex gap-2">
+              <button
+                onClick={() => { navigator.clipboard.writeText(aiReply); notify("Copié ✅"); }}
+                className="text-xs px-3 py-1.5 rounded-lg transition-colors"
+                style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
+              >
+                Copier
+              </button>
+              {gmailUrl && (
+                <a
+                  href={`https://mail.google.com/mail/?view=cm&fs=1&to=${encodeURIComponent(email.sender ?? "")}&su=${encodeURIComponent("Re: " + (email.subject ?? ""))}&body=${encodeURIComponent(aiReply)}`}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-xs px-3 py-1.5 rounded-lg font-medium text-white transition-colors"
+                  style={{ background: "rgb(79 70 229)" }}
+                >
+                  ✉️ Ouvrir dans Gmail
+                </a>
+              )}
+            </div>
+          </div>
+        )}
+      </Section>
+
+      {/* ── Corps de l'email ── */}
+      {(body || email.body) && (
+        <Section title="Contenu de l'email">
+          <p
+            className="text-sm whitespace-pre-wrap"
+            style={{
+              color: "rgb(71 85 105)",
+              overflow: "hidden",
+              maxHeight: showFullBody ? "none" : "120px",
+            }}
+          >
+            {(body || email.body || "").replace(/<[^>]*>/g, "")}
+          </p>
+          <button
+            onClick={() => setShowFullBody((v) => !v)}
+            className="mt-2 text-xs font-medium"
+            style={{ color: "rgb(79 70 229)" }}
+          >
+            {showFullBody ? "Réduire" : "Voir tout"}
           </button>
-        );
-      })}
-    </div>
+        </Section>
+      )}
 
-    <button
-  onClick={() => setManualPickerOpen(true)}
-  className="mt-2 text-sm text-blue-400 hover:underline"
->
-  Choisir manuellement un créneau
-</button>
-
-  </div>
-)}
-</div>
-
-      {/* Sujet */}
-      <div>
-        <h2 className="text-xl font-bold mb-1">{email.subject || "(Sans objet)"}</h2>
-        <div className="text-sm text-gray-400">
-          De : {email.sender || "Expéditeur inconnu"}
-        </div>
-        <div className="text-xs text-gray-500">
-          {email.received_at ? new Date(email.received_at).toLocaleString() : ""}
-        </div>
-      </div>
-      
-      {body && (
-  <div className="mt-2 space-y-1">
-    <p
-      className={`text-sm text-gray-500 ${
-        showFullContent ? "" : "line-clamp-2"
-      }`}
-    >
-      {body.replace(/<[^>]*>/g, "")}
-    </p>
-
-    <button
-  onClick={() => setShowFullContent((v) => !v)}
-  className="text-xs text-blue-400 hover:underline"
->
-  {showFullContent ? "Réduire le contenu" : "Voir le contenu complet"}
-</button>
-
-<p className="text-[11px] text-gray-600 italic">
-  Aperçu texte simplifié — images, mise en forme et pièces jointes
-  visibles dans Gmail.
-</p>
-  </div>
-)}
-
-      {/* Actions */}
-     {/* Actions */}
-<div className="flex flex-wrap gap-2 pt-2">
-{gmailUrl && (
-  <a
-    href={gmailUrl}
-    target="_blank"
-    rel="noopener noreferrer"
-    className="px-3 py-2 rounded-md bg-blue-600 text-sm hover:bg-blue-500 text-black font-medium"
-  >
-    📩 Ouvrir l’email dans Gmail
-  </a>
-)}
-
-
-
-
-
-  <button
-    onClick={() => createTask("task")}
-    disabled={busy !== null}
-    className="px-3 py-2 rounded-md bg-gray-800 text-sm hover:bg-gray-700 disabled:opacity-50"
-  >
-    {busy === "task" ? "Création..." : "Créer une tâche"}
-  </button>
-
-  <button
-    onClick={() => createTask("plan")}
-    disabled={busy !== null}
-    className="px-3 py-2 rounded-md bg-gray-800 text-sm hover:bg-gray-700 disabled:opacity-50"
-  >
-    {busy === "plan" ? "Planification..." : "Planifier une réponse"}
-  </button>
-
-  <button
-    onClick={archive}
-    disabled={busy !== null}
-    className="px-3 py-2 rounded-md bg-gray-800 text-sm hover:bg-gray-700 disabled:opacity-50"
-  >
-    {busy === "archive" ? "Archivage..." : "Archiver"}
-  </button>
-</div>
-
-
-      <div className="text-xs text-gray-500">
-        Astuce : “Planifier une réponse” crée une tâche avec une échéance.
-      </div>
-      {manualPickerOpen && (
-  <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60">
-    <div className="bg-gray-900 border border-gray-800 rounded-xl p-6 w-full max-w-sm space-y-4">
-      <h3 className="text-lg font-semibold text-white">
-        Choisir un créneau
-      </h3>
-
-      <div className="space-y-1">
-        <label className="text-xs text-gray-400">Date</label>
-        <input
-          type="date"
-          value={manualDate}
-          onChange={(e) => setManualDate(e.target.value)}
-          className="w-full rounded-md bg-gray-800 border border-gray-700 px-3 py-2 text-sm text-white"
-        />
-      </div>
-
-      <div className="space-y-1">
-        <label className="text-xs text-gray-400">Heure</label>
-        <input
-          type="time"
-          value={manualTime}
-          onChange={(e) => setManualTime(e.target.value)}
-          className="w-full rounded-md bg-gray-800 border border-gray-700 px-3 py-2 text-sm text-white"
-        />
-      </div>
-
-      <div className="flex justify-end gap-2 pt-4">
+      {/* ── Actions ── */}
+      <div className="flex flex-wrap gap-2 pb-6">
+        {gmailUrl && (
+          <a
+            href={gmailUrl}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="px-3 py-2 rounded-lg text-sm font-medium text-white"
+            style={{ background: "rgb(79 70 229)" }}
+          >
+            📩 Ouvrir dans Gmail
+          </a>
+        )}
         <button
-          onClick={() => setManualPickerOpen(false)}
-          className="px-3 py-2 text-sm rounded-md bg-gray-800 hover:bg-gray-700"
+          onClick={archive}
+          disabled={busy !== null}
+          className="px-3 py-2 rounded-lg text-sm transition-colors disabled:opacity-50"
+          style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
         >
-          Annuler
-        </button>
-
-        <button
-          onClick={async () => {
-            if (!manualDate || !manualTime || !email) return;
-
-            const start = new Date(`${manualDate}T${manualTime}`);
-            const minutes = email.estimated_time ?? fallbackTime(email);
-            const end = new Date(start.getTime() + minutes * 60000);
-
-            setOptimalSlot({ start, end, minutes });
-            setManualPickerOpen(false);
-            await createTask("plan");
-          }}
-          className="px-3 py-2 text-sm rounded-md bg-green-600 hover:bg-green-500 text-black font-medium"
-        >
-          Valider
+          {busy === "archive" ? "Archivage…" : "Archiver"}
         </button>
       </div>
     </div>
-  </div>
-)}
- </div>
   );
 }
