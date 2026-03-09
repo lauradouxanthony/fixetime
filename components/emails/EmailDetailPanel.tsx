@@ -114,7 +114,6 @@ function SolvabiliteWidget({ body }: { body: string | null | undefined }) {
             style={{
               borderColor: "rgb(226 232 240)",
               color: "rgb(30 41 59)",
-              focusRingColor: "rgb(79 70 229)",
             }}
           />
         </div>
@@ -242,7 +241,7 @@ function BookingWidget({
 
       const { data } = await supabase
         .from("calendar_events")
-        .select("id, title, start_time, end_time")
+        .select("id, title, description, start_time, end_time")
         .eq("user_id", user.id)
         .gte("start_time", dayStart.toISOString())
         .lte("end_time", dayEnd.toISOString())
