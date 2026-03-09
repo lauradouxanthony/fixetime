@@ -87,7 +87,7 @@ const sinceISO = new Date(Date.now() - THIRTY_DAYS).toISOString();
 
 let q = supabaseAdmin
 .from("emails")
-.select("id, user_id, sender, subject, body, received_at")
+.select("id, user_id, sender, subject, body, received_at, gmail_message_id")
 .gte("received_at", sinceISO)
 .or(
   "decision.is.null,summary.is.null,classification_reason.is.null",
@@ -133,10 +133,10 @@ await supabaseAdmin
     let analyzed = 0;
 
     for (const email of emails) {
-      // 2) Règles utilisateur
+      // 2) Règles utilisateur + pipeline_mode
       const { data: settings } = await supabaseAdmin
         .from("settings_v1")
-        .select("email_rules")
+        .select("email_rules, pipeline_mode")
         .eq("user_id", email.user_id)
         .maybeSingle();
 
@@ -353,6 +353,116 @@ ${content}
           classification_reason: classificationReason,
         })
         .eq("id", email.id);
+
+      // ── AUTOPILOTE : envoi automatique ──────────────────────────
+      const pipelineMode = (settings as any)?.pipeline_mode ?? "DRAFT";
+      const emailRules = (settings as any)?.email_rules ?? {};
+      const intention = intentionMap[result.intention] ?? "INFO";
+
+      if (pipelineMode === "AUTOPILOTE" && !rdvConfirmed && email.gmail_message_id) {
+        try {
+          const accessToken = await getValidGoogleAccessToken(email.user_id);
+
+          let autoReply: string | null = null;
+
+          if (intention === "HORS_SUJET") {
+            // Archive silencieusement
+            await supabaseAdmin.from("emails").update({ is_archived: true }).eq("id", email.id);
+          } else if (intention === "INFO") {
+            // Répondre via FAQ
+            const faq: { question: string; reponse: string }[] = emailRules.ft_faq ?? [];
+            const faqText = faq.length > 0
+              ? faq.map((f) => `Q: ${f.question}\nR: ${f.reponse}`).join("\n\n")
+              : "Contactez-nous directement pour plus d'informations.";
+
+            const faqCompletion = await openai.chat.completions.create({
+              model: "gpt-4o-mini",
+              messages: [{
+                role: "user",
+                content: `Tu es l'assistant d'une agence immobilière. Réponds à cet email en te basant sur la FAQ ci-dessous. Sois courtois et professionnel. Réponds en français.\n\nFAQ:\n${faqText}\n\nEmail de: ${email.sender}\nSujet: ${email.subject}\nContenu: ${email.body ?? ""}`,
+              }],
+              temperature: 0.3,
+            });
+            autoReply = faqCompletion.choices[0]?.message?.content ?? null;
+          } else if (intention === "LOCATION") {
+            // Demander les documents + proposer créneaux
+            const docsConfig = emailRules.ft_locatif?.docs ?? {};
+            const docsRequired = Object.entries(docsConfig)
+              .filter(([, v]) => v === true)
+              .map(([k]) => {
+                const labels: Record<string, string> = {
+                  fiches_paie: "3 dernières fiches de paie",
+                  contrat: "Contrat de travail",
+                  avis_imposition: "Dernier avis d'imposition",
+                  piece_identite: "Pièce d'identité",
+                  rib: "RIB",
+                };
+                return labels[k] ?? k;
+              });
+
+            const docsText = docsRequired.length > 0
+              ? `Pour étudier votre dossier, merci de nous transmettre :\n${docsRequired.map((d) => `• ${d}`).join("\n")}`
+              : "Merci de nous transmettre votre dossier de location complet.";
+
+            const locationCompletion = await openai.chat.completions.create({
+              model: "gpt-4o-mini",
+              messages: [{
+                role: "user",
+                content: `Tu es l'assistant d'une agence immobilière. Réponds à cette demande de location. Accuse réception, ${docsText}. Indique que tu reviendras rapidement avec des créneaux de visite. Sois chaleureux et professionnel. En français.\n\nEmail de: ${email.sender}\nSujet: ${email.subject}\nContenu: ${email.body ?? ""}`,
+              }],
+              temperature: 0.3,
+            });
+            autoReply = locationCompletion.choices[0]?.message?.content ?? null;
+          }
+
+          if (autoReply && email.gmail_message_id) {
+            // Construire le message RFC 2822
+            const subjectEncoded = `=?UTF-8?B?${Buffer.from(`Re: ${email.subject ?? ""}`, "utf-8").toString("base64")}?=`;
+            const mime = [
+              `MIME-Version: 1.0`,
+              `To: ${email.sender ?? ""}`,
+              `Subject: ${subjectEncoded}`,
+              `Content-Type: text/plain; charset=UTF-8`,
+              `Content-Transfer-Encoding: base64`,
+              ``,
+              Buffer.from(autoReply, "utf-8").toString("base64"),
+            ].join("\r\n");
+            const raw = Buffer.from(mime, "utf-8")
+              .toString("base64")
+              .replace(/\+/g, "-")
+              .replace(/\//g, "_")
+              .replace(/=+$/, "");
+
+            // Récupérer threadId
+            let threadId: string | undefined;
+            try {
+              const msgRes = await fetch(
+                `https://gmail.googleapis.com/gmail/v1/users/me/messages/${email.gmail_message_id}?format=minimal`,
+                { headers: { Authorization: `Bearer ${accessToken}` } }
+              );
+              if (msgRes.ok) threadId = (await msgRes.json()).threadId;
+            } catch { /* optional */ }
+
+            const payload: any = { raw };
+            if (threadId) payload.threadId = threadId;
+
+            await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+              method: "POST",
+              headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+
+            // Marquer comme traité
+            await supabaseAdmin.from("emails").update({
+              ai_reply: autoReply,
+              is_archived: true,
+            }).eq("id", email.id);
+          }
+        } catch (autoErr) {
+          console.error("AUTOPILOTE_SEND_ERROR", autoErr);
+          // On ne bloque pas l'analyse si l'envoi auto échoue
+        }
+      }
 
       analyzed++;
     }

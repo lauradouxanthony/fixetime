@@ -1,14 +1,51 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import AppShell from "@/components/layout/AppShell";
-import { useSettings } from "@/hooks/useSettings";
 
 type Tab = "locatif" | "faq" | "calendrier" | "ia";
-
 type FaqEntry = { id: string; question: string; reponse: string };
 
 const DAYS_FR = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"];
+
+/* ── API HELPERS ── */
+
+async function loadSection<T>(section: string, defaultVal: T): Promise<T> {
+  try {
+    const res = await fetch("/api/settings", { cache: "no-store" });
+    if (res.ok) {
+      const data = await res.json();
+      const rules = data?.email_rules;
+      if (rules && typeof rules === "object" && rules[`ft_${section}`] !== undefined) {
+        return rules[`ft_${section}`] as T;
+      }
+    }
+  } catch { /* silent */ }
+  // Fallback to localStorage
+  try {
+    const stored = localStorage.getItem(`fixetime_${section}`);
+    if (stored) return JSON.parse(stored) as T;
+  } catch { /* silent */ }
+  return defaultVal;
+}
+
+async function saveSection(section: string, data: unknown): Promise<void> {
+  // Always save to localStorage
+  try { localStorage.setItem(`fixetime_${section}`, JSON.stringify(data)); } catch { /* silent */ }
+  // Save to API
+  try {
+    // Read current email_rules first
+    const res = await fetch("/api/settings", { cache: "no-store" });
+    const current = res.ok ? await res.json() : {};
+    const currentRules = (current?.email_rules && typeof current.email_rules === "object")
+      ? current.email_rules : {};
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ email_rules: { ...currentRules, [`ft_${section}`]: data } }),
+    });
+  } catch { /* silent - localStorage is the fallback */ }
+}
 
 /* ── COMPOSANTS UI ── */
 
@@ -17,12 +54,7 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
     <button
       onClick={onClick}
       className="px-4 py-2 text-sm font-medium rounded-lg transition-all"
-      style={active ? {
-        background: "rgb(238 242 255)",
-        color: "rgb(79 70 229)",
-      } : {
-        color: "rgb(100 116 139)",
-      }}
+      style={active ? { background: "rgb(238 242 255)", color: "rgb(79 70 229)" } : { color: "rgb(100 116 139)" }}
     >
       {children}
     </button>
@@ -55,14 +87,15 @@ function Input({ value, onChange, placeholder }: { value: string; onChange: (v: 
   );
 }
 
-function SaveButton({ onClick, saved }: { onClick: () => void; saved: boolean }) {
+function SaveButton({ onClick, saved, loading }: { onClick: () => void; saved: boolean; loading?: boolean }) {
   return (
     <button
       onClick={onClick}
-      className="px-4 py-2 rounded-lg text-sm font-medium text-white transition-all"
+      disabled={loading}
+      className="px-4 py-2 rounded-lg text-sm font-medium text-white transition-all disabled:opacity-50"
       style={{ background: saved ? "rgb(22 163 74)" : "rgb(79 70 229)" }}
     >
-      {saved ? "✅ Enregistré" : "Enregistrer"}
+      {loading ? "Enregistrement…" : saved ? "✅ Enregistré" : "Enregistrer"}
     </button>
   );
 }
@@ -73,19 +106,21 @@ function TabLocatif() {
   const [profils, setProfils] = useState({ cdi: true, cdd: true, auto: false, retraite: true, garant: true });
   const [docs, setDocs] = useState({ fiches_paie: true, contrat: true, avis_imposition: true, piece_identite: true, rib: false });
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem("fixetime_locatif");
-    if (stored) {
-      const d = JSON.parse(stored);
+    loadSection("locatif", { multiplicateur: 3, profils, docs }).then((d: any) => {
       if (d.multiplicateur) setMultiplicateur(d.multiplicateur);
       if (d.profils) setProfils(d.profils);
       if (d.docs) setDocs(d.docs);
-    }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const save = () => {
-    localStorage.setItem("fixetime_locatif", JSON.stringify({ multiplicateur, profils, docs }));
+  const save = async () => {
+    setSaving(true);
+    await saveSection("locatif", { multiplicateur, profils, docs });
+    setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -156,7 +191,7 @@ function TabLocatif() {
         </div>
       </Card>
 
-      <div className="flex justify-end"><SaveButton onClick={save} saved={saved} /></div>
+      <div className="flex justify-end"><SaveButton onClick={save} saved={saved} loading={saving} /></div>
     </div>
   );
 }
@@ -168,27 +203,25 @@ function TabFaq() {
     { id: "2", question: "Animaux acceptés ?", reponse: "Selon le propriétaire, à préciser lors de la visite." },
   ]);
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem("fixetime_faq");
-    if (stored) setEntries(JSON.parse(stored));
+    loadSection<FaqEntry[]>("faq", entries).then((d) => { if (d.length > 0) setEntries(d); });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const save = () => {
-    localStorage.setItem("fixetime_faq", JSON.stringify(entries));
+  const save = async () => {
+    setSaving(true);
+    await saveSection("faq", entries);
+    setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
 
-  const add = () => {
-    setEntries([...entries, { id: Date.now().toString(), question: "", reponse: "" }]);
-  };
-
+  const add = () => setEntries([...entries, { id: Date.now().toString(), question: "", reponse: "" }]);
   const remove = (id: string) => setEntries(entries.filter((e) => e.id !== id));
-
-  const update = (id: string, field: "question" | "reponse", value: string) => {
+  const update = (id: string, field: "question" | "reponse", value: string) =>
     setEntries(entries.map((e) => e.id === id ? { ...e, [field]: value } : e));
-  };
 
   return (
     <div className="space-y-4">
@@ -221,7 +254,7 @@ function TabFaq() {
           + Ajouter une règle FAQ
         </button>
       </Card>
-      <div className="flex justify-end"><SaveButton onClick={save} saved={saved} /></div>
+      <div className="flex justify-end"><SaveButton onClick={save} saved={saved} loading={saving} /></div>
     </div>
   );
 }
@@ -232,30 +265,31 @@ function TabCalendrier() {
   const [heureDebut, setHeureDebut] = useState(9);
   const [heureFin, setHeureFin] = useState(18);
   const [delaiPrevenanceH, setDelaiPrevenanceH] = useState(24);
-  const [joursExclus, setJoursExclus] = useState<number[]>([5, 6]); // samedi, dimanche
+  const [joursExclus, setJoursExclus] = useState<number[]>([5, 6]);
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem("fixetime_calendrier");
-    if (stored) {
-      const d = JSON.parse(stored);
+    loadSection("calendrier", { dureeVisite, heureDebut, heureFin, delaiPrevenanceH, joursExclus }).then((d: any) => {
       if (d.dureeVisite) setDureeVisite(d.dureeVisite);
       if (d.heureDebut !== undefined) setHeureDebut(d.heureDebut);
       if (d.heureFin !== undefined) setHeureFin(d.heureFin);
       if (d.delaiPrevenanceH) setDelaiPrevenanceH(d.delaiPrevenanceH);
       if (d.joursExclus) setJoursExclus(d.joursExclus);
-    }
+    });
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
-  const save = () => {
-    localStorage.setItem("fixetime_calendrier", JSON.stringify({ dureeVisite, heureDebut, heureFin, delaiPrevenanceH, joursExclus }));
+  const save = async () => {
+    setSaving(true);
+    await saveSection("calendrier", { dureeVisite, heureDebut, heureFin, delaiPrevenanceH, joursExclus });
+    setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
 
-  const toggleJour = (idx: number) => {
+  const toggleJour = (idx: number) =>
     setJoursExclus((prev) => prev.includes(idx) ? prev.filter((j) => j !== idx) : [...prev, idx]);
-  };
 
   return (
     <div className="space-y-4">
@@ -339,40 +373,43 @@ function TabCalendrier() {
         </p>
       </Card>
 
-      <div className="flex justify-end"><SaveButton onClick={save} saved={saved} /></div>
+      <div className="flex justify-end"><SaveButton onClick={save} saved={saved} loading={saving} /></div>
     </div>
   );
 }
 
 /* ── TAB 4 : CONFIG IA ── */
 function TabIA() {
-  const { settings, updateSettings, loading } = useSettings();
   const [instructions, setInstructions] = useState("");
   const [mode, setMode] = useState<"DRAFT" | "AUTOPILOTE">("DRAFT");
   const [saved, setSaved] = useState(false);
+  const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    const stored = localStorage.getItem("fixetime_ia");
-    if (stored) {
-      const d = JSON.parse(stored);
-      if (d.instructions) setInstructions(d.instructions);
-    }
-  }, []);
-
-  useEffect(() => {
-    fetch("/api/settings")
+    // Load pipeline_mode from API
+    fetch("/api/settings", { cache: "no-store" })
       .then((r) => r.json())
-      .then((data) => { if (data?.pipeline_mode === "AUTOPILOTE") setMode("AUTOPILOTE"); })
+      .then((data) => {
+        if (data?.pipeline_mode === "AUTOPILOTE") setMode("AUTOPILOTE");
+      })
       .catch(() => {});
+    // Load instructions
+    loadSection("ia", { instructions: "" }).then((d: any) => {
+      if (d.instructions) setInstructions(d.instructions);
+    });
   }, []);
 
   const save = async () => {
-    localStorage.setItem("fixetime_ia", JSON.stringify({ instructions }));
-    await fetch("/api/settings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pipeline_mode: mode }),
-    });
+    setSaving(true);
+    await Promise.all([
+      fetch("/api/settings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ pipeline_mode: mode }),
+      }),
+      saveSection("ia", { instructions }),
+    ]);
+    setSaving(false);
     setSaved(true);
     setTimeout(() => setSaved(false), 2000);
   };
@@ -420,7 +457,7 @@ function TabIA() {
         />
       </Card>
 
-      <div className="flex justify-end"><SaveButton onClick={save} saved={saved} /></div>
+      <div className="flex justify-end"><SaveButton onClick={save} saved={saved} loading={saving} /></div>
     </div>
   );
 }
@@ -438,29 +475,28 @@ export default function SettingsPage() {
 
   return (
     <AppShell>
-      <div className="p-6 max-w-2xl mx-auto space-y-6">
-        {/* Titre */}
-        <div>
-          <h1 className="text-xl font-semibold" style={{ color: "rgb(30 41 59)" }}>Paramètres</h1>
-          <p className="text-sm mt-0.5" style={{ color: "rgb(100 116 139)" }}>
-            Configurez FixTime pour votre agence immobilière.
-          </p>
-        </div>
+      <div className="h-full overflow-y-auto">
+        <div className="p-6 max-w-2xl mx-auto space-y-6">
+          <div>
+            <h1 className="text-xl font-semibold" style={{ color: "rgb(30 41 59)" }}>Paramètres</h1>
+            <p className="text-sm mt-0.5" style={{ color: "rgb(100 116 139)" }}>
+              Configurez FixTime pour votre agence immobilière.
+            </p>
+          </div>
 
-        {/* Tabs */}
-        <div className="flex gap-1 p-1 rounded-xl" style={{ background: "rgb(248 250 252)", border: "1px solid rgb(226 232 240)" }}>
-          {tabs.map((t) => (
-            <TabButton key={t.key} active={activeTab === t.key} onClick={() => setActiveTab(t.key)}>
-              {t.label}
-            </TabButton>
-          ))}
-        </div>
+          <div className="flex gap-1 p-1 rounded-xl" style={{ background: "rgb(248 250 252)", border: "1px solid rgb(226 232 240)" }}>
+            {tabs.map((t) => (
+              <TabButton key={t.key} active={activeTab === t.key} onClick={() => setActiveTab(t.key)}>
+                {t.label}
+              </TabButton>
+            ))}
+          </div>
 
-        {/* Contenu */}
-        {activeTab === "locatif" && <TabLocatif />}
-        {activeTab === "faq" && <TabFaq />}
-        {activeTab === "calendrier" && <TabCalendrier />}
-        {activeTab === "ia" && <TabIA />}
+          {activeTab === "locatif" && <TabLocatif />}
+          {activeTab === "faq" && <TabFaq />}
+          {activeTab === "calendrier" && <TabCalendrier />}
+          {activeTab === "ia" && <TabIA />}
+        </div>
       </div>
     </AppShell>
   );

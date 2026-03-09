@@ -8,6 +8,8 @@ import {
   CalendarDays,
   Settings,
   LogOut,
+  Users,
+  MessageSquare,
 } from "lucide-react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useRouter } from "next/navigation";
@@ -15,7 +17,9 @@ import { useRouter } from "next/navigation";
 const navItems = [
   { label: "Tableau de bord", href: "/home", icon: LayoutDashboard },
   { label: "Pipeline emails", href: "/emails", icon: Mail },
+  { label: "Prospects", href: "/leads", icon: Users },
   { label: "Calendrier", href: "/calendar", icon: CalendarDays },
+  { label: "Chat IA", href: "/chat", icon: MessageSquare },
   { label: "Paramètres", href: "/settings", icon: Settings },
 ];
 

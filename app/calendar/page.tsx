@@ -9,6 +9,7 @@ import { DayTimeline } from "@/components/calendar/DayTimeline";
 import { CalendarAIPanel } from "@/components/calendar/CalendarAIPanel";
 import type { CalendarEvent } from "@/components/calendar/calendarUtils";
 import { normalizeEventsForDay } from "@/components/calendar/calendarUtils";
+import AppShell from "@/components/layout/AppShell";
 
 type ViewMode = "day" | "week";
 
@@ -107,16 +108,12 @@ export default function CalendarPage() {
   const handleRefresh = async () => {
     try {
       setRefreshing(true);
-
-      // ✅ TA ROUTE RÉELLE (confirmée)
       const res = await fetch("/api/calendar/sync", { method: "GET" });
       const json = await res.json();
 
       if (!res.ok) {
         console.error("CALENDAR SYNC ERROR", json);
-        if (json?.error === "NO_GOOGLE_TOKEN") {
-          setConnected(false);
-        }
+        if (json?.error === "NO_GOOGLE_TOKEN") setConnected(false);
       } else {
         setConnected(true);
       }
@@ -157,12 +154,7 @@ export default function CalendarPage() {
       });
 
       const json = await res.json();
-
-      if (!res.ok) {
-        console.error("AI CALENDAR ERROR", json);
-        return;
-      }
-
+      if (!res.ok) { console.error("AI CALENDAR ERROR", json); return; }
       setAI(json.result);
     } catch (e) {
       console.error("AI CALENDAR ERROR", e);
@@ -174,65 +166,74 @@ export default function CalendarPage() {
   /* ---------------- RENDER ---------------- */
 
   return (
-    <div className="h-full flex flex-col p-6 gap-4">
-      <CalendarHeader
-        date={date}
-        mode={mode}
-        onPrev={onPrev}
-        onNext={onNext}
-        onToday={onToday}
-        onChangeMode={setMode}
-        onRefresh={handleRefresh}
-        refreshing={refreshing}
-        connected={connected}
-      />
+    <AppShell>
+      <div className="h-full flex flex-col p-6 gap-4" style={{ background: "rgb(250 250 250)" }}>
 
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1">
-        {/* Colonne gauche */}
-        <div className="lg:col-span-2 space-y-3">
-          <div className="text-sm text-gray-400">
-            Vue {mode === "day" ? "Jour" : "Semaine"} — focus dirigeant.
+        {/* Header */}
+        <CalendarHeader
+          date={date}
+          mode={mode}
+          onPrev={onPrev}
+          onNext={onNext}
+          onToday={onToday}
+          onChangeMode={setMode}
+          onRefresh={handleRefresh}
+          refreshing={refreshing}
+          connected={connected}
+        />
+
+        {/* Corps */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 flex-1 min-h-0">
+
+          {/* Colonne gauche : timeline */}
+          <div className="lg:col-span-2 flex flex-col gap-3 min-h-0 overflow-y-auto">
+            <div className="text-sm" style={{ color: "rgb(100 116 139)" }}>
+              Vue {mode === "day" ? "Jour" : "Semaine"} — créneaux disponibles mis en évidence
+            </div>
+
+            {loading ? (
+              <div className="rounded-xl border p-4 text-sm animate-pulse"
+                style={{ borderColor: "rgb(226 232 240)", background: "white", color: "rgb(100 116 139)" }}>
+                Chargement…
+              </div>
+            ) : (
+              <DayTimeline events={dayEvents} onSelect={setSelected} />
+            )}
+
+            {selected && (
+              <div className="rounded-xl border p-4" style={{ borderColor: "rgb(226 232 240)", background: "white" }}>
+                <div className="text-xs font-semibold uppercase tracking-wide mb-2"
+                  style={{ color: "rgb(100 116 139)" }}>
+                  Détail RDV
+                </div>
+                <div className="text-sm font-semibold" style={{ color: "rgb(30 41 59)" }}>
+                  {selected.title || "Sans titre"}
+                </div>
+                {selected.description ? (
+                  <div className="text-sm mt-2 whitespace-pre-wrap" style={{ color: "rgb(71 85 105)" }}>
+                    {selected.description}
+                  </div>
+                ) : (
+                  <div className="text-sm mt-2" style={{ color: "rgb(148 163 184)" }}>
+                    Aucune description.
+                  </div>
+                )}
+              </div>
+            )}
           </div>
 
-          {loading ? (
-            <div className="rounded-xl border border-gray-800 bg-gray-900 p-4 text-sm text-gray-400">
-              Chargement…
-            </div>
-          ) : (
-            <DayTimeline events={dayEvents} onSelect={setSelected} />
-          )}
-
-          {selected && (
-            <div className="rounded-xl border border-gray-800 bg-gray-900 p-4">
-              <div className="text-xs text-gray-400">Détail</div>
-              <div className="text-white font-semibold mt-1">
-                {selected.title || "Sans titre"}
-              </div>
-
-              {selected.description ? (
-                <div className="text-sm text-gray-300 mt-2 whitespace-pre-wrap">
-                  {selected.description}
-                </div>
-              ) : (
-                <div className="text-sm text-gray-500 mt-2">
-                  Aucune description.
-                </div>
-              )}
-            </div>
-          )}
-        </div>
-
-        {/* Colonne droite IA */}
-        <div className="lg:col-span-1">
-          <CalendarAIPanel
-            date={date}
-            events={dayEvents}
-            ai={ai}
-            loadingAI={loadingAI}
-            onGenerateAI={generateAI}
-          />
+          {/* Colonne droite : IA */}
+          <div className="lg:col-span-1 overflow-y-auto">
+            <CalendarAIPanel
+              date={date}
+              events={dayEvents}
+              ai={ai}
+              loadingAI={loadingAI}
+              onGenerateAI={generateAI}
+            />
+          </div>
         </div>
       </div>
-    </div>
+    </AppShell>
   );
 }

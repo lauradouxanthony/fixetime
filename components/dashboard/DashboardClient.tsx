@@ -203,6 +203,7 @@ export default function DashboardClient() {
   };
 
   return (
+    <div className="h-full overflow-y-auto">
     <div className="p-6 space-y-6 max-w-5xl mx-auto">
 
       {/* ── TITRE ── */}
@@ -382,6 +383,7 @@ export default function DashboardClient() {
           </div>
         </div>
       </div>
+    </div>
     </div>
   );
 }
