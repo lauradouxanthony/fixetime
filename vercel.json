@@ -1,8 +1,0 @@
-{
-  "crons": [
-    {
-      "path": "/api/internal/analyze-cron",
-      "schedule": "0 * * * *"
-    }
-  ]
-}
