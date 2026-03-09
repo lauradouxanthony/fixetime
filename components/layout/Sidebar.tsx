@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import {
   LayoutDashboard,
   Mail,
@@ -16,7 +17,7 @@ import { useRouter } from "next/navigation";
 
 const navItems = [
   { label: "Tableau de bord", href: "/home", icon: LayoutDashboard },
-  { label: "Pipeline emails", href: "/emails", icon: Mail },
+  { label: "Pipeline emails", href: "/emails", icon: Mail, badge: true },
   { label: "Prospects", href: "/leads", icon: Users },
   { label: "Calendrier", href: "/calendar", icon: CalendarDays },
   { label: "Chat IA", href: "/chat", icon: MessageSquare },
@@ -26,6 +27,26 @@ const navItems = [
 export function Sidebar() {
   const pathname = usePathname();
   const router = useRouter();
+  const [unreadCount, setUnreadCount] = useState(0);
+
+  useEffect(() => {
+    const supabase = supabaseBrowser();
+
+    const fetchUnread = async () => {
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return;
+      const { count } = await supabase
+        .from("emails")
+        .select("id", { count: "exact", head: true })
+        .eq("user_id", user.id)
+        .eq("is_archived", false);
+      setUnreadCount(count ?? 0);
+    };
+
+    fetchUnread();
+    const interval = setInterval(fetchUnread, 60_000);
+    return () => clearInterval(interval);
+  }, []);
 
   async function handleLogout() {
     const supabase = supabaseBrowser();
@@ -51,6 +72,7 @@ export function Sidebar() {
         {navItems.map((item) => {
           const Icon = item.icon;
           const isActive = pathname === item.href || pathname.startsWith(item.href + "/");
+          const showBadge = item.badge && unreadCount > 0;
 
           return (
             <Link
@@ -78,7 +100,19 @@ export function Sidebar() {
               }}
             >
               <Icon className="h-4 w-4 flex-shrink-0" />
-              <span>{item.label}</span>
+              <span className="flex-1">{item.label}</span>
+              {showBadge && (
+                <span
+                  className="text-xs font-semibold px-1.5 py-0.5 rounded-full text-white leading-none"
+                  style={{
+                    background: "rgb(79 70 229)",
+                    minWidth: "18px",
+                    textAlign: "center",
+                  }}
+                >
+                  {unreadCount > 99 ? "99+" : unreadCount}
+                </span>
+              )}
             </Link>
           );
         })}

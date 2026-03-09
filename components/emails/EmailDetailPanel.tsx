@@ -2,6 +2,7 @@
 
 import { useEffect, useState, useCallback } from "react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
+import { useToast } from "@/components/ui/Toast";
 const supabase = supabaseBrowser();
 import type { Email } from "@/types/email";
 import {
@@ -332,7 +333,7 @@ function BookingWidget({
 
 export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | null; mode?: PipelineMode }) {
   const [body, setBody] = useState<string | null>(null);
-  const [toast, setToast] = useState<string | null>(null);
+  const { toast: showToast } = useToast();
   const [aiReply, setAiReply] = useState<string | null>(null);
   const [replyOpen, setReplyOpen] = useState(false);
   const [replyLoading, setReplyLoading] = useState(false);
@@ -343,9 +344,8 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
   const decision = email?.decision ?? fallbackDecision(email);
   const minutes = email?.estimated_time ?? fallbackTime(email);
 
-  const notify = (msg: string) => {
-    setToast(msg);
-    setTimeout(() => setToast(null), 2500);
+  const notify = (msg: string, type: "success" | "error" | "info" = "success") => {
+    showToast(msg, type);
   };
 
   useEffect(() => {
@@ -384,7 +384,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
   };
 
   const archive = async () => {
-    if (!email?.gmail_message_id) { notify("gmail_message_id manquant"); return; }
+    if (!email?.gmail_message_id) { notify("gmail_message_id manquant", "error"); return; }
     setBusy("archive");
     const res = await fetch("/api/gmail/archive", {
       method: "POST",
@@ -392,8 +392,8 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
       body: JSON.stringify({ gmailMessageId: email.gmail_message_id, emailId: email.id }),
     });
     setBusy(null);
-    if (!res.ok) { notify("Erreur archivage"); return; }
-    notify("Email archivé ✅");
+    if (!res.ok) { notify("Erreur archivage", "error"); return; }
+    notify("Email archivé ✅", "success");
   };
 
   const handleBookingApprove = async (slot: { start: Date; end: Date }) => {
@@ -407,8 +407,8 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
         end: slot.end.toISOString(),
       }),
     });
-    if (!res.ok) { notify("Erreur création RDV"); return; }
-    notify("RDV créé dans Google Calendar ✅");
+    if (!res.ok) { notify("Erreur création RDV", "error"); return; }
+    notify("RDV créé dans Google Calendar ✅", "success");
   };
 
   if (!email) {
@@ -425,14 +425,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
     : null;
 
   return (
-    <div className="p-5 space-y-4 max-w-2xl mx-auto">
-      {/* Toast */}
-      {toast && (
-        <div className="fixed top-4 right-4 z-50 px-4 py-2.5 rounded-xl text-sm font-medium shadow-lg"
-          style={{ background: "rgb(30 41 59)", color: "white" }}>
-          {toast}
-        </div>
-      )}
+    <div className="p-5 space-y-4 max-w-2xl mx-auto animate-fade-in">
 
       {/* ── En-tête email ── */}
       <div className="rounded-xl border p-4 bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
@@ -527,7 +520,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
             </div>
             <div className="flex gap-2">
               <button
-                onClick={() => { navigator.clipboard.writeText(aiReply); notify("Copié ✅"); }}
+                onClick={() => { navigator.clipboard.writeText(aiReply); notify("Copié dans le presse-papiers", "success"); }}
                 className="text-xs px-3 py-1.5 rounded-lg transition-colors"
                 style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
               >

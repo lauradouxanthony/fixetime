@@ -15,6 +15,35 @@ type Email = {
   classification_reason?: string | null;
 };
 
+/* ── AVATAR INITIALES ── */
+function Avatar({ name }: { name: string | null }) {
+  const clean = (name || "").replace(/<.*>/, "").trim();
+  const initials = clean
+    .split(/[\s@.]+/)
+    .slice(0, 2)
+    .map((w) => w[0]?.toUpperCase() ?? "")
+    .join("") || "?";
+  const hue = [...clean].reduce((acc, c) => acc + c.charCodeAt(0), 0) % 360;
+  return (
+    <div
+      className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold text-white flex-shrink-0"
+      style={{ background: `hsl(${hue},50%,52%)` }}
+      title={clean}
+    >
+      {initials}
+    </div>
+  );
+}
+
+/* ── STAGE DOT ── */
+function StageDot({ decision }: { decision?: string | null }) {
+  const d = (decision || "").toLowerCase();
+  if (d === "traiter")  return <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: "rgb(234 88 12)" }} />;
+  if (d === "planifier") return <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: "rgb(37 99 235)" }} />;
+  if (d === "ignorer")  return <span className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: "rgb(203 213 225)" }} />;
+  return <span className="w-2 h-2 rounded-full flex-shrink-0 animate-pulse" style={{ background: "rgb(148 163 184)" }} />;
+}
+
 type EmailsListProps = {
   emails: Email[];
   selectedEmailId: string | null;
@@ -136,7 +165,7 @@ export function EmailsList({ emails, selectedEmailId, onSelect, loading }: Email
           <div
             key={email.id}
             onClick={() => onSelect(email)}
-            className="px-4 py-3 border-b cursor-pointer transition-colors"
+            className="px-4 py-3 border-b cursor-pointer transition-colors animate-fade-in"
             style={{
               borderColor: "rgb(226 232 240)",
               background: isSelected ? "rgb(238 242 255)" : "transparent",
@@ -148,59 +177,51 @@ export function EmailsList({ emails, selectedEmailId, onSelect, loading }: Email
               if (!isSelected) (e.currentTarget as HTMLElement).style.background = "transparent";
             }}
           >
-            {/* Ligne 1 : intention + score + urgence */}
-            <div className="flex items-center justify-between gap-2 mb-1.5">
-              <div className="flex items-center gap-1.5 min-w-0">
-                {isRdvConfirme ? (
-                  <span className="text-xs px-2 py-0.5 rounded-full font-medium"
-                    style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22,163,74)" }}>
-                    ✅ RDV Confirmé
-                  </span>
-                ) : (
-                  <IntentionBadge intention={intention} />
-                )}
-                {email.is_urgent && !isRdvConfirme && (
-                  <span className="text-xs px-2 py-0.5 rounded-full font-medium"
-                    style={{ background: "rgba(220,38,38,0.1)", color: "rgb(220,38,38)" }}>
-                    Urgent
-                  </span>
-                )}
-              </div>
-              <div className="flex items-center gap-2 flex-shrink-0">
-                <ScoreBadge score={score} />
-                {email.estimated_time !== null && email.estimated_time !== undefined && (
-                  <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>
-                    {email.estimated_time}min
-                  </span>
-                )}
-              </div>
-            </div>
+            {/* Row : avatar + content */}
+            <div className="flex items-start gap-3">
+              <Avatar name={email.sender} />
 
-            {/* Ligne 2 : sujet */}
-            <div
-              className="text-sm font-semibold truncate mb-1"
-              style={{ color: isSelected ? "rgb(79 70 229)" : "rgb(30 41 59)" }}
-            >
-              {email.subject || "(Sans objet)"}
-            </div>
+              <div className="flex-1 min-w-0">
+                {/* Ligne 1 : badges */}
+                <div className="flex items-center justify-between gap-2 mb-1">
+                  <div className="flex items-center gap-1.5 min-w-0">
+                    <StageDot decision={email.decision} />
+                    {isRdvConfirme ? (
+                      <span className="text-xs px-1.5 py-0.5 rounded-full font-medium"
+                        style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22,163,74)" }}>
+                        ✅ RDV
+                      </span>
+                    ) : (
+                      <IntentionBadge intention={intention} />
+                    )}
+                    {email.is_urgent && !isRdvConfirme && (
+                      <span className="text-xs font-medium" style={{ color: "rgb(220,38,38)" }}>
+                        🔴
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center gap-1.5 flex-shrink-0">
+                    <ScoreBadge score={score} />
+                    {email.received_at && (
+                      <span className="text-xs whitespace-nowrap" style={{ color: "rgb(148 163 184)" }}>
+                        {new Date(email.received_at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
+                      </span>
+                    )}
+                  </div>
+                </div>
 
-            {/* Ligne 3 : résumé IA */}
-            <div className="text-xs line-clamp-1 mb-1.5" style={{ color: "rgb(100 116 139)" }}>
-              {preview}
-            </div>
+                {/* Ligne 2 : sujet */}
+                <div
+                  className="text-sm font-semibold truncate mb-0.5"
+                  style={{ color: isSelected ? "rgb(79 70 229)" : "rgb(30 41 59)" }}
+                >
+                  {email.subject || "(Sans objet)"}
+                </div>
 
-            {/* Ligne 4 : expéditeur + date */}
-            <div className="flex items-center justify-between gap-2">
-              <div className="text-xs truncate" style={{ color: "rgb(148 163 184)" }}>
-                {email.sender || "Expéditeur inconnu"}
-              </div>
-              <div className="text-xs whitespace-nowrap" style={{ color: "rgb(148 163 184)" }}>
-                {email.received_at
-                  ? new Date(email.received_at).toLocaleDateString("fr-FR", {
-                      day: "numeric",
-                      month: "short",
-                    })
-                  : ""}
+                {/* Ligne 3 : résumé IA */}
+                <div className="text-xs line-clamp-1" style={{ color: "rgb(100 116 139)" }}>
+                  {preview}
+                </div>
               </div>
             </div>
           </div>

@@ -39,6 +39,7 @@ export default function PipelinePage() {
   const [mode, setMode] = useState<PipelineMode>("DRAFT");
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [now, setNow] = useState(new Date());
+  const [search, setSearch] = useState("");
 
   // Tick toutes les 10s pour mettre à jour "il y a Xs"
   useEffect(() => {
@@ -198,6 +199,17 @@ export default function PipelinePage() {
     return { location, info, horssujet, total: emails.length };
   }, [emails]);
 
+  const filteredEmails = useMemo(() => {
+    if (!search.trim()) return emails;
+    const q = search.toLowerCase();
+    return emails.filter(
+      (e) =>
+        e.subject?.toLowerCase().includes(q) ||
+        e.sender?.toLowerCase().includes(q) ||
+        e.summary?.toLowerCase().includes(q)
+    );
+  }, [emails, search]);
+
   return (
     <AppShell>
       <div className="flex flex-col h-full" style={{ background: "rgb(250 250 250)" }}>
@@ -275,6 +287,19 @@ export default function PipelinePage() {
           className="px-6 py-3 flex items-center justify-between gap-4 border-b bg-white"
           style={{ borderColor: "rgb(226 232 240)" }}
         >
+          {/* Recherche */}
+          <div className="relative flex-shrink-0 w-56">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs" style={{ color: "rgb(148 163 184)" }}>🔍</span>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Rechercher…"
+              className="w-full pl-8 pr-3 py-1.5 rounded-lg border text-xs focus:outline-none focus:ring-2 focus:ring-indigo-200"
+              style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+            />
+          </div>
+
           {/* Filtres intention */}
           <div className="flex items-center gap-1.5">
             {(["all", "LOCATION", "INFO", "HORS_SUJET"] as const).map((f) => {
@@ -344,7 +369,7 @@ export default function PipelinePage() {
             style={{ borderColor: "rgb(226 232 240)", background: "white" }}
           >
             <EmailsList
-              emails={emails}
+              emails={filteredEmails}
               selectedEmailId={selectedEmail?.id || null}
               onSelect={(email) => setSelectedEmail(email as Email)}
               loading={loading}
