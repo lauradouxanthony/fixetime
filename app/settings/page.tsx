@@ -1,387 +1,467 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
+import AppShell from "@/components/layout/AppShell";
 import { useSettings } from "@/hooks/useSettings";
 
-/* ---------------- UI: "Bientôt disponible" ---------------- */
+type Tab = "locatif" | "faq" | "calendrier" | "ia";
 
-function SoonBadge() {
+type FaqEntry = { id: string; question: string; reponse: string };
+
+const DAYS_FR = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"];
+
+/* ── COMPOSANTS UI ── */
+
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: React.ReactNode }) {
   return (
-    <span className="text-[11px] px-2 py-0.5 rounded-full bg-gray-800 text-gray-400 border border-gray-700">
-      Bientôt
-    </span>
-  );
-}
-
-function DisabledBlock({
-  title,
-  description,
-}: {
-  title: string;
-  description?: string;
-}) {
-  return (
-    <div className="opacity-50 pointer-events-none space-y-1">
-      <div className="flex items-center justify-between">
-        <p className="text-sm font-medium">{title}</p>
-        <SoonBadge />
-      </div>
-      {description && (
-        <p className="text-xs text-slate-500">{description}</p>
-      )}
-    </div>
-  );
-}
-
-/* ---------------- TYPES LOCAUX (V1) ---------------- */
-
-type EmailCategoryAction = "important" | "analyze" | "ignore";
-
-type EmailCategoryKey =
-  | "clients"
-  | "bank"
-  | "partners"
-  | "newsletters";
-
-/* ---------------- PAGE ---------------- */
-
-export default function SettingsPage() {
-  const { settings, updateSettings, loading } = useSettings();
-
-  /* 🔒 STATE LOCAL – aucune dépendance backend pour l’instant */
-  const [emailPrefs, setEmailPrefs] = useState<
-    Record<EmailCategoryKey, EmailCategoryAction>
-  >({
-    clients: "important",
-    bank: "important",
-    partners: "analyze",
-    newsletters: "ignore",
-  });
-
-  if (loading) {
-    return <p className="text-sm text-slate-400">Chargement…</p>;
-  }
-
-  if (!settings) {
-    return (
-      <p className="text-sm text-slate-400">
-        Impossible de charger les paramètres.
-      </p>
-    );
-  }
-
-  return (
-    <div className="max-w-3xl space-y-8">
-      {/* HEADER */}
-      <section>
-        <h1 className="text-2xl font-semibold">Paramètres</h1>
-        <p className="text-sm text-slate-500">
-          Personnalisez FixTime selon vos préférences.
-        </p>
-      </section>
-
-      {/* ---------------- THEME ---------------- */}
-      <section className="rounded-2xl bg-card border border-border p-5 flex justify-between items-center">
-        <div>
-          <p className="text-sm font-medium">Thème</p>
-          <p className="text-xs text-slate-500">Clair / Sombre</p>
-        </div>
-
-        <div className="flex gap-2">
-          <button
-            onClick={() => updateSettings({ theme: "light" })}
-            className={`px-3 py-2 rounded-md border ${
-              settings.theme === "light"
-                ? "border-sky-500 bg-sky-500/10"
-                : "border-border"
-            }`}
-          >
-            Clair
-          </button>
-
-          <button
-            onClick={() => updateSettings({ theme: "dark" })}
-            className={`px-3 py-2 rounded-md border ${
-              settings.theme === "dark"
-                ? "border-sky-500 bg-sky-500/10"
-                : "border-border"
-            }`}
-          >
-            Sombre
-          </button>
-        </div>
-      </section>
- {/* ---------------- RULES: SENDERS ---------------- */}
-<section className="rounded-2xl bg-card border border-border p-5 space-y-4">
-  <h2 className="text-sm font-semibold">Expéditeurs prioritaires</h2>
-
-  <p className="text-xs text-slate-500">
-    Ces règles ont priorité absolue sur l’IA.
-  </p>
-
-  <div className="space-y-3">
-    <div>
-      <label className="text-xs text-slate-500">
-        Toujours importants (ex: @client.com)
-      </label>
-      <input
-        type="text"
-        className="w-full mt-1 rounded-md bg-background border border-border px-3 py-2 text-sm"
-        placeholder="@client.com, @banque.fr"
-        value={settings.email_rules.always_important.join(", ")}
-        onChange={(e) =>
-          updateSettings({
-            email_rules: {
-              ...settings.email_rules,
-              always_important: e.target.value
-                .split(",")
-                .map((v) => v.trim())
-                .filter(Boolean),
-            },
-          })
-        }
-      />
-    </div>
-
-    <div>
-      <label className="text-xs text-slate-500">
-        Toujours ignorés (ex: @promo.com)
-      </label>
-      <input
-        type="text"
-        className="w-full mt-1 rounded-md bg-background border border-border px-3 py-2 text-sm"
-        placeholder="@promo.com, @newsletter.com"
-        value={settings.email_rules.always_ignore.join(", ")}
-        onChange={(e) =>
-          updateSettings({
-            email_rules: {
-              ...settings.email_rules,
-              always_ignore: e.target.value
-                .split(",")
-                .map((v) => v.trim())
-                .filter(Boolean),
-            },
-          })
-        }
-      />
-    </div>
-  </div>
-</section>
-     
-     {/* ---------------- RULES: KEYWORDS ---------------- */}
-<section className="rounded-2xl bg-card border border-border p-5 space-y-4">
-<h2 className="text-sm font-semibold">Mots-clés métier</h2>
-
-<p className="text-xs text-slate-500">
-Utilisés pour prioriser ou ignorer certains emails.
-</p>
-
-<div className="space-y-3">
-<div>
-<label className="text-xs text-slate-500">
-Mots-clés urgents
-</label>
-<input
-type="text"
-className="w-full mt-1 rounded-md bg-background border border-border px-3 py-2 text-sm"
-placeholder="facture, URSSAF, impôts"
-value={settings.email_rules.keywords.urgent.join(", ")}
-onChange={(e) =>
-updateSettings({
-email_rules: {
-...settings.email_rules,
-keywords: {
-...settings.email_rules.keywords,
-urgent: e.target.value
-.split(",")
-.map((v) => v.trim())
-.filter(Boolean),
-},
-},
-})
-}
-/>
-</div>
-
-<div>
-<label className="text-xs text-slate-500">
-Mots-clés à ignorer
-</label>
-<input
-type="text"
-className="w-full mt-1 rounded-md bg-background border border-border px-3 py-2 text-sm"
-placeholder="promo, newsletter"
-value={settings.email_rules.keywords.ignore.join(", ")}
-onChange={(e) =>
-updateSettings({
-email_rules: {
-...settings.email_rules,
-keywords: {
-...settings.email_rules.keywords,
-ignore: e.target.value
-.split(",")
-.map((v) => v.trim())
-.filter(Boolean),
-},
-},
-})
-}
-/>
-</div>
-</div>
-</section>
- {/* ---------------- AUTOMATION (SOON) ---------------- */}
-<section className="rounded-2xl bg-card border border-border p-5 space-y-3 opacity-50 pointer-events-none">
-  <div className="flex items-center justify-between">
-    <h2 className="text-sm font-semibold">Assistant IA</h2>
-    <SoonBadge />
-  </div>
-
-  <p className="text-xs text-slate-500">
-    Bientôt disponible — vous pourrez choisir le niveau d’automatisation.
-  </p>
-
-  {[
-    { key: "suggest", label: "Suggestions uniquement" },
-    { key: "prepare", label: "Préparation assistée" },
-    { key: "propose", label: "Propositions d’actions" },
-  ].map((opt) => (
-    <label
-      key={opt.key}
-      className={`flex gap-3 items-center p-3 rounded-xl border ${
-        settings.automation_level === opt.key
-          ? "border-sky-500 bg-sky-500/10"
-          : "border-border"
-      }`}
+    <button
+      onClick={onClick}
+      className="px-4 py-2 text-sm font-medium rounded-lg transition-all"
+      style={active ? {
+        background: "rgb(238 242 255)",
+        color: "rgb(79 70 229)",
+      } : {
+        color: "rgb(100 116 139)",
+      }}
     >
-      <input
-        type="radio"
-        checked={settings.automation_level === opt.key}
-        readOnly
-      />
-      <span className="text-sm">{opt.label}</span>
-    </label>
-  ))}
-</section>
+      {children}
+    </button>
+  );
+}
 
+function Card({ children, title }: { children: React.ReactNode; title?: string }) {
+  return (
+    <div className="rounded-xl border bg-white p-5 space-y-4" style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.05)" }}>
+      {title && <h3 className="text-sm font-semibold" style={{ color: "rgb(30 41 59)" }}>{title}</h3>}
+      {children}
+    </div>
+  );
+}
 
-      {/* ---------------- EMAIL PREFERENCES (V1) ---------------- */}
-      <section className="rounded-2xl bg-card border border-border p-5 space-y-4 opacity-50 pointer-events-none">
-      <div className="flex items-center justify-between">
-  <h2 className="text-sm font-semibold">Préférences emails</h2>
-  <SoonBadge />
-</div>
+function Label({ children }: { children: React.ReactNode }) {
+  return <label className="text-xs font-medium block mb-1" style={{ color: "rgb(71 85 105)" }}>{children}</label>;
+}
 
-        <p className="text-xs text-slate-500">
-          Ces règles ont priorité sur l’IA.
+function Input({ value, onChange, placeholder }: { value: string; onChange: (v: string) => void; placeholder?: string }) {
+  return (
+    <input
+      type="text"
+      value={value}
+      onChange={(e) => onChange(e.target.value)}
+      placeholder={placeholder}
+      className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none"
+      style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+    />
+  );
+}
+
+function SaveButton({ onClick, saved }: { onClick: () => void; saved: boolean }) {
+  return (
+    <button
+      onClick={onClick}
+      className="px-4 py-2 rounded-lg text-sm font-medium text-white transition-all"
+      style={{ background: saved ? "rgb(22 163 74)" : "rgb(79 70 229)" }}
+    >
+      {saved ? "✅ Enregistré" : "Enregistrer"}
+    </button>
+  );
+}
+
+/* ── TAB 1 : RÈGLES LOCATIVES ── */
+function TabLocatif() {
+  const [multiplicateur, setMultiplicateur] = useState(3);
+  const [profils, setProfils] = useState({ cdi: true, cdd: true, auto: false, retraite: true, garant: true });
+  const [docs, setDocs] = useState({ fiches_paie: true, contrat: true, avis_imposition: true, piece_identite: true, rib: false });
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem("fixetime_locatif");
+    if (stored) {
+      const d = JSON.parse(stored);
+      if (d.multiplicateur) setMultiplicateur(d.multiplicateur);
+      if (d.profils) setProfils(d.profils);
+      if (d.docs) setDocs(d.docs);
+    }
+  }, []);
+
+  const save = () => {
+    localStorage.setItem("fixetime_locatif", JSON.stringify({ multiplicateur, profils, docs }));
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card title="Critère de solvabilité">
+        <div>
+          <Label>Multiplicateur revenus minimum</Label>
+          <div className="flex items-center gap-4">
+            <input
+              type="range" min={2} max={5} step={0.5}
+              value={multiplicateur}
+              onChange={(e) => setMultiplicateur(Number(e.target.value))}
+              className="flex-1 accent-indigo-600"
+            />
+            <span className="text-lg font-bold w-12 text-center" style={{ color: "rgb(79 70 229)" }}>
+              {multiplicateur}x
+            </span>
+          </div>
+          <p className="text-xs mt-1" style={{ color: "rgb(148 163 184)" }}>
+            Revenus ≥ {multiplicateur}x le loyer pour valider la solvabilité
+          </p>
+        </div>
+      </Card>
+
+      <Card title="Profils acceptés">
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            { key: "cdi", label: "CDI" },
+            { key: "cdd", label: "CDD" },
+            { key: "auto", label: "Auto-entrepreneur" },
+            { key: "retraite", label: "Retraité" },
+            { key: "garant", label: "Garant accepté" },
+          ].map((p) => (
+            <label key={p.key} className="flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg" style={{ border: "1px solid rgb(226 232 240)" }}>
+              <input
+                type="checkbox"
+                checked={profils[p.key as keyof typeof profils]}
+                onChange={(e) => setProfils({ ...profils, [p.key]: e.target.checked })}
+                className="accent-indigo-600"
+              />
+              <span className="text-sm" style={{ color: "rgb(30 41 59)" }}>{p.label}</span>
+            </label>
+          ))}
+        </div>
+      </Card>
+
+      <Card title="Documents obligatoires">
+        <div className="space-y-2">
+          {[
+            { key: "fiches_paie", label: "Fiches de paie (3 mois)" },
+            { key: "contrat", label: "Contrat de travail" },
+            { key: "avis_imposition", label: "Avis d'imposition" },
+            { key: "piece_identite", label: "Pièce d'identité" },
+            { key: "rib", label: "RIB" },
+          ].map((d) => (
+            <label key={d.key} className="flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg" style={{ border: "1px solid rgb(226 232 240)" }}>
+              <input
+                type="checkbox"
+                checked={docs[d.key as keyof typeof docs]}
+                onChange={(e) => setDocs({ ...docs, [d.key]: e.target.checked })}
+                className="accent-indigo-600"
+              />
+              <span className="text-sm" style={{ color: "rgb(30 41 59)" }}>{d.label}</span>
+            </label>
+          ))}
+        </div>
+      </Card>
+
+      <div className="flex justify-end"><SaveButton onClick={save} saved={saved} /></div>
+    </div>
+  );
+}
+
+/* ── TAB 2 : FAQ AGENCE ── */
+function TabFaq() {
+  const [entries, setEntries] = useState<FaqEntry[]>([
+    { id: "1", question: "Les charges sont-elles comprises ?", reponse: "Non, les charges sont en supplément." },
+    { id: "2", question: "Animaux acceptés ?", reponse: "Selon le propriétaire, à préciser lors de la visite." },
+  ]);
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem("fixetime_faq");
+    if (stored) setEntries(JSON.parse(stored));
+  }, []);
+
+  const save = () => {
+    localStorage.setItem("fixetime_faq", JSON.stringify(entries));
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const add = () => {
+    setEntries([...entries, { id: Date.now().toString(), question: "", reponse: "" }]);
+  };
+
+  const remove = (id: string) => setEntries(entries.filter((e) => e.id !== id));
+
+  const update = (id: string, field: "question" | "reponse", value: string) => {
+    setEntries(entries.map((e) => e.id === id ? { ...e, [field]: value } : e));
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card title="Questions / Réponses fréquentes">
+        <p className="text-xs" style={{ color: "rgb(100 116 139)" }}>
+          L'IA utilise ces réponses pour traiter les emails de type "Info" automatiquement.
         </p>
-
-        <div className="space-y-3 text-sm">
-          {(
-            [
-              { key: "clients", label: "Emails clients" },
-              { key: "bank", label: "Banque / finance" },
-              { key: "partners", label: "Partenaires" },
-              { key: "newsletters", label: "Newsletters" },
-            ] as const
-          ).map((row) => (
-            <div
-              key={row.key}
-              className="flex justify-between items-center"
-            >
-              <span>{row.label}</span>
-
-              <select
-  className="rounded-md bg-background border border-border px-2 py-1"
-  value={settings.email_rules[row.key] ?? "analyze"}
-  onChange={(e) =>
-    updateSettings({
-      email_rules: {
-        ...settings.email_rules,
-        [row.key]: e.target.value,
-      },
-    })
-  }
->
-
-  <option value="important">Important</option>
-  <option value="analyze">À analyser</option>
-  <option value="ignore">Ignorer</option>
-</select>
-
+        <div className="space-y-3">
+          {entries.map((entry) => (
+            <div key={entry.id} className="rounded-lg border p-3 space-y-2" style={{ borderColor: "rgb(226 232 240)" }}>
+              <div>
+                <Label>Question</Label>
+                <Input value={entry.question} onChange={(v) => update(entry.id, "question", v)} placeholder="Ex: Charges comprises ?" />
+              </div>
+              <div>
+                <Label>Réponse de l'IA</Label>
+                <Input value={entry.reponse} onChange={(v) => update(entry.id, "reponse", v)} placeholder="Ex: Les charges sont de 80€/mois." />
+              </div>
+              <button onClick={() => remove(entry.id)} className="text-xs" style={{ color: "rgb(220 38 38)" }}>
+                Supprimer
+              </button>
             </div>
           ))}
         </div>
-
-        <p className="text-xs text-slate-500 italic">
-          (connexion à l’IA et stockage à l’étape suivante)
-        </p>
-      </section>
-     
-
-{/* ---------------- EMAILS: HISTORIQUE IA (SOON) ---------------- */}
-<section className="rounded-2xl bg-card border border-border p-5 space-y-4">
-  <h2 className="text-sm font-semibold">Historique & contrôle</h2>
-
-  <DisabledBlock
-    title="Historique des décisions IA"
-    description="Voir comment FixTime a classé vos emails dans le temps."
-  />
-
-  <DisabledBlock
-    title="Réglages avancés par dossiers"
-    description="Appliquer des règles différentes selon les labels Gmail."
-  />
-</section>
-
-{/* ---------------- ASSISTANT: OPTIONS (SOON) ---------------- */}
-<section className="rounded-2xl bg-card border border-border p-5 space-y-4">
-  <h2 className="text-sm font-semibold">Assistant FixTime (bientôt)</h2>
-
-  <DisabledBlock
-    title="Ton de l’assistant"
-    description="Direct / neutre / détaillé."
-  />
-
-  <DisabledBlock
-    title="Horaires de travail"
-    description="Limiter les suggestions aux heures ouvrées."
-  />
-
-  <DisabledBlock
-    title="Validation obligatoire"
-    description="Même au niveau 3, rien n’est exécuté sans confirmation."
-  />
-</section>
-
-{/* ---------------- APPARENCE: OPTIONS (SOON) ---------------- */}
-<section className="rounded-2xl bg-card border border-border p-5 space-y-4">
-  <h2 className="text-sm font-semibold">Apparence (bientôt)</h2>
-
-  <DisabledBlock title="Densité de l’interface" description="Compact / Confort / Large." />
-  <DisabledBlock title="Mode Focus" description="Masquer le non essentiel." />
-</section>
-
-{/* ---------------- GENERAL SETTINGS (SOON) ---------------- */}
-<section className="rounded-2xl bg-card border border-border p-5 space-y-4">
-  <h2 className="text-sm font-semibold">Paramètres généraux (bientôt)</h2>
-
-  <DisabledBlock title="Langue (FR / EN)" />
-  <DisabledBlock title="Fuseau horaire" />
-  <DisabledBlock title="Format de date" />
-</section>
-
-{/* ---------------- ROADMAP (SOON) ---------------- */}
-<section className="rounded-2xl bg-muted border border-border p-5 space-y-2">
-  <h2 className="text-sm font-semibold">🚀 À venir dans FixTime</h2>
-  <ul className="text-xs text-slate-500 list-disc pl-5 space-y-1">
-    <li>Automatisation avancée (préparer / proposer)</li>
-    <li>Suggestions contextuelles (apprentissage)</li>
-    <li>Multi-langue</li>
-    <li>Gestion d’équipe</li>
-  </ul>
-</section>
-
+        <button
+          onClick={add}
+          className="w-full py-2 rounded-lg text-sm border transition-colors"
+          style={{ borderColor: "rgb(226 232 240)", color: "rgb(79 70 229)", borderStyle: "dashed" }}
+        >
+          + Ajouter une règle FAQ
+        </button>
+      </Card>
+      <div className="flex justify-end"><SaveButton onClick={save} saved={saved} /></div>
     </div>
+  );
+}
+
+/* ── TAB 3 : CALENDRIER ── */
+function TabCalendrier() {
+  const [dureeVisite, setDureeVisite] = useState(60);
+  const [heureDebut, setHeureDebut] = useState(9);
+  const [heureFin, setHeureFin] = useState(18);
+  const [delaiPrevenanceH, setDelaiPrevenanceH] = useState(24);
+  const [joursExclus, setJoursExclus] = useState<number[]>([5, 6]); // samedi, dimanche
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem("fixetime_calendrier");
+    if (stored) {
+      const d = JSON.parse(stored);
+      if (d.dureeVisite) setDureeVisite(d.dureeVisite);
+      if (d.heureDebut !== undefined) setHeureDebut(d.heureDebut);
+      if (d.heureFin !== undefined) setHeureFin(d.heureFin);
+      if (d.delaiPrevenanceH) setDelaiPrevenanceH(d.delaiPrevenanceH);
+      if (d.joursExclus) setJoursExclus(d.joursExclus);
+    }
+  }, []);
+
+  const save = () => {
+    localStorage.setItem("fixetime_calendrier", JSON.stringify({ dureeVisite, heureDebut, heureFin, delaiPrevenanceH, joursExclus }));
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const toggleJour = (idx: number) => {
+    setJoursExclus((prev) => prev.includes(idx) ? prev.filter((j) => j !== idx) : [...prev, idx]);
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card title="Durée des visites">
+        <div className="flex gap-2 flex-wrap">
+          {[30, 45, 60, 90].map((d) => (
+            <button
+              key={d}
+              onClick={() => setDureeVisite(d)}
+              className="px-4 py-2 rounded-lg text-sm font-medium transition-all"
+              style={dureeVisite === d ? { background: "rgb(79 70 229)", color: "white" } : { background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
+            >
+              {d} min
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      <Card title="Plages horaires">
+        <div className="space-y-3">
+          <div className="flex items-center gap-4">
+            <div className="flex-1">
+              <Label>Heure de début</Label>
+              <select
+                value={heureDebut}
+                onChange={(e) => setHeureDebut(Number(e.target.value))}
+                className="w-full rounded-lg border px-3 py-2 text-sm"
+                style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+              >
+                {[8, 9, 10].map((h) => <option key={h} value={h}>{h}:00</option>)}
+              </select>
+            </div>
+            <div className="flex-1">
+              <Label>Heure de fin</Label>
+              <select
+                value={heureFin}
+                onChange={(e) => setHeureFin(Number(e.target.value))}
+                className="w-full rounded-lg border px-3 py-2 text-sm"
+                style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+              >
+                {[17, 18, 19, 20].map((h) => <option key={h} value={h}>{h}:00</option>)}
+              </select>
+            </div>
+          </div>
+          <p className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+            Créneaux proposés : jamais avant {heureDebut}h ni après {heureFin}h
+          </p>
+        </div>
+      </Card>
+
+      <Card title="Délai de prévenance">
+        <div className="flex gap-2 flex-wrap">
+          {[24, 48, 72].map((h) => (
+            <button
+              key={h}
+              onClick={() => setDelaiPrevenanceH(h)}
+              className="px-4 py-2 rounded-lg text-sm font-medium transition-all"
+              style={delaiPrevenanceH === h ? { background: "rgb(79 70 229)", color: "white" } : { background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
+            >
+              {h}h minimum
+            </button>
+          ))}
+        </div>
+      </Card>
+
+      <Card title="Jours exclus">
+        <div className="flex gap-2 flex-wrap">
+          {DAYS_FR.map((jour, idx) => (
+            <button
+              key={idx}
+              onClick={() => toggleJour(idx)}
+              className="px-3 py-1.5 rounded-lg text-sm transition-all"
+              style={joursExclus.includes(idx) ? { background: "rgba(220,38,38,0.1)", color: "rgb(220 38 38)", border: "1px solid rgba(220,38,38,0.2)" } : { background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
+            >
+              {jour}
+            </button>
+          ))}
+        </div>
+        <p className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+          Aucun créneau ne sera proposé ces jours-là.
+        </p>
+      </Card>
+
+      <div className="flex justify-end"><SaveButton onClick={save} saved={saved} /></div>
+    </div>
+  );
+}
+
+/* ── TAB 4 : CONFIG IA ── */
+function TabIA() {
+  const { settings, updateSettings, loading } = useSettings();
+  const [instructions, setInstructions] = useState("");
+  const [mode, setMode] = useState<"DRAFT" | "AUTOPILOTE">("DRAFT");
+  const [saved, setSaved] = useState(false);
+
+  useEffect(() => {
+    const stored = localStorage.getItem("fixetime_ia");
+    if (stored) {
+      const d = JSON.parse(stored);
+      if (d.instructions) setInstructions(d.instructions);
+    }
+  }, []);
+
+  useEffect(() => {
+    fetch("/api/settings")
+      .then((r) => r.json())
+      .then((data) => { if (data?.pipeline_mode === "AUTOPILOTE") setMode("AUTOPILOTE"); })
+      .catch(() => {});
+  }, []);
+
+  const save = async () => {
+    localStorage.setItem("fixetime_ia", JSON.stringify({ instructions }));
+    await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pipeline_mode: mode }),
+    });
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card title="Mode pipeline">
+        <div className="space-y-3">
+          {[
+            { key: "DRAFT", label: "DRAFT", desc: "L'IA génère des brouillons, vous approuvez avant envoi." },
+            { key: "AUTOPILOTE", label: "AUTOPILOTE", desc: "L'IA gère la conversation jusqu'au RDV confirmé sans intervention." },
+          ].map((opt) => (
+            <label
+              key={opt.key}
+              className="flex items-start gap-3 px-4 py-3 rounded-xl cursor-pointer transition-all"
+              style={mode === opt.key ? { background: "rgb(238 242 255)", border: "1.5px solid rgb(79 70 229)" } : { border: "1.5px solid rgb(226 232 240)" }}
+            >
+              <input
+                type="radio"
+                name="mode"
+                checked={mode === opt.key as "DRAFT" | "AUTOPILOTE"}
+                onChange={() => setMode(opt.key as "DRAFT" | "AUTOPILOTE")}
+                className="mt-0.5 accent-indigo-600"
+              />
+              <div>
+                <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>{opt.label}</div>
+                <div className="text-xs mt-0.5" style={{ color: "rgb(100 116 139)" }}>{opt.desc}</div>
+              </div>
+            </label>
+          ))}
+        </div>
+      </Card>
+
+      <Card title="Instructions spéciales pour l'IA">
+        <p className="text-xs" style={{ color: "rgb(100 116 139)" }}>
+          L'IA en tiendra compte lors de l'analyse et de la rédaction des emails.
+        </p>
+        <textarea
+          value={instructions}
+          onChange={(e) => setInstructions(e.target.value)}
+          rows={4}
+          placeholder="Ex: Toujours répondre en vouvoyant. Mentionner notre adresse. Ne jamais accepter les chèques."
+          className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none resize-none"
+          style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+        />
+      </Card>
+
+      <div className="flex justify-end"><SaveButton onClick={save} saved={saved} /></div>
+    </div>
+  );
+}
+
+/* ── PAGE PRINCIPALE ── */
+export default function SettingsPage() {
+  const [activeTab, setActiveTab] = useState<Tab>("locatif");
+
+  const tabs: { key: Tab; label: string }[] = [
+    { key: "locatif", label: "🏠 Règles locatives" },
+    { key: "faq", label: "💬 FAQ Agence" },
+    { key: "calendrier", label: "📅 Calendrier" },
+    { key: "ia", label: "🤖 Config IA" },
+  ];
+
+  return (
+    <AppShell>
+      <div className="p-6 max-w-2xl mx-auto space-y-6">
+        {/* Titre */}
+        <div>
+          <h1 className="text-xl font-semibold" style={{ color: "rgb(30 41 59)" }}>Paramètres</h1>
+          <p className="text-sm mt-0.5" style={{ color: "rgb(100 116 139)" }}>
+            Configurez FixTime pour votre agence immobilière.
+          </p>
+        </div>
+
+        {/* Tabs */}
+        <div className="flex gap-1 p-1 rounded-xl" style={{ background: "rgb(248 250 252)", border: "1px solid rgb(226 232 240)" }}>
+          {tabs.map((t) => (
+            <TabButton key={t.key} active={activeTab === t.key} onClick={() => setActiveTab(t.key)}>
+              {t.label}
+            </TabButton>
+          ))}
+        </div>
+
+        {/* Contenu */}
+        {activeTab === "locatif" && <TabLocatif />}
+        {activeTab === "faq" && <TabFaq />}
+        {activeTab === "calendrier" && <TabCalendrier />}
+        {activeTab === "ia" && <TabIA />}
+      </div>
+    </AppShell>
   );
 }

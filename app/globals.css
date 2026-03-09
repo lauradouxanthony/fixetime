@@ -5,103 +5,110 @@ html, body {
 }
 
 /* =========================
-   🌞 MODE CLAIR (fallback)
+   THÈME LIGHT PREMIUM
+   Référence : Linear / Notion
    ========================= */
 
-   :root {
-    --background: 249 250 251;
-    --foreground: 15 23 42;
-  
-    --card: 255 255 255;
-    --card-foreground: 15 23 42;
-  
-    --border: 226 232 240;
-  
-    --muted: 243 244 246;
-    --muted-foreground: 75 85 99;
-  
-    --primary: 37 99 235;
-    --primary-foreground: 255 255 255;
-  }
-  
-/* =========================
-   🌙 MODE SOMBRE (PRIORITAIRE)
-   ========================= */
+:root {
+  /* Fonds */
+  --background: 250 250 250;      /* #FAFAFA */
+  --foreground: 30 41 59;         /* #1E293B slate-800 */
 
-html.dark {
-  /* Fond & texte */
-  --background: 2 6 23;
-  --foreground: 248 250 252;
+  /* Cards / surfaces */
+  --card: 255 255 255;
+  --card-foreground: 30 41 59;
 
-  /* Surfaces */
-  --card: 15 23 42;
-  --card-foreground: 248 250 252;
-
-  /* Bordures */
-  --border: 30 41 59;
+  /* Bordures subtiles */
+  --border: 226 232 240;          /* slate-200 */
 
   /* Textes secondaires */
-  --muted: 15 23 42;
-  --muted-foreground: 148 163 184;
+  --muted: 248 250 252;
+  --muted-foreground: 100 116 139; /* slate-500 */
 
-  /* Action */
-  --primary: 59 130 246;
-  --primary-foreground: 2 6 23;
+  /* Accent principal indigo */
+  --primary: 79 70 229;           /* #4F46E5 indigo-600 */
+  --primary-foreground: 255 255 255;
+
+  /* Sidebar */
+  --sidebar-bg: 255 255 255;
+  --sidebar-border: 226 232 240;
+  --sidebar-text: 71 85 105;      /* slate-600 */
+  --sidebar-active-bg: 238 242 255; /* indigo-50 */
+  --sidebar-active-text: 79 70 229; /* indigo-600 */
 }
 
-/* =========================
-   🔒 APPLICATION GLOBALE
-   ========================= */
-
+/* Application globale */
 html, body {
   background: rgb(var(--background));
   color: rgb(var(--foreground));
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* =========================
-   🩹 COMPATIBILITÉ (legacy)
+   ALIAS UI
    ========================= */
-/* À garder tant que des bg-white / text-slate-* existent */
+
+.bg-surface {
+  background-color: rgb(var(--card));
+}
+
+.text-main {
+  color: rgb(var(--foreground));
+}
+
+.text-secondary {
+  color: rgb(var(--muted-foreground));
+}
+
+.border-surface {
+  border-color: rgb(var(--border));
+}
+
+.bg-card {
+  background-color: rgb(var(--card));
+}
+
+.text-muted {
+  color: rgb(var(--muted-foreground));
+}
+
+.border-default {
+  border-color: rgb(var(--border));
+}
 
 /* =========================
-   🎨 ALIAS UI (OBLIGATOIRES)
+   OMBRES DOUCES (style Linear)
    ========================= */
 
-   .bg-surface {
-    background-color: rgb(var(--card));
-  }
-  
-  .text-main {
-    color: rgb(var(--foreground));
-  }
-  
-  .text-secondary {
-    color: rgb(var(--muted-foreground));
-  }
-  
-  .border-surface {
-    border-color: rgb(var(--border));
-  }
-  
+.shadow-card {
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.06);
+}
+
+.shadow-card-hover {
+  box-shadow: 0 4px 12px 0 rgb(0 0 0 / 0.08), 0 2px 4px -1px rgb(0 0 0 / 0.06);
+}
+
 /* =========================
-   🔁 FORÇAGE GLOBAL UI
+   ÉTATS INTERACTIFS
    ========================= */
 
-   .bg-card {
-    background-color: rgb(var(--card));
-  }
-  
-  .text-muted {
-    color: rgb(var(--muted-foreground));
-  }
-  
-  .border-default {
-    border-color: rgb(var(--border));
-  }
-  
-  /* Boutons désactivés lisibles */
-  button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-  
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* Scrollbar subtile */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(203 213 225);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(148 163 184);
+}
