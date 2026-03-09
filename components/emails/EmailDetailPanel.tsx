@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useState, useCallback } from "react";
-import { supabase } from "@/lib/supabaseClient";
+import { supabaseBrowser } from "@/lib/supabaseBrowser";
+const supabase = supabaseBrowser();
 import type { Email } from "@/types/email";
 import {
   getOptimalSlotForEmail,

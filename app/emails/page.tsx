@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
-import { supabase } from "@/lib/supabaseClient";
+import { supabaseBrowser } from "@/lib/supabaseBrowser";
+const supabase = supabaseBrowser();
 import { EmailsList } from "@/components/emails/EmailsList";
 import { EmailDetailPanel } from "@/components/emails/EmailDetailPanel";
 import type { Email } from "@/types/email";

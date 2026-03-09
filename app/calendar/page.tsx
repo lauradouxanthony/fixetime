@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { supabase } from "@/lib/supabaseClient";
+import { supabaseBrowser } from "@/lib/supabaseBrowser";
+const supabase = supabaseBrowser();
 
 import { CalendarHeader } from "@/components/calendar/CalendarHeader";
 import { DayTimeline } from "@/components/calendar/DayTimeline";
