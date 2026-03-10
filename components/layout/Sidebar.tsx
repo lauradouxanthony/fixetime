@@ -58,7 +58,7 @@ export function Sidebar() {
     <aside className="flex h-screen w-60 flex-col border-r bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
       {/* Logo / Brand */}
       <div className="flex flex-col px-5 py-4 border-b" style={{ borderColor: "rgb(226 232 240)" }}>
-        <img src="/logo-fixtime.png" alt="FixTime" className="h-10 w-auto object-contain self-start" />
+        <img src="/logo-fixtime.png" alt="FixTime" className="h-14 w-auto object-contain self-start" />
         <span className="text-xs font-medium mt-0.5" style={{ color: "rgb(79 70 229)" }}>Assistant IA</span>
       </div>
 

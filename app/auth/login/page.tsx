@@ -73,7 +73,7 @@ export default function LoginPage() {
         <div className="w-full max-w-sm space-y-7">
           {/* Logo couleur (visible sur mobile + desktop côté droit) */}
           <div className="flex flex-col items-center gap-2">
-            <img src="/logo-fixtime.png" alt="FixTime" className="h-14 w-auto object-contain" />
+            <img src="/logo-fixtime.png" alt="FixTime" className="h-20 w-auto object-contain" />
             <span className="text-xs font-medium" style={{ color: "rgb(79 70 229)" }}>Assistant IA</span>
           </div>
 
