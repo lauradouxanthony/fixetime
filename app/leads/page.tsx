@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import AppShell from "@/components/layout/AppShell";
 import { SkeletonCard } from "@/components/ui/Skeleton";
+import { useToast } from "@/components/ui/Toast";
 
 const supabase = supabaseBrowser();
 
@@ -14,6 +15,7 @@ type Lead = {
   sender: string | null;
   subject: string | null;
   summary: string | null;
+  body: string | null;
   received_at: string | null;
   category: string | null;
   is_urgent: boolean | null;
@@ -40,127 +42,242 @@ function getStageFromEmail(email: {
   return "nouveau";
 }
 
-/* ── SCORE BADGE ── */
-type Heat = "chaud" | "tiede" | "froid";
+/* ── EXTRACTION HEURISTIQUE ── */
 
-function getHeat(lead: Lead): Heat {
-  if (lead.is_urgent) return "chaud";
-  if (lead.is_important) return "tiede";
-  return "froid";
+function detectSituation(body: string | null): string | null {
+  const l = (body || "").toLowerCase();
+  if (l.includes("étudiant") || l.includes("etudiante") || l.includes("école") || l.includes("université")) return "Étudiant";
+  if (l.includes("cdi")) return "CDI";
+  if (l.includes("cdd")) return "CDD";
+  if (l.includes("auto-entrepreneur") || l.includes("autoentrepreneur") || l.includes("freelance")) return "Auto-entrepreneur";
+  if (l.includes("retraité") || l.includes("retraitée")) return "Retraité";
+  return null;
 }
 
-function HeatBadge({ heat }: { heat: Heat }) {
-  const config = {
-    chaud: { icon: "🔥", label: "Chaud",  bg: "rgba(220,38,38,0.08)",   color: "rgb(220 38 38)" },
-    tiede: { icon: "🌡",  label: "Tiède",  bg: "rgba(234,88,12,0.08)",   color: "rgb(234 88 12)" },
-    froid: { icon: "❄️", label: "Froid",  bg: "rgba(100,116,139,0.08)", color: "rgb(100 116 139)" },
-  }[heat];
-  return (
-    <span
-      className="text-xs px-2 py-0.5 rounded-full font-medium flex items-center gap-1"
-      style={{ background: config.bg, color: config.color }}
-    >
-      <span>{config.icon}</span>
-      {config.label}
-    </span>
-  );
+function extractRevenus(body: string | null): number | null {
+  const text = body || "";
+  for (const line of text.split(/\r?\n/)) {
+    const l = line.toLowerCase();
+    const m = line.match(/(\d[\d\s]*)\s*(?:€|euros?)/i);
+    if (!m) continue;
+    const val = parseFloat(m[1].replace(/\s/g, ""));
+    if (!val || val < 200) continue;
+    if (l.includes("salaire") || l.includes("revenu") || l.includes("gagne") || l.includes("touche")) return val;
+  }
+  return null;
 }
 
-/* ── AVATAR ── */
-function Avatar({ name }: { name: string | null }) {
-  const clean = (name || "").replace(/<.*>/, "").trim();
-  const initials = clean.split(/[\s@.]+/).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("") || "?";
-  const hue = [...clean].reduce((acc, c) => acc + c.charCodeAt(0), 0) % 360;
+function extractLoyer(body: string | null): number | null {
+  const text = body || "";
+  for (const line of text.split(/\r?\n/)) {
+    const l = line.toLowerCase();
+    const m = line.match(/(\d[\d\s]*)\s*(?:€|euros?)/i);
+    if (!m) continue;
+    const val = parseFloat(m[1].replace(/\s/g, ""));
+    if (!val || val < 100) continue;
+    if (l.includes("loyer") || l.includes("budget") || l.includes("mensuel")) return val;
+  }
+  return null;
+}
+
+function guessDocsCount(summary: string | null, body: string | null): number {
+  const t = ((summary || "") + " " + (body || "")).toLowerCase();
+  let score = 0;
+  if (t.includes("fiche de paie") || t.includes("bulletin") || t.includes("salaire")) score++;
+  if (t.includes("contrat") || t.includes("cdi") || t.includes("cdd")) score++;
+  if (t.includes("avis d'imposition") || t.includes("impôt") || t.includes("fiscal")) score++;
+  if (t.includes("identit") || t.includes("passeport") || t.includes("carte")) score++;
+  if (t.includes("rib") || t.includes("relevé bancaire")) score++;
+  return score;
+}
+
+function hoursAgo(dateStr: string | null): number | null {
+  if (!dateStr) return null;
+  return Math.round((Date.now() - new Date(dateStr).getTime()) / 3_600_000);
+}
+
+/* ── SCORE CIRCLE ── */
+function ScoreCircle({ score, max = 100 }: { score: number; max?: number }) {
+  const pct = Math.min(score / max, 1);
+  const color = pct >= 0.75 ? "rgb(22 163 74)" : pct >= 0.4 ? "rgb(234 88 12)" : "rgb(220 38 38)";
+  const r = 16;
+  const circumference = 2 * Math.PI * r;
+  const dash = pct * circumference;
+
   return (
-    <div
-      className="w-8 h-8 rounded-full flex items-center justify-center text-xs font-semibold text-white flex-shrink-0"
-      style={{ background: `hsl(${hue},50%,52%)` }}
-    >
-      {initials}
+    <div className="relative flex-shrink-0" style={{ width: 40, height: 40 }}>
+      <svg width="40" height="40" viewBox="0 0 40 40">
+        <circle cx="20" cy="20" r={r} fill="none" stroke="rgb(226 232 240)" strokeWidth="3" />
+        <circle
+          cx="20" cy="20" r={r} fill="none"
+          stroke={color} strokeWidth="3"
+          strokeDasharray={`${dash} ${circumference - dash}`}
+          strokeLinecap="round"
+          transform="rotate(-90 20 20)"
+        />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center">
+        <span className="text-[9px] font-bold" style={{ color }}>{score}</span>
+      </div>
     </div>
   );
 }
 
-/* ── DOC STATUS ── */
-function DocStatusRow({ label, received }: { label: string; received: boolean }) {
-  return (
-    <div className="flex items-center gap-1.5">
-      <span style={{ color: received ? "rgb(22 163 74)" : "rgb(203 213 225)", fontSize: "10px" }}>
-        {received ? "✓" : "○"}
-      </span>
-      <span className="text-xs" style={{ color: received ? "rgb(71 85 105)" : "rgb(148 163 184)" }}>
-        {label}
-      </span>
-    </div>
-  );
+function computeScore(lead: Lead): number {
+  let score = 0;
+  if (lead.is_urgent) score += 30;
+  else if (lead.is_important) score += 15;
+  if (detectSituation(lead.body)) score += 15;
+  const rev = extractRevenus(lead.body);
+  const loy = extractLoyer(lead.body);
+  if (rev && loy && rev / loy >= 3) score += 25;
+  else if (rev || loy) score += 10;
+  const docs = guessDocsCount(lead.summary, lead.body);
+  score += Math.min(docs * 6, 30);
+  return Math.min(score, 100);
 }
 
-function guessDocsFromSummary(summary: string | null): { fiches: boolean; contrat: boolean; id: boolean } {
-  const t = (summary || "").toLowerCase();
-  return {
-    fiches:  t.includes("fiche") || t.includes("salaire") || t.includes("paie"),
-    contrat: t.includes("contrat") || t.includes("cdi") || t.includes("cdd"),
-    id:      t.includes("identit") || t.includes("passeport") || t.includes("carte"),
-  };
+/* ── DOSSIER BAR ── */
+function DossierBar({ count, max = 5 }: { count: number; max?: number }) {
+  const pct = Math.round((count / max) * 100);
+  const color = pct >= 60 ? "rgb(22 163 74)" : pct >= 30 ? "rgb(234 88 12)" : "rgb(220 38 38)";
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-1">
+        <span className="text-xs" style={{ color: "rgb(100 116 139)" }}>Dossier</span>
+        <span className="text-xs font-medium" style={{ color }}>{count}/{max} docs</span>
+      </div>
+      <div className="relative h-1.5 rounded-full overflow-hidden" style={{ background: "rgb(226 232 240)" }}>
+        <div
+          className="h-full rounded-full transition-all duration-500"
+          style={{ width: `${pct}%`, background: color }}
+        />
+      </div>
+    </div>
+  );
 }
 
 /* ── LEAD CARD ── */
-function LeadCard({ lead, onMove }: { lead: Lead; onMove: (id: string, stage: LeadStage) => void }) {
-  const isRdvConfirme = lead.classification_reason === "RDV_CONFIRMÉ";
-  const heat = getHeat(lead);
-  const docs = guessDocsFromSummary(lead.summary);
-  const docsCount = Object.values(docs).filter(Boolean).length;
+function LeadCard({
+  lead,
+  onMove,
+  onAction,
+}: {
+  lead: Lead;
+  onMove: (id: string, stage: LeadStage) => void;
+  onAction: (id: string, action: "relancer" | "rdv" | "valider") => void;
+}) {
+  const score = computeScore(lead);
+  const situation = detectSituation(lead.body);
+  const revenus = extractRevenus(lead.body);
+  const loyer = extractLoyer(lead.body);
+  const docsCount = guessDocsCount(lead.summary, lead.body);
+  const hours = hoursAgo(lead.received_at);
+  const tooOld = hours !== null && hours > 24;
+  const ratio = revenus && loyer ? revenus / loyer : null;
+  const solvable = ratio !== null && ratio >= 3;
 
   return (
     <div
       className="rounded-xl border p-3 space-y-2.5 cursor-default transition-all hover-lift animate-fade-in"
-      style={{ background: "white", borderColor: "rgb(226 232 240)" }}
+      style={{
+        background: "white",
+        borderColor: tooOld ? "rgba(220,38,38,0.3)" : "rgb(226 232 240)",
+        boxShadow: tooOld ? "0 0 0 1px rgba(220,38,38,0.15)" : undefined,
+      }}
     >
-      {/* Row 1 : avatar + sender */}
+      {/* Row 1 : score + sender + badge >24h */}
       <div className="flex items-center gap-2">
-        <Avatar name={lead.sender} />
+        <ScoreCircle score={score} />
         <div className="flex-1 min-w-0">
           <div className="text-xs font-medium truncate" style={{ color: "rgb(71 85 105)" }}>
             {(lead.sender || "Inconnu").replace(/<.*>/, "").trim()}
           </div>
-          <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
-            {lead.received_at
-              ? new Date(lead.received_at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })
-              : ""}
+          <div className="flex items-center gap-1.5 mt-0.5">
+            {tooOld ? (
+              <span className="text-xs font-semibold" style={{ color: "rgb(220 38 38)" }}>
+                ⏰ {Math.floor(hours! / 24)}j sans réponse
+              </span>
+            ) : hours !== null ? (
+              <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>Il y a {hours}h</span>
+            ) : null}
           </div>
         </div>
-        {isRdvConfirme ? (
-          <span className="text-xs px-1.5 py-0.5 rounded-full font-medium"
-            style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22,163,74)" }}>✅</span>
-        ) : (
-          <HeatBadge heat={heat} />
-        )}
+        {lead.classification_reason === "RDV_CONFIRMÉ" ? (
+          <span className="text-xs px-1.5 py-0.5 rounded-full font-medium flex-shrink-0"
+            style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22,163,74)" }}>✅ Confirmé</span>
+        ) : lead.is_urgent ? (
+          <span className="text-xs px-1.5 py-0.5 rounded-full font-medium flex-shrink-0"
+            style={{ background: "rgba(220,38,38,0.1)", color: "rgb(220 38 38)" }}>🔥 Urgent</span>
+        ) : null}
       </div>
 
-      {/* Row 2 : sujet */}
+      {/* Sujet */}
       <div className="text-sm font-semibold truncate" style={{ color: "rgb(30 41 59)" }}>
         {lead.subject || "(Sans objet)"}
       </div>
 
-      {/* Row 3 : résumé */}
+      {/* Situation pro + ratio */}
+      <div className="flex items-center gap-2 flex-wrap">
+        {situation && (
+          <span
+            className="text-xs px-2 py-0.5 rounded-full font-medium"
+            style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}
+          >
+            {situation}
+          </span>
+        )}
+        {ratio !== null && (
+          <span
+            className="text-xs px-2 py-0.5 rounded-full font-medium"
+            style={{
+              background: solvable ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.08)",
+              color: solvable ? "rgb(22 163 74)" : "rgb(220 38 38)",
+            }}
+          >
+            {ratio.toFixed(1)}x revenus/loyer
+          </span>
+        )}
+      </div>
+
+      {/* Résumé */}
       {lead.summary && (
         <div className="text-xs line-clamp-2" style={{ color: "rgb(100 116 139)" }}>
           {lead.summary}
         </div>
       )}
 
-      {/* Row 4 : statut dossier */}
-      <div className="rounded-lg p-2 space-y-1" style={{ background: "rgb(248 250 252)" }}>
-        <div className="text-xs font-medium mb-1" style={{ color: "rgb(100 116 139)" }}>
-          Dossier ({docsCount}/3)
-        </div>
-        <DocStatusRow label="Fiches de paie" received={docs.fiches} />
-        <DocStatusRow label="Contrat de travail" received={docs.contrat} />
-        <DocStatusRow label="Pièce d'identité" received={docs.id} />
+      {/* Dossier bar */}
+      <DossierBar count={docsCount} max={5} />
+
+      {/* Actions primaires */}
+      <div className="grid grid-cols-3 gap-1 pt-0.5">
+        <button
+          onClick={(e) => { e.stopPropagation(); onAction(lead.id, "relancer"); }}
+          className="text-xs py-1.5 rounded-lg font-medium transition-colors text-center"
+          style={{ background: "rgb(238 242 255)", color: "rgb(79 70 229)" }}
+        >
+          ↩ Relancer
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); onAction(lead.id, "rdv"); }}
+          className="text-xs py-1.5 rounded-lg font-medium transition-colors text-center"
+          style={{ background: "rgb(240 249 255)", color: "rgb(2 132 199)" }}
+        >
+          📅 RDV
+        </button>
+        <button
+          onClick={(e) => { e.stopPropagation(); onAction(lead.id, "valider"); }}
+          className="text-xs py-1.5 rounded-lg font-medium transition-colors text-center"
+          style={{ background: "rgb(240 253 244)", color: "rgb(22 163 74)" }}
+        >
+          ✓ Valider
+        </button>
       </div>
 
-      {/* Row 5 : actions de déplacement */}
-      <div className="flex gap-1 flex-wrap pt-0.5">
+      {/* Déplacer vers */}
+      <div className="flex gap-1 flex-wrap pt-0.5 border-t" style={{ borderColor: "rgb(241 245 249)" }}>
+        <span className="text-xs self-center" style={{ color: "rgb(148 163 184)" }}>→</span>
         {STAGES.filter((s) => s.key !== lead.stage).map((s) => (
           <button
             key={s.key}
@@ -168,7 +285,7 @@ function LeadCard({ lead, onMove }: { lead: Lead; onMove: (id: string, stage: Le
             className="text-xs px-2 py-0.5 rounded-md transition-colors"
             style={{ background: s.bg, color: s.color, border: `1px solid ${s.border}` }}
           >
-            → {s.label}
+            {s.label}
           </button>
         ))}
       </div>
@@ -180,6 +297,7 @@ export default function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [stageOverrides, setStageOverrides] = useState<Record<string, LeadStage>>({});
+  const { toast } = useToast();
 
   useEffect(() => {
     try {
@@ -198,7 +316,7 @@ export default function LeadsPage() {
 
       const { data } = await supabase
         .from("emails")
-        .select("id, sender, subject, summary, received_at, category, is_urgent, is_important, classification_reason")
+        .select("id, sender, subject, summary, body, received_at, category, is_urgent, is_important, classification_reason")
         .eq("user_id", user.id)
         .eq("category", "LOCATION")
         .gte("received_at", since.toISOString())
@@ -206,7 +324,7 @@ export default function LeadsPage() {
         .limit(100);
 
       if (data) {
-        setLeads(data.map((e: any) => ({
+        setLeads(data.map((e: Omit<Lead, "stage">) => ({
           ...e,
           stage: stageOverrides[e.id] ?? getStageFromEmail(e),
         })));
@@ -225,9 +343,25 @@ export default function LeadsPage() {
     setLeads((prev) => prev.map((l) => l.id === id ? { ...l, stage } : l));
   };
 
+  const handleAction = (id: string, action: "relancer" | "rdv" | "valider") => {
+    if (action === "valider") {
+      moveToStage(id, "confirme");
+      toast("Lead validé ✅", "success");
+    } else if (action === "rdv") {
+      moveToStage(id, "rdv_propose");
+      toast("Déplacé vers RDV proposé 📅", "success");
+    } else if (action === "relancer") {
+      toast("Brouillon de relance à envoyer depuis le pipeline →", "success");
+    }
+  };
+
   const stageLeads = (stage: LeadStage) => leads.filter((l) => l.stage === stage);
 
-  const heat = { chaud: leads.filter((l) => l.is_urgent).length, tiede: leads.filter((l) => !l.is_urgent && l.is_important).length };
+  const urgentCount = leads.filter((l) => l.is_urgent).length;
+  const staleCount = leads.filter((l) => {
+    const h = hoursAgo(l.received_at);
+    return h !== null && h > 24;
+  }).length;
 
   return (
     <AppShell>
@@ -240,7 +374,16 @@ export default function LeadsPage() {
               <h1 className="text-lg font-semibold" style={{ color: "rgb(30 41 59)" }}>Prospects</h1>
               <p className="text-xs mt-0.5" style={{ color: "rgb(148 163 184)" }}>
                 {leads.length} leads · 30 jours
-                {heat.chaud > 0 && <span className="ml-2 text-red-500 font-medium">🔥 {heat.chaud} chaud{heat.chaud > 1 ? "s" : ""}</span>}
+                {urgentCount > 0 && (
+                  <span className="ml-2 font-medium" style={{ color: "rgb(220 38 38)" }}>
+                    🔥 {urgentCount} urgent{urgentCount > 1 ? "s" : ""}
+                  </span>
+                )}
+                {staleCount > 0 && (
+                  <span className="ml-2 font-medium" style={{ color: "rgb(220 38 38)" }}>
+                    · ⏰ {staleCount} sans réponse &gt;24h
+                  </span>
+                )}
               </p>
             </div>
             <div className="flex gap-4">
@@ -301,7 +444,12 @@ export default function LeadsPage() {
                         </div>
                       ) : (
                         stageItems.map((lead) => (
-                          <LeadCard key={lead.id} lead={lead} onMove={moveToStage} />
+                          <LeadCard
+                            key={lead.id}
+                            lead={lead}
+                            onMove={moveToStage}
+                            onAction={handleAction}
+                          />
                         ))
                       )}
                     </div>

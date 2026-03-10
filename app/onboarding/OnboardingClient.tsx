@@ -159,9 +159,8 @@ export default function OnboardingClient() {
         style={{ boxShadow: "0 8px 32px rgba(0,0,0,0.08)", border: "1px solid rgb(226 232 240)" }}
       >
         {/* Logo */}
-        <div className="flex items-center gap-2 mb-6">
-          <div className="w-8 h-8 rounded-lg flex items-center justify-center text-white text-sm font-bold" style={{ background: "rgb(79 70 229)" }}>FT</div>
-          <span className="font-semibold text-sm" style={{ color: "rgb(30 41 59)" }}>FixTime</span>
+        <div className="flex justify-center mb-6">
+          <img src="/logo-fixtime.png" alt="FixTime" className="h-16 w-auto object-contain mx-auto" />
         </div>
 
         <ProgressBar step={step} />

@@ -41,6 +41,7 @@ export default function LoginPage() {
 
   return (
     <div className="flex flex-col items-center justify-center h-screen gap-4">
+      <img src="/logo-fixtime.png" alt="FixTime" className="h-16 w-auto object-contain mx-auto mb-6" />
       <h1 className="text-2xl font-bold">Connexion</h1>
 
       <input

@@ -9,6 +9,7 @@ import {
   getOptimalSlotForEmail,
   getSuggestedSlotsForEmail,
 } from "@/components/calendar/getOptimalSlotForEmail";
+import ProspectFiche from "@/components/emails/ProspectFiche";
 
 type PipelineMode = "DRAFT" | "AUTOPILOTE";
 
@@ -582,6 +583,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
       {/* ── Widgets LOCATION ── */}
       {intention === "LOCATION" && (
         <>
+          <ProspectFiche body={body || email.body} />
           <SolvabiliteWidget body={body || email.body} />
           <DossierWidget body={body || email.body} />
           <DocumentsTemplateWidget />

@@ -3,22 +3,23 @@ import { supabaseServer } from "@/lib/supabaseServer";
 
 export const dynamic = "force-dynamic";
 
-function daysAgo(n: number) {
+function daysAgo(n: number): string {
   const d = new Date();
   d.setDate(d.getDate() - n);
   d.setHours(0, 0, 0, 0);
   return d.toISOString();
 }
 
-function todayStart() {
+function daysFromNow(n: number): string {
   const d = new Date();
-  d.setHours(0, 0, 0, 0);
+  d.setDate(d.getDate() + n);
+  d.setHours(23, 59, 59, 999);
   return d.toISOString();
 }
 
-function todayEnd() {
+function todayStart(): string {
   const d = new Date();
-  d.setHours(23, 59, 59, 999);
+  d.setHours(0, 0, 0, 0);
   return d.toISOString();
 }
 
@@ -31,104 +32,161 @@ export async function GET() {
   }
 
   const userId = authData.user.id;
+  const since30d = daysAgo(30);
   const since7d = daysAgo(7);
+  const weekEnd = daysFromNow(7);
 
-  // ── MÉTRIQUES GLOBALES ──────────────────────────────────────────
+  // ── MÉTRIQUES PRINCIPALES ──────────────────────────────────────────
   const [
-    { count: emailsTraites },
-    { count: rdvPris },
-    { data: emailsWithTime },
-    { data: intentions },
+    { count: leadsActifs },
+    { count: rdvSemaine },
+    { count: totalReplies },
+    { count: totalNonHorsSupjet },
+    { data: allEmails30d },
   ] = await Promise.all([
-    // Emails traités (decision != ignorer, 7 derniers jours)
+    // Leads actifs : emails LOCATION 30j non ignorés
     supabase
       .from("emails")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
+      .eq("category", "LOCATION")
       .neq("decision", "ignorer")
-      .not("decision", "is", null)
-      .gte("received_at", since7d),
+      .gte("received_at", since30d),
 
-    // RDV pris (calendar events créés dans les 7 derniers jours)
+    // RDV semaine : events dans les 7 prochains jours
     supabase
       .from("calendar_events")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
-      .gte("created_at", since7d),
+      .gte("start_time", todayStart())
+      .lte("start_time", weekEnd),
 
-    // Temps économisé (sum estimated_time)
+    // Emails avec ai_reply (30j, non HORS_SUJET) — pour taux réponse IA
     supabase
       .from("emails")
-      .select("estimated_time")
+      .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
-      .gte("received_at", since7d)
-      .not("estimated_time", "is", null),
+      .not("ai_reply", "is", null)
+      .neq("category", "HORS_SUJET")
+      .gte("received_at", since30d),
 
-    // Répartition intentions
+    // Total emails non-HORS_SUJET (30j)
     supabase
       .from("emails")
-      .select("category")
+      .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
-      .gte("received_at", since7d)
-      .not("category", "is", null),
+      .neq("category", "HORS_SUJET")
+      .gte("received_at", since30d),
+
+    // Tous les emails LOCATION 30j pour heuristique dossiers complets
+    supabase
+      .from("emails")
+      .select("body, summary, ai_reply")
+      .eq("user_id", userId)
+      .eq("category", "LOCATION")
+      .gte("received_at", since30d)
+      .limit(200),
   ]);
 
-  // Heures économisées (2 min /email traitée)
-  const totalMinutesSaved = (emailsWithTime || []).reduce(
-    (sum, e) => sum + (e.estimated_time ?? 0),
-    0
-  );
-  const heuresSaved = Math.round(totalMinutesSaved / 60 * 10) / 10;
+  // Dossiers complets (heuristique : body mentionne ≥ 3 types de docs)
+  let dossierComplets = 0;
+  for (const e of allEmails30d ?? []) {
+    const t = ((e.body ?? "") + " " + (e.summary ?? "")).toLowerCase();
+    let score = 0;
+    if (t.includes("fiche de paie") || t.includes("bulletin") || t.includes("salaire")) score++;
+    if (t.includes("contrat") || t.includes("cdi") || t.includes("cdd")) score++;
+    if (t.includes("avis d'imposition") || t.includes("impôt") || t.includes("fiscal")) score++;
+    if (t.includes("identit") || t.includes("passeport") || t.includes("carte")) score++;
+    if (t.includes("rib") || t.includes("relevé bancaire")) score++;
+    if (score >= 3) dossierComplets++;
+  }
 
-  // Répartition intentions
+  // Taux réponse IA (%)
+  const total = totalNonHorsSupjet ?? 0;
+  const tauxReponseIA = total > 0 ? Math.min(100, Math.round(((totalReplies ?? 0) / total) * 100)) : 0;
+
+  // Répartition intentions (7j)
+  const { data: intentions7d } = await supabase
+    .from("emails")
+    .select("category")
+    .eq("user_id", userId)
+    .gte("received_at", since7d)
+    .not("category", "is", null);
+
   const intentionCounts = { LOCATION: 0, INFO: 0, HORS_SUJET: 0 };
-  for (const e of intentions || []) {
+  for (const e of intentions7d ?? []) {
     const cat = (e.category || "").toUpperCase();
     if (cat in intentionCounts) intentionCounts[cat as keyof typeof intentionCounts]++;
   }
 
-  // ── GRAPHIQUE 7 JOURS ────────────────────────────────────────────
-  const { data: emailsByDay } = await supabase
+  // ── GRAPHIQUE LOCATION 30 JOURS ────────────────────────────────────
+  const { data: locationEmails30d } = await supabase
     .from("emails")
-    .select("received_at, decision")
+    .select("received_at")
     .eq("user_id", userId)
-    .gte("received_at", since7d)
+    .eq("category", "LOCATION")
+    .gte("received_at", since30d)
     .order("received_at", { ascending: true });
 
-  const { data: rdvByDay } = await supabase
+  const { data: rdvAll30d } = await supabase
     .from("calendar_events")
     .select("created_at")
     .eq("user_id", userId)
-    .gte("created_at", since7d)
+    .gte("created_at", since30d)
     .order("created_at", { ascending: true });
 
-  // Générer les 7 derniers jours
-  const days7: { label: string; date: string; emails: number; rdv: number }[] = [];
-  for (let i = 6; i >= 0; i--) {
+  // Générer 30 jours (par semaine pour la lisibilité — on prend un point tous les 3 jours)
+  const graph30: { label: string; date: string; leads: number; rdv: number }[] = [];
+  for (let i = 29; i >= 0; i--) {
     const d = new Date();
     d.setDate(d.getDate() - i);
     const dateStr = d.toISOString().split("T")[0];
-    days7.push({
-      label: d.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric" }),
+    graph30.push({
+      label: i % 5 === 0 || i === 0
+        ? d.toLocaleDateString("fr-FR", { day: "numeric", month: "short" })
+        : "",
       date: dateStr,
-      emails: 0,
+      leads: 0,
       rdv: 0,
     });
   }
 
-  for (const e of emailsByDay || []) {
-    const dateStr = e.received_at?.split("T")[0];
-    const day = days7.find((d) => d.date === dateStr);
-    if (day) day.emails++;
+  for (const e of locationEmails30d ?? []) {
+    const dateStr = (e.received_at as string)?.split("T")[0];
+    const day = graph30.find((d) => d.date === dateStr);
+    if (day) day.leads++;
   }
 
-  for (const r of rdvByDay || []) {
+  for (const r of rdvAll30d ?? []) {
     const dateStr = (r.created_at as string)?.split("T")[0];
-    const day = days7.find((d) => d.date === dateStr);
+    const day = graph30.find((d) => d.date === dateStr);
     if (day) day.rdv++;
   }
 
-  // ── ACTIVITÉ RÉCENTE ─────────────────────────────────────────────
+  // ── ACTIONS REQUISES ─────────────────────────────────────────────
+  // Emails LOCATION sans réponse IA, par urgence
+  const { data: actionsRequises } = await supabase
+    .from("emails")
+    .select("id, sender, subject, received_at, is_urgent, summary")
+    .eq("user_id", userId)
+    .eq("category", "LOCATION")
+    .is("ai_reply", null)
+    .neq("decision", "ignorer")
+    .order("is_urgent", { ascending: false })
+    .order("received_at", { ascending: true })
+    .limit(5);
+
+  // ── PROCHAINS RDV (7 prochains jours) ────────────────────────────
+  const { data: prochainRdv } = await supabase
+    .from("calendar_events")
+    .select("id, title, start_time, end_time")
+    .eq("user_id", userId)
+    .gte("start_time", todayStart())
+    .lte("start_time", weekEnd)
+    .order("start_time", { ascending: true })
+    .limit(5);
+
+  // ── ACTIVITÉ RÉCENTE (7j) ─────────────────────────────────────────
   const { data: recentActivity } = await supabase
     .from("emails")
     .select("id, sender, subject, decision, category, received_at, is_urgent")
@@ -137,26 +195,20 @@ export async function GET() {
     .order("received_at", { ascending: false })
     .limit(5);
 
-  // ── RDV AUJOURD'HUI ──────────────────────────────────────────────
-  const { data: nextMeetings } = await supabase
-    .from("calendar_events")
-    .select("id, title, start_time, end_time")
-    .eq("user_id", userId)
-    .gte("start_time", todayStart())
-    .lte("start_time", todayEnd())
-    .order("start_time", { ascending: true })
-    .limit(5);
-
   return NextResponse.json({
     metrics: {
-      emailsTraites: emailsTraites ?? 0,
-      rdvPris: rdvPris ?? 0,
-      heuresSaved,
-      tempsReponseMoyen: 4, // minutes (valeur fixe pour MVP)
+      leadsActifs: leadsActifs ?? 0,
+      rdvSemaine: rdvSemaine ?? 0,
+      dossierComplets,
+      tauxReponseIA,
     },
     intentions: intentionCounts,
-    graph7d: days7,
+    graph30,
+    actionsRequises: actionsRequises ?? [],
+    prochainRdv: prochainRdv ?? [],
     recentActivity: recentActivity ?? [],
-    nextMeetings: nextMeetings ?? [],
+    // compat ancien champ
+    graph7d: graph30.slice(-7).map((d) => ({ ...d, emails: d.leads })),
+    nextMeetings: prochainRdv ?? [],
   });
 }

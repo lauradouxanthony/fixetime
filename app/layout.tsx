@@ -6,6 +6,7 @@ import { ToastProvider } from "@/components/ui/Toast";
 export const metadata: Metadata = {
   title: "FixTime – Assistant IA",
   description: "Optimisez vos emails et votre calendrier avec l'IA.",
+  icons: { icon: "/logo-fixtime.png" },
 };
 
 export default function RootLayout({

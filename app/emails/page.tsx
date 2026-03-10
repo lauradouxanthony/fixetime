@@ -165,16 +165,22 @@ export default function PipelinePage() {
     if (refreshing) return;
     setRefreshing(true);
     try {
+      // analyze-now retourne après sync Gmail (rapide ~2s)
+      // l'analyse IA tourne en background
       await fetch("/api/emails/analyze-now", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ trigger: "manual" }),
       });
+      // Fetch immédiat après sync (les nouveaux emails sont déjà en DB)
+      await fetchEmailsSilent();
+      setLastSync(new Date());
+      setRefreshing(false);
+
+      // Re-fetch après 15s pour récupérer les catégories IA classifiées
       setTimeout(async () => {
         await fetchEmailsSilent();
-        setLastSync(new Date());
-        setRefreshing(false);
-      }, 3000);
+      }, 15_000);
     } catch (e) {
       console.error("REFRESH_ERROR", e);
       setRefreshing(false);
@@ -259,17 +265,19 @@ export default function PipelinePage() {
                 </span>
               </div>
 
-              {/* Refresh */}
+              {/* Refresh — bouton visible */}
               <button
                 onClick={handleRefresh}
                 disabled={refreshing}
-                className="p-1.5 rounded-lg transition-colors"
-                style={{ color: "rgb(100 116 139)" }}
-                title="Rafraîchir"
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgb(248 250 252)"; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-60"
+                style={{
+                  background: refreshing ? "rgb(238 242 255)" : "rgb(79 70 229)",
+                  color: "white",
+                }}
+                title="Synchroniser et analyser les emails"
               >
                 <span className={refreshing ? "animate-spin inline-block" : ""}>🔄</span>
+                <span>{refreshing ? "Sync…" : "Actualiser"}</span>
               </button>
             </div>
           </div>

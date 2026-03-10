@@ -165,7 +165,7 @@ await supabaseAdmin
       // 2) Règles utilisateur + pipeline_mode
       const { data: settings } = await supabaseAdmin
         .from("settings_v1")
-        .select("email_rules, pipeline_mode")
+        .select("email_rules")          // pipeline_mode est dans email_rules.pipeline_mode (pas de colonne dédiée)
         .eq("user_id", email.user_id)
         .maybeSingle();
 
@@ -217,7 +217,37 @@ await supabaseAdmin
         email.body?.trim() ||
         "Email sans contenu. Analyse basée sur le sujet et l’expéditeur.";
 
-      const prompt = `Tu es l'IA d'une agence immobilière française. Analyse cet email entrant et retourne UNIQUEMENT un JSON valide (sans markdown, sans texte autour) :
+      // ── Contexte agence depuis les settings ──────────────────────────
+      const ftLocatif = rules.ft_locatif ?? {};
+      const ftIa = rules.ft_ia ?? {};
+      const ftAgence = rules.ft_agence ?? {};
+      const ftFaq: { question: string; reponse: string }[] = rules.ft_faq ?? [];
+
+      const multiplicateur = ftLocatif.multiplicateur ?? 3;
+      const agenceName = ftAgence.name ?? "l’agence";
+      const zones = ftIa.zones ?? "";
+      const loyerMoyen = ftIa.loyer_moyen ?? "";
+      const instructions = ftIa.instructions ?? "";
+
+      const docsRequired = Object.entries(ftLocatif.docs ?? {})
+        .filter(([, v]) => v === true)
+        .map(([k]) => ({ fiches_paie: "fiches de paie", contrat: "contrat de travail", avis_imposition: "avis d’imposition", piece_identite: "pièce d’identité", rib: "RIB" }[k] ?? k));
+
+      const agencyContext = [
+        `Agence : ${agenceName}`,
+        zones ? `Zones gérées : ${zones}` : "",
+        loyerMoyen ? `Loyer moyen du parc : ${loyerMoyen}€` : "",
+        `Critère solvabilité : revenus ≥ ${multiplicateur}x le loyer`,
+        docsRequired.length > 0 ? `Documents requis : ${docsRequired.join(", ")}` : "",
+        instructions ? `Instructions spéciales : ${instructions}` : "",
+        ftFaq.length > 0 ? `FAQ agence (${ftFaq.length} entrées disponibles)` : "",
+      ].filter(Boolean).join("\n");
+
+      const prompt = `Tu es l’IA d’une agence immobilière française. Analyse cet email entrant et retourne UNIQUEMENT un JSON valide (sans markdown, sans texte autour) :
+
+CONTEXTE DE L’AGENCE :
+${agencyContext}
+
 
 {
   "summary": "1 phrase max en français, très concrète sur ce que veut l'expéditeur",
@@ -239,6 +269,12 @@ RÈGLES pour "decision" :
 - "TRAITER" si LOCATION ou INFO nécessitant une réponse humaine
 - "IGNORER" si HORS_SUJET ou email automatique sans besoin de réponse
 - "DELEGUER" si à transférer
+
+RÈGLES pour "priority" (détermine le score de qualification 1-10) :
+- "URGENT" → score 9-10 : email LOCATION où le prospect mentionne SIMULTANÉMENT revenus (ex: 3000€, CDI, salaire...) ET au moins 2 documents (fiches de paie, contrat, pièce d'identité, avis d'imposition) ET une intention claire de visite/candidature. Exemple : "Je suis en CDI, 3500€/mois, je peux vous envoyer mes 3 fiches de paie et ma pièce d'identité, quand puis-je visiter ?"
+- "IMPORTANT" → score 7-8 : email LOCATION avec intention claire de louer/visiter ET quelques infos financières OU mention de documents, mais profil incomplet
+- "NORMAL" → score 3-6 : question générale sur un bien ou l'agence, demande d'information sans dossier, ou email INFO
+- Pour HORS_SUJET : toujours "NORMAL" (score 1-2)
 
 RÈGLES confirmation RDV (is_rdv_confirmation = true) :
 - Sujet commence par "Re:" ET le prospect confirme un créneau de visite
@@ -389,7 +425,7 @@ IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
         .eq("id", email.id);
 
       // ── AUTOPILOTE : envoi automatique ──────────────────────────
-      const pipelineMode = (settings as any)?.pipeline_mode ?? "DRAFT";
+      const pipelineMode = (settings?.email_rules as any)?.pipeline_mode ?? "DRAFT";
       const emailRules = (settings as any)?.email_rules ?? {};
       const intention = intentionMap[result.intention] ?? "INFO";
 
