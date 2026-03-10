@@ -35,25 +35,18 @@ async function loadSection<T>(section: string, defaultVal: T): Promise<T> {
 }
 
 async function saveSection(section: string, data: unknown): Promise<boolean> {
+  // Sauvegarde locale immédiate (fallback hors-ligne)
   try { localStorage.setItem(`fixetime_${section}`, JSON.stringify(data)); } catch { /* silent */ }
+  // POST direct — le serveur merge avec l'existant (read-then-write côté serveur)
   try {
-    const getRes = await fetch("/api/settings", { cache: "no-store" });
-    if (!getRes.ok) {
-      const err = await getRes.json().catch(() => ({}));
-      console.error("[saveSection] GET échoué:", getRes.status, err);
-      return false;
-    }
-    const current = await getRes.json();
-    const currentRules = (current?.email_rules && typeof current.email_rules === "object")
-      ? current.email_rules : {};
-    const postRes = await fetch("/api/settings", {
+    const res = await fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email_rules: { ...currentRules, [`ft_${section}`]: data } }),
+      body: JSON.stringify({ email_rules: { [`ft_${section}`]: data } }),
     });
-    if (!postRes.ok) {
-      const err = await postRes.json().catch(() => ({}));
-      console.error("[saveSection] POST échoué:", postRes.status, err);
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      console.error("[saveSection] POST échoué:", res.status, err);
       return false;
     }
     console.log("[saveSection] ✅ Section sauvegardée:", section);
@@ -991,11 +984,12 @@ export default function SettingsPage() {
             ))}
           </div>
 
-          {activeTab === "locatif" && <TabLocatif />}
-          {activeTab === "documents" && <TabDocuments />}
-          {activeTab === "faq" && <TabFaq />}
-          {activeTab === "calendrier" && <TabCalendrier />}
-          {activeTab === "ia" && <TabIA />}
+          {/* Tabs toujours montés — display:none préserve le state React entre onglets */}
+          <div style={{ display: activeTab === "locatif" ? "block" : "none" }}><TabLocatif /></div>
+          <div style={{ display: activeTab === "documents" ? "block" : "none" }}><TabDocuments /></div>
+          <div style={{ display: activeTab === "faq" ? "block" : "none" }}><TabFaq /></div>
+          <div style={{ display: activeTab === "calendrier" ? "block" : "none" }}><TabCalendrier /></div>
+          <div style={{ display: activeTab === "ia" ? "block" : "none" }}><TabIA /></div>
         </div>
       </div>
     </AppShell>
