@@ -1,105 +1,84 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
 
-// Flag auto Vercel (true en prod Vercel, false en local)
-const IS_VERCEL = process.env.VERCEL === "1";
-
 export async function POST(req: Request) {
+  const t0 = Date.now();
+  console.log("[ANALYZE-NOW] ▶ Démarrée", new Date().toISOString());
+
   try {
     const supabase = await supabaseServer();
-const {
-  data: { user },
-} = await supabase.auth.getUser();
+    const { data: { user } } = await supabase.auth.getUser();
 
-if (!user) {
-  return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
-}
+    if (!user) {
+      return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
+    }
 
-    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || "http://localhost:3000";
+    const body = await req.json().catch(() => ({}));
+    const trigger = body?.trigger ?? "auto"; // "manual" | "auto"
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || new URL(req.url).origin;
     const cookie = req.headers.get("cookie") ?? "";
 
+    console.log(`[ANALYZE-NOW] user=${user.id} trigger=${trigger}`);
+
     // =========================
-    // 1) SYNC GMAIL
+    // 1) SYNC GMAIL — PRIORITAIRE : on attend qu'il finisse
+    //    mode=quick pour refresh manuel (50 msgs INBOX, rapide)
+    //    mode=full  pour cron (200 msgs, complet)
     // =========================
-    const syncPromise = fetch(`${baseUrl}/api/gmail/sync`, {
+    const syncRes = await fetch(`${baseUrl}/api/gmail/sync`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         user_id: user.id,
+        mode: trigger === "manual" ? "quick" : "full",
       }),
       cache: "no-store",
     });
-    
 
-    let syncRes: Response | null = null;
-    let syncJson: any = null;
+    const syncJson = await syncRes.json().catch(() => ({}));
+    const syncMs = Date.now() - t0;
 
-    if (!IS_VERCEL) {
-      // 👉 comportement EXACT comme avant en local
-      syncRes = await syncPromise;
-      syncJson = await syncRes.json().catch(() => ({}));
-
-      if (!syncRes.ok) {
-        return NextResponse.json(
-          { error: "SYNC_FAILED", details: syncJson },
-          { status: 500 }
-        );
-      }
+    if (!syncRes.ok) {
+      console.error("[ANALYZE-NOW] ❌ Sync Gmail échoué:", syncJson);
+    } else {
+      console.log(
+        `[ANALYZE-NOW] ✅ Sync Gmail OK en ${syncMs}ms — nouveaux=${syncJson.inserted ?? "?"} parcourus=${syncJson.fetched ?? "?"}`
+      );
     }
 
     // =========================
-    // 2) ANALYSE IA
+    // 2) ANALYSE IA — BACKGROUND : on ne bloque pas le retour
+    //    → le frontend peut afficher les nouveaux emails de suite
+    //    → l'IA classe en arrière-plan (~30-60s)
     // =========================
-    const aiPromise = fetch(`${baseUrl}/api/ai/analyze-inbox`, {
+    fetch(`${baseUrl}/api/ai/analyze-inbox`, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        // ✅ autorise l'endpoint même sans cookie (prod-safe)
         "x-fixetime-cron-key": process.env.FIXETIME_INTERNAL_CRON_KEY || "",
+        ...(cookie ? { cookie } : {}),
       },
-      body: JSON.stringify({
-        user_id: user.id,
-        // optionnel : période analysée
-        period: "30d",
-      }),
+      body: JSON.stringify({ user_id: user.id, period: "30d" }),
       cache: "no-store",
+    }).then(async (aiRes) => {
+      const aiJson = await aiRes.json().catch(() => ({}));
+      console.log(`[ANALYZE-NOW] ✅ Analyse IA terminée: ${JSON.stringify(aiJson)}`);
+    }).catch((err) => {
+      console.error("[ANALYZE-NOW] ❌ Analyse IA erreur background:", err);
     });
-    
-    
-
-    let aiRes: Response | null = null;
-    let aiJson: any = null;
-
-    if (!IS_VERCEL) {
-      // 👉 comportement EXACT comme avant en local
-      aiRes = await aiPromise;
-      aiJson = await aiRes.json().catch(() => ({}));
-
-      if (!aiRes.ok) {
-        return NextResponse.json(
-          { error: "AI_ANALYZE_FAILED", details: aiJson, sync: syncJson },
-          { status: 500 }
-        );
-      }
-    }
 
     // =========================
-    // 3) RÉPONSE
+    // 3) RÉPONSE IMMÉDIATE après sync
     // =========================
     return NextResponse.json({
       success: true,
-
-      // En prod Vercel → juste un déclenchement
-      started: IS_VERCEL,
-
-      // En local → comportement inchangé
-      sync: IS_VERCEL ? null : syncJson,
-      ai: IS_VERCEL ? null : aiJson,
+      trigger,
+      sync: syncJson,
+      ai: "running_background",
     });
+
   } catch (e) {
-    console.error("ANALYZE_NOW_FATAL", e);
+    console.error("[ANALYZE-NOW] FATAL:", e);
     return NextResponse.json({ error: "ANALYZE_NOW_FAILED" }, { status: 500 });
   }
 }

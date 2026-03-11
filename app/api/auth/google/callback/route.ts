@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // 3) Récupération de l’email Google
+    // 3) Récupération de l'email Google
     const userInfoRes = await fetch(
       "https://www.googleapis.com/oauth2/v2/userinfo",
       {
@@ -57,7 +57,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // 4) UPSERT DANS gmail_tokens (COLONNES RÉELLES)
+    // 4) UPSERT dans gmail_tokens
     await supabaseAdmin.from("gmail_tokens").upsert(
       {
         user_id: userId,
@@ -67,15 +67,51 @@ export async function GET(req: NextRequest) {
         expires_at: new Date(
           Date.now() + tokenData.expires_in * 1000
         ).toISOString(),
-        last_history_id: null, // 🔥 TRÈS IMPORTANT
+        last_history_id: null,
       },
       { onConflict: "user_id" }
     );
-    
 
-    // 5) REDIRECTION FINALE
+    // 5) Déclencher gmail/sync en arrière-plan (fire & forget)
+    //    → On n'attend pas la réponse pour ne pas bloquer la redirection
+    const baseUrl =
+      process.env.NEXT_PUBLIC_APP_URL ||
+      process.env.NEXT_PUBLIC_SITE_URL ||
+      "http://localhost:3001";
+
+    fetch(`${baseUrl}/api/gmail/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId, mode: "quick" }),
+      cache: "no-store",
+    }).catch((err) => {
+      console.error("[GOOGLE CALLBACK] Sync background error:", err);
+    });
+
+    console.log(`[GOOGLE CALLBACK] ✅ Token sauvegardé pour user=${userId} — sync lancé en background`);
+
+    // 6) Vérifier si l'onboarding est terminé → redirect intelligent
+    const { data: settingsRow } = await supabaseAdmin
+      .from("settings_v1")
+      .select("email_rules")
+      .eq("user_id", userId)
+      .maybeSingle();
+
+    const emailRules =
+      settingsRow?.email_rules && typeof settingsRow.email_rules === "object"
+        ? (settingsRow.email_rules as Record<string, unknown>)
+        : {};
+
+    const onboardingDone = emailRules.ft_onboarding_done === true;
+
+    // Si onboarding terminé → home (reconnexion Gmail depuis les settings)
+    // Si onboarding en cours → retour step 3 avec provider=gmail
+    const redirectPath = onboardingDone
+      ? "/home"
+      : "/onboarding?step=3&provider=gmail";
+
     return NextResponse.redirect(
-      new URL("/home", process.env.NEXT_PUBLIC_SITE_URL)
+      new URL(redirectPath, process.env.NEXT_PUBLIC_SITE_URL)
     );
   } catch (error) {
     console.error("GOOGLE_CALLBACK_ERROR:", error);

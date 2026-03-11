@@ -25,82 +25,102 @@ export function CalendarHeader({
   refreshing: boolean;
   connected: boolean;
 }) {
-  // ✅ FIX HYDRATION (SSR vs Client locale)
   const [mounted, setMounted] = useState(false);
-
-  useEffect(() => {
-    setMounted(true);
-  }, []);
-
+  useEffect(() => { setMounted(true); }, []);
   if (!mounted) return null;
 
   const label = date.toLocaleDateString("fr-FR", {
     weekday: "long",
     day: "2-digit",
     month: "long",
+    year: "numeric",
   });
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
+    <div
+      className="flex flex-wrap items-center justify-between gap-3 px-6 py-4 border-b bg-white"
+      style={{ borderColor: "rgb(226 232 240)" }}
+    >
       <div>
-        <div className="text-sm text-gray-400">Calendrier</div>
-        <div className="text-xl font-bold text-white capitalize">
+        <h1 className="text-lg font-semibold capitalize" style={{ color: "rgb(30 41 59)" }}>
           {label}
+        </h1>
+        <div className="flex items-center gap-2 mt-0.5">
+          <span
+            className="text-xs font-medium px-2 py-0.5 rounded-full"
+            style={{
+              background: connected ? "rgb(240 253 244)" : "rgb(254 242 242)",
+              color: connected ? "rgb(22 163 74)" : "rgb(220 38 38)",
+            }}
+          >
+            {connected ? "● Google Calendar" : "● Non connecté"}
+          </span>
         </div>
       </div>
 
       <div className="flex items-center gap-2 flex-wrap">
+        {/* Aujourd'hui */}
         <button
           onClick={onToday}
-          className="px-3 py-1 rounded-md text-sm bg-gray-800 hover:bg-gray-700"
+          className="px-3 py-1.5 rounded-lg text-sm font-medium transition-colors"
+          style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
+          onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgb(241 245 249)"; }}
+          onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "rgb(248 250 252)"; }}
         >
-          Aujourd’hui
+          Aujourd'hui
         </button>
 
-        <div className="flex items-center gap-1">
+        {/* Prev / Next */}
+        <div className="flex items-center rounded-lg border overflow-hidden" style={{ borderColor: "rgb(226 232 240)" }}>
           <button
             onClick={onPrev}
-            className="px-3 py-1 rounded-md text-sm bg-gray-800 hover:bg-gray-700"
+            className="px-3 py-1.5 text-sm transition-colors"
+            style={{ color: "rgb(71 85 105)" }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgb(248 250 252)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
           >
             ←
           </button>
+          <div style={{ width: "1px", background: "rgb(226 232 240)", height: "24px" }} />
           <button
             onClick={onNext}
-            className="px-3 py-1 rounded-md text-sm bg-gray-800 hover:bg-gray-700"
+            className="px-3 py-1.5 text-sm transition-colors"
+            style={{ color: "rgb(71 85 105)" }}
+            onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgb(248 250 252)"; }}
+            onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
           >
             →
           </button>
         </div>
 
-        <div className="flex gap-2">
-          <button
-            onClick={() => onChangeMode("day")}
-            className={`px-3 py-1 rounded-md text-sm ${
-              mode === "day" ? "bg-blue-600" : "bg-gray-800"
-            }`}
-          >
-            Jour
-          </button>
-          <button
-            onClick={() => onChangeMode("week")}
-            className={`px-3 py-1 rounded-md text-sm ${
-              mode === "week" ? "bg-blue-600" : "bg-gray-800"
-            }`}
-          >
-            Semaine
-          </button>
+        {/* Vue Jour / Semaine */}
+        <div className="flex rounded-lg border overflow-hidden" style={{ borderColor: "rgb(226 232 240)" }}>
+          {(["day", "week"] as const).map((m) => (
+            <button
+              key={m}
+              onClick={() => onChangeMode(m)}
+              className="px-3 py-1.5 text-sm font-medium transition-all"
+              style={mode === m ? {
+                background: "rgb(79 70 229)",
+                color: "white",
+              } : {
+                background: "white",
+                color: "rgb(71 85 105)",
+              }}
+            >
+              {m === "day" ? "Jour" : "Semaine"}
+            </button>
+          ))}
         </div>
 
-        <div className="text-xs px-3 py-1 rounded-full border border-gray-800 bg-gray-950 text-gray-300">
-          {connected ? "🟢 Google Calendar connecté" : "🔴 Non connecté"}
-        </div>
-
+        {/* Sync */}
         <button
           onClick={onRefresh}
           disabled={refreshing}
-          className="px-4 py-2 rounded-md bg-green-600 text-sm disabled:opacity-50"
+          className="px-3 py-1.5 rounded-lg text-sm font-medium text-white transition-opacity disabled:opacity-50"
+          style={{ background: "rgb(79 70 229)" }}
         >
-          {refreshing ? "Actualisation…" : "Actualiser"}
+          {refreshing ? "Sync…" : "↻ Sync"}
         </button>
       </div>
     </div>

@@ -9,14 +9,23 @@ export async function supabaseServer() {
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
       cookies: {
-        get(name: string) {
-          return cookieStore.get(name)?.value;
+        // @supabase/ssr v0.5+ utilise getAll / setAll
+        getAll() {
+          return cookieStore.getAll();
         },
-        set(name: string, value: string, options: any) {
-          cookieStore.set({ name, value, ...options });
-        },
-        remove(name: string, options: any) {
-          cookieStore.set({ name, value: "", ...options });
+        setAll(cookiesToSet) {
+          // L'écriture de cookies n'est autorisée que dans les Route Handlers
+          // et les Server Actions — pas depuis un Server Component (pages).
+          // On wrap dans un try/catch pour ignorer silencieusement les erreurs
+          // de contexte Server Component : la lecture reste fonctionnelle
+          // et le token sera rafraîchi au prochain appel via un Route Handler.
+          try {
+            cookiesToSet.forEach(({ name, value, options }) =>
+              cookieStore.set(name, value, options)
+            );
+          } catch {
+            // Contexte Server Component — écriture de cookies non autorisée, on ignore.
+          }
         },
       },
     }

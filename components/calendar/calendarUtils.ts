@@ -27,7 +27,7 @@ export function formatHM(d: Date) {
   return d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
-export function clampDayRange(date: Date, startHour = 8, endHour = 18) {
+export function clampDayRange(date: Date, startHour = 9, endHour = 18) {
   const start = new Date(date);
   start.setHours(startHour, 0, 0, 0);
   const end = new Date(date);
@@ -91,7 +91,7 @@ export function detectConflicts(
 export function freeSlots(
   dayEvents: Array<CalendarEvent & { start: Date; end: Date }>,
   date: Date,
-  startHour = 8,
+  startHour = 9,
   endHour = 18
 ): Array<{ start: Date; end: Date; minutes: number }> {
 
@@ -144,7 +144,7 @@ export function freeSlots(
 export function totalMeetingMinutes(
   dayEvents: Array<CalendarEvent & { start: Date; end: Date }>,
   date: Date,
-  startHour = 8,
+  startHour = 9,
   endHour = 18
 ) {
   const { start: dayStart, end: dayEnd } = clampDayRange(

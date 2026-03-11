@@ -5,6 +5,17 @@ export type EmailAction = "reply" | "schedule" | "archive" | null;
 // Intention immobilière — stockée dans la colonne `category`
 export type EmailIntention = "LOCATION" | "INFO" | "HORS_SUJET" | null;
 
+export type ProspectData = {
+  nom?: string | null;
+  telephone?: string | null;
+  situation_pro?: "CDI" | "CDD" | "AUTO_ENTREPRENEUR" | "ETUDIANT" | "RETRAITE" | null;
+  revenus_mensuels?: number | null;
+  loyer_max?: number | null;
+  animaux?: "OUI" | "NON" | null;
+  nb_personnes?: number | null;
+  date_emmenagement?: string | null;
+};
+
 export type Email = {
   id: string;
   gmail_message_id?: string | null;
@@ -29,6 +40,9 @@ export type Email = {
   is_important?: boolean | null;
 
   ai_reply?: string | null;
+
+  // Données prospect extraites par l'IA (JSONB en DB)
+  prospect_data?: ProspectData | null;
 };
 
 // Helper : extraire l'intention depuis `category`

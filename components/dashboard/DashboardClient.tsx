@@ -1,17 +1,45 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import Link from "next/link";
+import {
+  AreaChart,
+  Area,
+  XAxis,
+  YAxis,
+  CartesianGrid,
+  Tooltip,
+  ResponsiveContainer,
+  PieChart,
+  Pie,
+  Cell,
+} from "recharts";
+import { SkeletonCard } from "@/components/ui/Skeleton";
+import { useToast } from "@/components/ui/Toast";
 
 type DashboardData = {
   metrics: {
-    emailsTraites: number;
-    rdvPris: number;
-    heuresSaved: number;
-    tempsReponseMoyen: number;
+    leadsActifs: number;
+    rdvSemaine: number;
+    dossierComplets: number;
+    tauxReponseIA: number;
   };
   intentions: { LOCATION: number; INFO: number; HORS_SUJET: number };
-  graph7d: { label: string; date: string; emails: number; rdv: number }[];
+  graph30: { label: string; date: string; leads: number; rdv: number }[];
+  actionsRequises: {
+    id: string;
+    sender: string | null;
+    subject: string | null;
+    received_at: string | null;
+    is_urgent: boolean | null;
+    summary: string | null;
+  }[];
+  prochainRdv: {
+    id: string;
+    title: string;
+    start_time: string;
+    end_time: string;
+  }[];
   recentActivity: {
     id: string;
     sender: string | null;
@@ -21,144 +49,90 @@ type DashboardData = {
     received_at: string | null;
     is_urgent: boolean | null;
   }[];
-  nextMeetings: {
-    id: string;
-    title: string;
-    start_time: string;
-    end_time: string;
-  }[];
 };
 
-/* ── MINI GRAPHIQUE BARRES (CSS pur, pas de lib) ── */
-function BarChart({ data }: { data: { label: string; emails: number; rdv: number }[] }) {
-  const maxVal = Math.max(...data.flatMap((d) => [d.emails, d.rdv]), 1);
+/* ── ANIMATED COUNTER ── */
+function useCountUp(target: number, duration = 900) {
+  const [value, setValue] = useState(0);
+  const rafRef = useRef<number>(0);
+
+  useEffect(() => {
+    if (target === 0) { setValue(0); return; }
+    cancelAnimationFrame(rafRef.current);
+    const startTime = performance.now();
+    const step = (now: number) => {
+      const elapsed = now - startTime;
+      const progress = Math.min(elapsed / duration, 1);
+      const eased = 1 - Math.pow(1 - progress, 3);
+      setValue(Math.round(eased * target));
+      if (progress < 1) rafRef.current = requestAnimationFrame(step);
+    };
+    rafRef.current = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(rafRef.current);
+  }, [target, duration]);
+
+  return value;
+}
+
+/* ── METRIC CARD ── */
+function MetricCard({
+  label, target, unit, accent, sub, icon,
+}: {
+  label: string;
+  target: number;
+  unit?: string;
+  accent: string;
+  sub?: string;
+  icon: string;
+}) {
+  const value = useCountUp(target);
   return (
-    <div className="flex items-end gap-1 h-28">
-      {data.map((day, i) => (
-        <div key={i} className="flex-1 flex flex-col items-center gap-0.5">
-          <div className="w-full flex flex-col items-center gap-0.5" style={{ height: "96px" }}>
-            {/* Emails bar */}
-            <div className="w-full flex items-end justify-center" style={{ height: "48px" }}>
-              <div
-                className="w-full rounded-t-sm transition-all"
-                style={{
-                  height: `${Math.round((day.emails / maxVal) * 44)}px`,
-                  background: "rgb(199 210 254)", // indigo-200
-                  minHeight: day.emails > 0 ? "2px" : "0",
-                }}
-                title={`${day.emails} emails`}
-              />
-            </div>
-            {/* RDV bar */}
-            <div className="w-full flex items-end justify-center" style={{ height: "48px" }}>
-              <div
-                className="w-full rounded-t-sm transition-all"
-                style={{
-                  height: `${Math.round((day.rdv / maxVal) * 44)}px`,
-                  background: "rgb(79 70 229)", // indigo-600
-                  minHeight: day.rdv > 0 ? "2px" : "0",
-                }}
-                title={`${day.rdv} RDV`}
-              />
-            </div>
-          </div>
-          <div className="text-[10px] text-center" style={{ color: "rgb(148 163 184)" }}>
-            {day.label}
-          </div>
-        </div>
+    <div
+      className="rounded-xl border p-4 bg-white animate-fade-in hover-lift"
+      style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}
+    >
+      <div className="flex items-center justify-between mb-3">
+        <span className="text-xs font-medium" style={{ color: "rgb(100 116 139)" }}>{label}</span>
+        <span className="text-base">{icon}</span>
+      </div>
+      <div className="flex items-baseline gap-1">
+        <span className="text-3xl font-bold tabular-nums" style={{ color: accent }}>{value}</span>
+        {unit && <span className="text-sm font-medium" style={{ color: "rgb(100 116 139)" }}>{unit}</span>}
+      </div>
+      {sub && <div className="mt-1.5 text-xs" style={{ color: "rgb(148 163 184)" }}>{sub}</div>}
+    </div>
+  );
+}
+
+/* ── DONUT ── */
+const DONUT_COLORS = ["rgb(59 130 246)", "rgb(100 116 139)", "rgb(203 213 225)"];
+const DONUT_LABELS = ["Location", "Info", "Hors sujet"];
+
+/* ── CUSTOM TOOLTIP ── */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function CustomTooltip({ active, payload, label }: any) {
+  if (!active || !payload?.length) return null;
+  return (
+    <div className="rounded-lg border px-3 py-2 text-xs shadow-lg" style={{ background: "white", borderColor: "rgb(226 232 240)" }}>
+      <p className="font-medium mb-1" style={{ color: "rgb(30 41 59)" }}>{label}</p>
+      {/* eslint-disable-next-line @typescript-eslint/no-explicit-any */}
+      {payload.map((p: any) => (
+        <p key={p.dataKey} style={{ color: p.color }}>
+          {p.dataKey === "leads" ? "Leads" : "RDV"}: <strong>{p.value}</strong>
+        </p>
       ))}
     </div>
   );
 }
 
-/* ── DONUT INTENTIONS (SVG pur) ── */
-function DonutChart({ data }: { data: { LOCATION: number; INFO: number; HORS_SUJET: number } }) {
-  const total = data.LOCATION + data.INFO + data.HORS_SUJET;
-  if (total === 0) return (
-    <div className="text-xs text-center" style={{ color: "rgb(148 163 184)" }}>Aucune donnée</div>
-  );
-
-  const segments = [
-    { label: "Location", value: data.LOCATION, color: "rgb(59 130 246)" },
-    { label: "Info", value: data.INFO, color: "rgb(100 116 139)" },
-    { label: "Hors sujet", value: data.HORS_SUJET, color: "rgb(203 213 225)" },
-  ];
-
-  // SVG donut simple
-  const r = 40;
-  const cx = 60;
-  const cy = 60;
-  const circumference = 2 * Math.PI * r;
-  let offset = 0;
-
+/* ── AVATAR ── */
+function Avatar({ name }: { name: string | null }) {
+  const clean = (name || "").replace(/<.*>/, "").trim();
+  const initials = clean.split(/[\s@.]+/).slice(0, 2).map((w) => w[0]?.toUpperCase() ?? "").join("") || "?";
+  const hue = [...clean].reduce((acc, c) => acc + c.charCodeAt(0), 0) % 360;
   return (
-    <div className="flex items-center gap-4">
-      <svg width="120" height="120" viewBox="0 0 120 120">
-        <circle cx={cx} cy={cy} r={r} fill="none" stroke="rgb(241 245 249)" strokeWidth="18" />
-        {segments.map((seg, i) => {
-          const frac = seg.value / total;
-          const dash = frac * circumference;
-          const gap = circumference - dash;
-          const thisOffset = -offset * circumference + circumference * 0.25;
-          offset += frac;
-          return (
-            <circle
-              key={i}
-              cx={cx}
-              cy={cy}
-              r={r}
-              fill="none"
-              stroke={seg.color}
-              strokeWidth="18"
-              strokeDasharray={`${dash} ${gap}`}
-              strokeDashoffset={thisOffset}
-              style={{ transition: "stroke-dasharray 0.5s" }}
-            />
-          );
-        })}
-        <text x={cx} y={cy - 4} textAnchor="middle" fontSize="14" fontWeight="600" fill="rgb(30 41 59)">{total}</text>
-        <text x={cx} y={cy + 12} textAnchor="middle" fontSize="9" fill="rgb(100 116 139)">emails</text>
-      </svg>
-      <div className="space-y-2">
-        {segments.map((seg) => (
-          <div key={seg.label} className="flex items-center gap-2">
-            <div className="w-2.5 h-2.5 rounded-full flex-shrink-0" style={{ background: seg.color }} />
-            <div className="text-xs" style={{ color: "rgb(71 85 105)" }}>
-              {seg.label}
-              <span className="ml-1.5 font-semibold" style={{ color: "rgb(30 41 59)" }}>{seg.value}</span>
-            </div>
-          </div>
-        ))}
-      </div>
-    </div>
-  );
-}
-
-/* ── STAT CARD ── */
-function MetricCard({
-  label,
-  value,
-  unit,
-  accent,
-  sub,
-}: {
-  label: string;
-  value: string | number;
-  unit?: string;
-  accent: string;
-  sub?: string;
-}) {
-  return (
-    <div
-      className="rounded-xl border p-4 bg-white"
-      style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}
-    >
-      <div className="text-xs font-medium mb-2" style={{ color: "rgb(100 116 139)" }}>{label}</div>
-      <div className="flex items-baseline gap-1">
-        <span className="text-3xl font-bold" style={{ color: accent }}>{value}</span>
-        {unit && <span className="text-sm" style={{ color: "rgb(100 116 139)" }}>{unit}</span>}
-      </div>
-      {sub && <div className="mt-1 text-xs" style={{ color: "rgb(148 163 184)" }}>{sub}</div>}
+    <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-semibold flex-shrink-0 text-white" style={{ background: `hsl(${hue},55%,52%)` }}>
+      {initials}
     </div>
   );
 }
@@ -167,20 +141,50 @@ function MetricCard({
 export default function DashboardClient() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const { toast } = useToast();
+
+  const fetchData = useCallback(async () => {
+    try {
+      const r = await fetch("/api/dashboard/summary", { cache: "no-store" });
+      if (!r.ok) throw new Error("fetch error");
+      const json = await r.json();
+      setData(json);
+      setLastUpdated(new Date());
+    } catch {
+      toast("Impossible de rafraîchir le dashboard", "error");
+    } finally {
+      setLoading(false);
+    }
+  }, [toast]);
 
   useEffect(() => {
-    fetch("/api/dashboard/summary", { cache: "no-store" })
-      .then((r) => r.json())
-      .then((json) => { setData(json); setLoading(false); })
-      .catch(() => setLoading(false));
-  }, []);
+    fetchData();
+    const interval = setInterval(fetchData, 30_000);
+    return () => clearInterval(interval);
+  }, [fetchData]);
 
+  /* ── LOADING STATE ── */
   if (loading) {
     return (
-      <div className="p-8 space-y-4">
-        {[1, 2, 3].map((i) => (
-          <div key={i} className="h-20 rounded-xl animate-pulse" style={{ background: "rgb(241 245 249)" }} />
-        ))}
+      <div className="h-full overflow-y-auto">
+        <div className="p-6 space-y-6 max-w-5xl mx-auto">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+            {[1, 2, 3, 4].map((i) => (
+              <div key={i} className="rounded-xl border p-4 bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
+                <SkeletonCard className="border-0 p-0 shadow-none" />
+              </div>
+            ))}
+          </div>
+          <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+            <div className="lg:col-span-2 rounded-xl border bg-white p-4" style={{ borderColor: "rgb(226 232 240)" }}>
+              <div className="h-48 animate-pulse rounded-lg" style={{ background: "rgb(241 245 249)" }} />
+            </div>
+            <div className="rounded-xl border bg-white p-4" style={{ borderColor: "rgb(226 232 240)" }}>
+              <div className="h-48 animate-pulse rounded-lg" style={{ background: "rgb(241 245 249)" }} />
+            </div>
+          </div>
+        </div>
       </div>
     );
   }
@@ -193,145 +197,394 @@ export default function DashboardClient() {
     );
   }
 
-  const { metrics, intentions, graph7d, recentActivity, nextMeetings } = data;
+  const { metrics, intentions, graph30, actionsRequises, prochainRdv, recentActivity } = data;
 
-  const intentionDecision = (cat: string | null) => {
-    const c = (cat || "").toUpperCase();
-    if (c === "LOCATION") return { label: "Location", color: "rgb(37 99 235)", bg: "rgba(59,130,246,0.1)" };
-    if (c === "INFO") return { label: "Info", color: "rgb(71 85 105)", bg: "rgba(100,116,139,0.1)" };
-    return { label: "Hors sujet", color: "rgb(51 65 85)", bg: "rgba(15,23,42,0.08)" };
-  };
+  const donutData = [
+    { name: "Location", value: intentions.LOCATION },
+    { name: "Info", value: intentions.INFO },
+    { name: "Hors sujet", value: intentions.HORS_SUJET },
+  ];
+  const donutTotal = donutData.reduce((s, d) => s + d.value, 0);
 
   return (
-    <div className="p-6 space-y-6 max-w-5xl mx-auto">
+    <div className="h-full overflow-y-auto">
+      <div className="p-6 space-y-6 max-w-5xl mx-auto">
 
-      {/* ── TITRE ── */}
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-xl font-semibold" style={{ color: "rgb(30 41 59)" }}>Tableau de bord</h1>
-          <p className="text-sm mt-0.5" style={{ color: "rgb(100 116 139)" }}>
-            7 derniers jours · Mis à jour automatiquement
-          </p>
+        {/* ── HEADER ── */}
+        <div className="flex items-center justify-between animate-fade-in">
+          <div>
+            <h1 className="text-xl font-semibold" style={{ color: "rgb(30 41 59)" }}>Tableau de bord</h1>
+            <p className="text-sm mt-0.5" style={{ color: "rgb(100 116 139)" }}>
+              30 derniers jours
+              {lastUpdated && (
+                <span className="ml-2" style={{ color: "rgb(148 163 184)" }}>
+                  · Mis à jour {lastUpdated.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                </span>
+              )}
+            </p>
+          </div>
+          <Link
+            href="/emails"
+            className="px-4 py-2 rounded-lg text-sm font-medium text-white transition-opacity hover:opacity-90"
+            style={{ background: "rgb(79 70 229)" }}
+          >
+            Voir le pipeline →
+          </Link>
         </div>
-        <Link
-          href="/emails"
-          className="px-4 py-2 rounded-lg text-sm font-medium text-white transition-opacity hover:opacity-90"
-          style={{ background: "rgb(79 70 229)" }}
-        >
-          Voir le pipeline →
-        </Link>
-      </div>
 
-      {/* ── MÉTRIQUES ROI ── */}
-      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <MetricCard
-          label="Emails traités"
-          value={metrics.emailsTraites}
-          accent="rgb(79 70 229)"
-          sub="7 derniers jours"
-        />
-        <MetricCard
-          label="RDV générés"
-          value={metrics.rdvPris}
-          accent="rgb(22 163 74)"
-          sub="visites confirmées"
-        />
-        <MetricCard
-          label="Heures économisées"
-          value={metrics.heuresSaved}
-          unit="h"
-          accent="rgb(234 88 12)"
-          sub="temps traitement IA"
-        />
-        <MetricCard
-          label="Temps réponse moyen"
-          value={metrics.tempsReponseMoyen}
-          unit="min"
-          accent="rgb(100 116 139)"
-          sub="vs 2h manuellement"
-        />
-      </div>
+        {/* ── MÉTRIQUES ── */}
+        <div className="grid grid-cols-2 md:grid-cols-4 gap-3 stagger-children">
+          <MetricCard
+            label="Leads actifs"
+            target={metrics.leadsActifs}
+            icon="🏠"
+            accent="rgb(79 70 229)"
+            sub="LOCATION 30j"
+          />
+          <MetricCard
+            label="RDV cette semaine"
+            target={metrics.rdvSemaine}
+            icon="📅"
+            accent="rgb(22 163 74)"
+            sub="7 prochains jours"
+          />
+          <MetricCard
+            label="Dossiers complets"
+            target={metrics.dossierComplets}
+            icon="📋"
+            accent="rgb(2 132 199)"
+            sub="docs détectés"
+          />
+          <MetricCard
+            label="Taux réponse IA"
+            target={metrics.tauxReponseIA}
+            unit="%"
+            icon="🤖"
+            accent="rgb(234 88 12)"
+            sub="emails traités"
+          />
+        </div>
 
-      {/* ── GRAPHIQUE + DONUT ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
+        {/* ── GRAPHIQUE + DONUT ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
 
-        {/* Graphique 7 jours */}
-        <div
-          className="lg:col-span-2 rounded-xl border p-4 bg-white"
-          style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}
-        >
-          <div className="flex items-center justify-between mb-4">
-            <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
-              Emails reçus vs RDV générés
+          {/* Area Chart 30j LOCATION */}
+          <div
+            className="lg:col-span-2 rounded-xl border p-5 bg-white animate-slide-up"
+            style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}
+          >
+            <div className="flex items-center justify-between mb-4">
+              <div>
+                <div className="text-sm font-semibold" style={{ color: "rgb(30 41 59)" }}>
+                  Leads Location — 30 jours
+                </div>
+                <div className="text-xs mt-0.5" style={{ color: "rgb(148 163 184)" }}>
+                  Demandes reçues vs RDV générés
+                </div>
+              </div>
+              <div className="flex items-center gap-4 text-xs" style={{ color: "rgb(100 116 139)" }}>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-3 h-1.5 rounded-full inline-block" style={{ background: "rgb(199 210 254)" }} />
+                  Leads
+                </span>
+                <span className="flex items-center gap-1.5">
+                  <span className="w-3 h-1.5 rounded-full inline-block" style={{ background: "rgb(79 70 229)" }} />
+                  RDV
+                </span>
+              </div>
             </div>
-            <div className="flex items-center gap-3 text-xs" style={{ color: "rgb(100 116 139)" }}>
-              <span className="flex items-center gap-1">
-                <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: "rgb(199 210 254)" }} />
-                Emails
-              </span>
-              <span className="flex items-center gap-1">
-                <span className="inline-block w-2.5 h-2.5 rounded-sm" style={{ background: "rgb(79 70 229)" }} />
-                RDV
-              </span>
+            <ResponsiveContainer width="100%" height={160}>
+              <AreaChart data={graph30} margin={{ top: 4, right: 4, left: -28, bottom: 0 }}>
+                <defs>
+                  <linearGradient id="leadsGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="rgb(199 210 254)" stopOpacity={0.6} />
+                    <stop offset="95%" stopColor="rgb(199 210 254)" stopOpacity={0.0} />
+                  </linearGradient>
+                  <linearGradient id="rdvGrad" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="5%" stopColor="rgb(79 70 229)" stopOpacity={0.25} />
+                    <stop offset="95%" stopColor="rgb(79 70 229)" stopOpacity={0.0} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid strokeDasharray="3 3" stroke="rgb(241 245 249)" vertical={false} />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fontSize: 9, fill: "rgb(148 163 184)" }}
+                  axisLine={false}
+                  tickLine={false}
+                  interval={0}
+                />
+                <YAxis
+                  tick={{ fontSize: 10, fill: "rgb(148 163 184)" }}
+                  axisLine={false}
+                  tickLine={false}
+                  allowDecimals={false}
+                />
+                <Tooltip content={<CustomTooltip />} />
+                <Area
+                  type="monotone"
+                  dataKey="leads"
+                  stroke="rgb(165 180 252)"
+                  strokeWidth={2}
+                  fill="url(#leadsGrad)"
+                  dot={false}
+                  activeDot={{ r: 4, fill: "rgb(165 180 252)" }}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="rdv"
+                  stroke="rgb(79 70 229)"
+                  strokeWidth={2}
+                  fill="url(#rdvGrad)"
+                  dot={false}
+                  activeDot={{ r: 4, fill: "rgb(79 70 229)" }}
+                />
+              </AreaChart>
+            </ResponsiveContainer>
+          </div>
+
+          {/* Donut intentions 7j */}
+          <div
+            className="rounded-xl border p-5 bg-white animate-slide-up"
+            style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)", animationDelay: "80ms" }}
+          >
+            <div className="text-sm font-semibold mb-4" style={{ color: "rgb(30 41 59)" }}>
+              Intentions — 7 jours
+            </div>
+            {donutTotal === 0 ? (
+              <div className="h-40 flex items-center justify-center text-sm" style={{ color: "rgb(148 163 184)" }}>
+                Aucune donnée
+              </div>
+            ) : (
+              <>
+                <div className="flex justify-center">
+                  <div className="relative">
+                    <ResponsiveContainer width={120} height={120}>
+                      <PieChart>
+                        <Pie
+                          data={donutData}
+                          cx="50%"
+                          cy="50%"
+                          innerRadius={36}
+                          outerRadius={52}
+                          dataKey="value"
+                          strokeWidth={0}
+                          paddingAngle={2}
+                        >
+                          {donutData.map((_, i) => (
+                            <Cell key={i} fill={DONUT_COLORS[i]} />
+                          ))}
+                        </Pie>
+                      </PieChart>
+                    </ResponsiveContainer>
+                    <div className="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                      <span className="text-lg font-bold" style={{ color: "rgb(30 41 59)" }}>{donutTotal}</span>
+                      <span className="text-[9px]" style={{ color: "rgb(148 163 184)" }}>emails</span>
+                    </div>
+                  </div>
+                </div>
+                <div className="space-y-2 mt-3">
+                  {donutData.map((d, i) => (
+                    <div key={d.name} className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <div className="w-2 h-2 rounded-full flex-shrink-0" style={{ background: DONUT_COLORS[i] }} />
+                        <span className="text-xs" style={{ color: "rgb(71 85 105)" }}>{DONUT_LABELS[i]}</span>
+                      </div>
+                      <span className="text-xs font-semibold" style={{ color: "rgb(30 41 59)" }}>{d.value}</span>
+                    </div>
+                  ))}
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+
+        {/* ── ACTIONS REQUISES + PROCHAINS RDV ── */}
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+
+          {/* Actions requises */}
+          <div
+            className="rounded-xl border bg-white animate-slide-up"
+            style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)", animationDelay: "120ms" }}
+          >
+            <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "rgb(226 232 240)" }}>
+              <div className="flex items-center gap-2">
+                <span className="text-sm font-semibold" style={{ color: "rgb(30 41 59)" }}>⚡ Actions requises</span>
+                {actionsRequises.length > 0 && (
+                  <span
+                    className="text-xs font-semibold px-1.5 py-0.5 rounded-full"
+                    style={{ background: "rgba(220,38,38,0.1)", color: "rgb(220 38 38)" }}
+                  >
+                    {actionsRequises.length}
+                  </span>
+                )}
+              </div>
+              <Link href="/emails" className="text-xs font-medium" style={{ color: "rgb(79 70 229)" }}>
+                Traiter →
+              </Link>
+            </div>
+            <div className="divide-y" style={{ borderColor: "rgb(226 232 240)" }}>
+              {actionsRequises.length === 0 ? (
+                <div className="px-4 py-8 text-center">
+                  <div className="text-2xl mb-1">✅</div>
+                  <div className="text-sm" style={{ color: "rgb(148 163 184)" }}>Aucune action requise</div>
+                </div>
+              ) : (
+                actionsRequises.map((e) => {
+                  const hoursAgo = e.received_at
+                    ? Math.round((Date.now() - new Date(e.received_at).getTime()) / 3_600_000)
+                    : null;
+                  return (
+                    <Link
+                      key={e.id}
+                      href="/emails"
+                      className="px-4 py-3 flex items-start gap-3 hover:bg-slate-50 transition-colors"
+                    >
+                      <Avatar name={e.sender} />
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm font-medium truncate" style={{ color: "rgb(30 41 59)" }}>
+                          {e.subject || "(Sans objet)"}
+                        </div>
+                        <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
+                          {e.is_urgent && (
+                            <span className="text-xs font-medium" style={{ color: "rgb(220 38 38)" }}>🔴 Urgent</span>
+                          )}
+                          {hoursAgo !== null && (
+                            <span
+                              className="text-xs"
+                              style={{ color: hoursAgo > 24 ? "rgb(220 38 38)" : "rgb(148 163 184)" }}
+                            >
+                              {hoursAgo > 24
+                                ? `⚠️ ${Math.floor(hoursAgo / 24)}j sans réponse`
+                                : `Il y a ${hoursAgo}h`}
+                            </span>
+                          )}
+                        </div>
+                      </div>
+                      <span
+                        className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
+                        style={{ background: "rgba(234,88,12,0.1)", color: "rgb(194 65 12)" }}
+                      >
+                        À traiter
+                      </span>
+                    </Link>
+                  );
+                })
+              )}
             </div>
           </div>
-          <BarChart data={graph7d} />
-        </div>
 
-        {/* Donut répartition intentions */}
-        <div
-          className="rounded-xl border p-4 bg-white"
-          style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}
-        >
-          <div className="text-sm font-medium mb-4" style={{ color: "rgb(30 41 59)" }}>
-            Répartition intentions
+          {/* Prochains RDV */}
+          <div
+            className="rounded-xl border bg-white animate-slide-up"
+            style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)", animationDelay: "160ms" }}
+          >
+            <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "rgb(226 232 240)" }}>
+              <span className="text-sm font-semibold" style={{ color: "rgb(30 41 59)" }}>📅 Prochains RDV</span>
+              <Link href="/calendar" className="text-xs font-medium" style={{ color: "rgb(79 70 229)" }}>Calendrier →</Link>
+            </div>
+            <div>
+              {prochainRdv.length === 0 ? (
+                <div className="px-4 py-8 text-center">
+                  <div className="text-2xl mb-2">📅</div>
+                  <div className="text-sm" style={{ color: "rgb(148 163 184)" }}>Aucun RDV à venir</div>
+                </div>
+              ) : (
+                prochainRdv.map((m) => {
+                  const start = new Date(m.start_time);
+                  const end = new Date(m.end_time);
+                  const now = new Date();
+                  const isNow = start <= now && now <= end;
+                  const isToday = start.toDateString() === now.toDateString();
+                  return (
+                    <div
+                      key={m.id}
+                      className="px-4 py-3 flex items-center gap-3 border-b last:border-b-0"
+                      style={{ borderColor: "rgb(226 232 240)" }}
+                    >
+                      <div
+                        className="w-1 h-10 rounded-full flex-shrink-0"
+                        style={{
+                          background: isNow ? "rgb(22 163 74)" : isToday ? "rgb(79 70 229)" : "rgb(148 163 184)",
+                        }}
+                      />
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium truncate" style={{ color: "rgb(30 41 59)" }}>
+                          {m.title}
+                        </div>
+                        <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+                          {isToday
+                            ? "Aujourd'hui"
+                            : start.toLocaleDateString("fr-FR", { weekday: "short", day: "numeric", month: "short" })}
+                          {" · "}
+                          {start.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                          {" – "}
+                          {end.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                        </div>
+                      </div>
+                      {isNow && (
+                        <span
+                          className="text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
+                          style={{ background: "rgb(240 253 244)", color: "rgb(22 163 74)" }}
+                        >
+                          En cours
+                        </span>
+                      )}
+                      {isToday && !isNow && (
+                        <span
+                          className="text-xs font-semibold px-2 py-0.5 rounded-full flex-shrink-0"
+                          style={{ background: "rgb(238 242 255)", color: "rgb(79 70 229)" }}
+                        >
+                          Aujourd&apos;hui
+                        </span>
+                      )}
+                    </div>
+                  );
+                })
+              )}
+            </div>
           </div>
-          <DonutChart data={intentions} />
         </div>
-      </div>
 
-      {/* ── ACTIVITÉ RÉCENTE + RDV ── */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
-
-        {/* Feed activité */}
+        {/* ── ACTIVITÉ RÉCENTE ── */}
         <div
-          className="rounded-xl border bg-white"
-          style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}
+          className="rounded-xl border bg-white animate-slide-up"
+          style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)", animationDelay: "200ms" }}
         >
           <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "rgb(226 232 240)" }}>
-            <span className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>Activité récente</span>
-            <Link href="/emails" className="text-xs" style={{ color: "rgb(79 70 229)" }}>Voir tout</Link>
+            <span className="text-sm font-semibold" style={{ color: "rgb(30 41 59)" }}>Activité récente</span>
+            <Link href="/emails" className="text-xs font-medium" style={{ color: "rgb(79 70 229)" }}>Voir tout →</Link>
           </div>
           <div className="divide-y" style={{ borderColor: "rgb(226 232 240)" }}>
             {recentActivity.length === 0 ? (
-              <div className="px-4 py-6 text-center text-sm" style={{ color: "rgb(148 163 184)" }}>
+              <div className="px-4 py-8 text-center text-sm" style={{ color: "rgb(148 163 184)" }}>
                 Aucune activité récente
               </div>
             ) : (
               recentActivity.map((e) => {
-                const intStyle = intentionDecision(e.category);
+                const cat = (e.category || "").toUpperCase();
+                const catStyle = cat === "LOCATION"
+                  ? { label: "Location", color: "rgb(37 99 235)", bg: "rgba(59,130,246,0.1)" }
+                  : cat === "INFO"
+                  ? { label: "Info", color: "rgb(71 85 105)", bg: "rgba(100,116,139,0.1)" }
+                  : { label: "Hors sujet", color: "rgb(148 163 184)", bg: "rgba(148,163,184,0.1)" };
                 return (
-                  <div key={e.id} className="px-4 py-3 flex items-start gap-3">
-                    <div
-                      className="w-1.5 h-1.5 rounded-full mt-1.5 flex-shrink-0"
-                      style={{ background: intStyle.color }}
-                    />
+                  <div key={e.id} className="px-4 py-3 flex items-center gap-3 hover:bg-slate-50 transition-colors">
+                    <Avatar name={e.sender} />
                     <div className="min-w-0 flex-1">
                       <div className="text-sm font-medium truncate" style={{ color: "rgb(30 41 59)" }}>
                         {e.subject || "(Sans objet)"}
                       </div>
-                      <div className="flex items-center gap-2 mt-0.5">
-                        <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>
-                          {e.sender?.split("@")[0]}
-                        </span>
+                      <div className="flex items-center gap-1.5 mt-0.5">
                         <span
-                          className="text-xs px-1.5 py-0.5 rounded"
-                          style={{ background: intStyle.bg, color: intStyle.color }}
+                          className="text-xs px-1.5 py-0.5 rounded-full font-medium"
+                          style={{ background: catStyle.bg, color: catStyle.color }}
                         >
-                          {intStyle.label}
+                          {catStyle.label}
                         </span>
                         {e.is_urgent && (
-                          <span className="text-xs" style={{ color: "rgb(220 38 38)" }}>Urgent</span>
+                          <span className="text-xs font-medium" style={{ color: "rgb(220 38 38)" }}>
+                            🔴 Urgent
+                          </span>
                         )}
                       </div>
                     </div>
@@ -347,40 +600,6 @@ export default function DashboardClient() {
           </div>
         </div>
 
-        {/* RDV du jour */}
-        <div
-          className="rounded-xl border bg-white"
-          style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}
-        >
-          <div className="px-4 py-3 border-b flex items-center justify-between" style={{ borderColor: "rgb(226 232 240)" }}>
-            <span className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>RDV d'aujourd'hui</span>
-            <Link href="/calendar" className="text-xs" style={{ color: "rgb(79 70 229)" }}>Calendrier</Link>
-          </div>
-          <div className="divide-y" style={{ borderColor: "rgb(226 232 240)" }}>
-            {nextMeetings.length === 0 ? (
-              <div className="px-4 py-6 text-center text-sm" style={{ color: "rgb(148 163 184)" }}>
-                Aucun RDV aujourd'hui
-              </div>
-            ) : (
-              nextMeetings.map((m) => {
-                const start = new Date(m.start_time);
-                const end = new Date(m.end_time);
-                return (
-                  <div key={m.id} className="px-4 py-3 flex items-center gap-3">
-                    <div className="w-1 h-8 rounded-full flex-shrink-0" style={{ background: "rgb(79 70 229)" }} />
-                    <div>
-                      <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>{m.title}</div>
-                      <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
-                        {start.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })} –{" "}
-                        {end.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
-                      </div>
-                    </div>
-                  </div>
-                );
-              })
-            )}
-          </div>
-        </div>
       </div>
     </div>
   );

@@ -1,7 +1,8 @@
 "use client";
 
 import { useEffect, useRef, useState, useMemo, useCallback } from "react";
-import { supabase } from "@/lib/supabaseClient";
+import { supabaseBrowser } from "@/lib/supabaseBrowser";
+const supabase = supabaseBrowser();
 import { EmailsList } from "@/components/emails/EmailsList";
 import { EmailDetailPanel } from "@/components/emails/EmailDetailPanel";
 import type { Email } from "@/types/email";
@@ -38,6 +39,8 @@ export default function PipelinePage() {
   const [mode, setMode] = useState<PipelineMode>("DRAFT");
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [now, setNow] = useState(new Date());
+  const [search, setSearch] = useState("");
+  const [syncNotif, setSyncNotif] = useState<string | null>(null);
 
   // Tick toutes les 10s pour mettre à jour "il y a Xs"
   useEffect(() => {
@@ -68,7 +71,7 @@ export default function PipelinePage() {
 
     let query = supabase
       .from("emails")
-      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply")
+      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply, prospect_data")
       .eq("user_id", user.id)
       .eq("is_archived", false)
       .order("received_at", { ascending: false });
@@ -101,7 +104,7 @@ export default function PipelinePage() {
 
     let query = supabase
       .from("emails")
-      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply")
+      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply, prospect_data")
       .eq("user_id", user.id)
       .eq("is_archived", false)
       .order("received_at", { ascending: false });
@@ -109,7 +112,8 @@ export default function PipelinePage() {
     if (fromDate) query = query.gte("received_at", fromDate.toISOString());
     if (intentionFilter !== "all") query = query.eq("category", intentionFilter);
 
-    const { data } = await query;
+    const { data, error: silentErr } = await query;
+    if (silentErr) { console.error("[FETCH_SILENT] SUPABASE_ERROR:", silentErr); return; }
     if (!data) return;
 
     const normalized: Email[] = data.map((e) => ({
@@ -163,18 +167,37 @@ export default function PipelinePage() {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      await fetch("/api/emails/analyze-now", {
+      // 1) Sync Gmail (quick=50 msgs) + lancer IA en background
+      const analyzeRes = await fetch("/api/emails/analyze-now", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ trigger: "manual" }),
       });
+      const analyzeJson = await analyzeRes.json().catch(() => ({}));
+      const newCount: number = analyzeJson?.sync?.inserted ?? 0;
+      console.log("[REFRESH] Sync terminé — nouveaux:", newCount, "| détail:", analyzeJson?.sync);
+
+      // 2) Fetch complet (avec gestion erreur + redirect si session expirée)
+      await fetchEmails();
+      setLastSync(new Date());
+      setRefreshing(false);
+
+      // 3) Notification résultat
+      setSyncNotif(
+        newCount > 0
+          ? `✅ ${newCount} nouvel${newCount > 1 ? "s" : ""} email${newCount > 1 ? "s" : ""}`
+          : "✅ Boîte à jour"
+      );
+      setTimeout(() => setSyncNotif(null), 3000);
+
+      // 4) Re-fetch après 15s pour afficher les catégories IA (analyse background)
       setTimeout(async () => {
         await fetchEmailsSilent();
-        setLastSync(new Date());
-        setRefreshing(false);
-      }, 3000);
+      }, 15_000);
     } catch (e) {
-      console.error("REFRESH_ERROR", e);
+      console.error("[REFRESH_ERROR]", e);
+      setSyncNotif("❌ Erreur de sync");
+      setTimeout(() => setSyncNotif(null), 3000);
       setRefreshing(false);
     }
   };
@@ -196,6 +219,17 @@ export default function PipelinePage() {
     const horssujet = emails.filter((e) => e.category === "HORS_SUJET").length;
     return { location, info, horssujet, total: emails.length };
   }, [emails]);
+
+  const filteredEmails = useMemo(() => {
+    if (!search.trim()) return emails;
+    const q = search.toLowerCase();
+    return emails.filter(
+      (e) =>
+        e.subject?.toLowerCase().includes(q) ||
+        e.sender?.toLowerCase().includes(q) ||
+        e.summary?.toLowerCase().includes(q)
+    );
+  }, [emails, search]);
 
   return (
     <AppShell>
@@ -246,18 +280,33 @@ export default function PipelinePage() {
                 </span>
               </div>
 
-              {/* Refresh */}
+              {/* Refresh — bouton visible */}
               <button
                 onClick={handleRefresh}
                 disabled={refreshing}
-                className="p-1.5 rounded-lg transition-colors"
-                style={{ color: "rgb(100 116 139)" }}
-                title="Rafraîchir"
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgb(248 250 252)"; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-all disabled:opacity-60"
+                style={{
+                  background: refreshing ? "rgb(238 242 255)" : "rgb(79 70 229)",
+                  color: "white",
+                }}
+                title="Synchroniser et analyser les emails"
               >
                 <span className={refreshing ? "animate-spin inline-block" : ""}>🔄</span>
+                <span>{refreshing ? "Sync…" : "Actualiser"}</span>
               </button>
+
+              {/* Notification résultat sync */}
+              {syncNotif && (
+                <span
+                  className="text-xs px-2.5 py-1 rounded-lg font-medium transition-all"
+                  style={{
+                    background: syncNotif.startsWith("✅") ? "rgba(22,163,74,0.1)" : "rgba(220,38,38,0.1)",
+                    color: syncNotif.startsWith("✅") ? "rgb(22,163,74)" : "rgb(220,38,38)",
+                  }}
+                >
+                  {syncNotif}
+                </span>
+              )}
             </div>
           </div>
 
@@ -274,6 +323,19 @@ export default function PipelinePage() {
           className="px-6 py-3 flex items-center justify-between gap-4 border-b bg-white"
           style={{ borderColor: "rgb(226 232 240)" }}
         >
+          {/* Recherche */}
+          <div className="relative flex-shrink-0 w-56">
+            <span className="absolute left-3 top-1/2 -translate-y-1/2 text-xs" style={{ color: "rgb(148 163 184)" }}>🔍</span>
+            <input
+              type="text"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Rechercher…"
+              className="w-full pl-8 pr-3 py-1.5 rounded-lg border text-xs focus:outline-none focus:ring-2 focus:ring-indigo-200"
+              style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+            />
+          </div>
+
           {/* Filtres intention */}
           <div className="flex items-center gap-1.5">
             {(["all", "LOCATION", "INFO", "HORS_SUJET"] as const).map((f) => {
@@ -343,7 +405,7 @@ export default function PipelinePage() {
             style={{ borderColor: "rgb(226 232 240)", background: "white" }}
           >
             <EmailsList
-              emails={emails}
+              emails={filteredEmails}
               selectedEmailId={selectedEmail?.id || null}
               onSelect={(email) => setSelectedEmail(email as Email)}
               loading={loading}
