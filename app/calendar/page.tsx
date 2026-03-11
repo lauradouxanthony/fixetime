@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 const supabase = supabaseBrowser();
 
@@ -10,6 +10,110 @@ import { CalendarAIPanel } from "@/components/calendar/CalendarAIPanel";
 import type { CalendarEvent } from "@/components/calendar/calendarUtils";
 import { normalizeEventsForDay, sameDay, freeSlots, formatHM } from "@/components/calendar/calendarUtils";
 import AppShell from "@/components/layout/AppShell";
+
+/* ── MODAL BLOQUER CRÉNEAU ── */
+function BlockSlotModal({
+  slot,
+  onClose,
+  onConfirm,
+}: {
+  slot: { start: Date; end: Date; minutes: number };
+  onClose: () => void;
+  onConfirm: (title: string, notes: string) => Promise<void>;
+}) {
+  const [title, setTitle] = useState("FixTime — Créneau bloqué");
+  const [notes, setNotes] = useState("");
+  const [sending, setSending] = useState(false);
+  const [done, setDone] = useState(false);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => { inputRef.current?.focus(); }, []);
+
+  const fmt = (d: Date) => d.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+  const dayLabel = slot.start.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+
+  const handleConfirm = async () => {
+    if (!title.trim() || sending) return;
+    setSending(true);
+    await onConfirm(title.trim(), notes.trim());
+    setDone(true);
+    setSending(false);
+    setTimeout(onClose, 1200);
+  };
+
+  return (
+    <div
+      className="fixed inset-0 z-50 flex items-center justify-center"
+      style={{ background: "rgba(15,23,42,0.45)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
+    >
+      <div
+        className="w-full max-w-sm mx-4 rounded-2xl p-6 space-y-4 animate-fade-in"
+        style={{ background: "white", boxShadow: "0 20px 60px rgba(0,0,0,0.18)" }}
+      >
+        {done ? (
+          <div className="text-center py-4">
+            <div className="text-4xl mb-3">✅</div>
+            <div className="text-sm font-semibold" style={{ color: "rgb(22 163 74)" }}>Créneau bloqué avec succès !</div>
+          </div>
+        ) : (
+          <>
+            <div>
+              <h3 className="text-base font-bold mb-1" style={{ color: "rgb(30 41 59)" }}>Bloquer ce créneau</h3>
+              <p className="text-xs" style={{ color: "rgb(100 116 139)" }}>
+                {dayLabel} · {fmt(slot.start)} – {fmt(slot.end)} ({slot.minutes} min)
+              </p>
+            </div>
+
+            <div className="space-y-3">
+              <div>
+                <label className="text-xs font-medium block mb-1" style={{ color: "rgb(71 85 105)" }}>Titre</label>
+                <input
+                  ref={inputRef}
+                  type="text"
+                  value={title}
+                  onChange={(e) => setTitle(e.target.value)}
+                  onKeyDown={(e) => e.key === "Enter" && handleConfirm()}
+                  className="w-full rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                  style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+                />
+              </div>
+              <div>
+                <label className="text-xs font-medium block mb-1" style={{ color: "rgb(71 85 105)" }}>Notes (optionnel)</label>
+                <textarea
+                  value={notes}
+                  onChange={(e) => setNotes(e.target.value)}
+                  rows={2}
+                  placeholder="Visite appartement T2…"
+                  className="w-full rounded-xl border px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 resize-none"
+                  style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+                />
+              </div>
+            </div>
+
+            <div className="flex gap-2 pt-1">
+              <button
+                onClick={onClose}
+                className="flex-1 py-2.5 rounded-xl text-sm font-medium transition-colors"
+                style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
+              >
+                Annuler
+              </button>
+              <button
+                onClick={handleConfirm}
+                disabled={!title.trim() || sending}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white transition-opacity disabled:opacity-50"
+                style={{ background: "rgb(79 70 229)" }}
+              >
+                {sending ? "Création…" : "✅ Bloquer"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
 
 type ViewMode = "day" | "week";
 
@@ -58,7 +162,7 @@ function WeekView({
         {weekDays.map((day) => {
           const dayEvents = normalizeEventsForDay(events, day);
           const isToday = sameDay(day, today);
-          const slots = freeSlots(dayEvents, day, 8, 18);
+          const slots = freeSlots(dayEvents, day, 9, 18);
           const freeMinutes = slots.reduce((s, sl) => s + sl.minutes, 0);
 
           return (
@@ -159,6 +263,8 @@ export default function CalendarPage() {
   }>(null);
   const [loadingAI, setLoadingAI] = useState(false);
 
+  const [blockSlot, setBlockSlot] = useState<{ start: Date; end: Date; minutes: number } | null>(null);
+
   /* ---------------- FETCH EVENTS ---------------- */
 
   const fetchEvents = async () => {
@@ -251,6 +357,31 @@ export default function CalendarPage() {
     }
   };
 
+  /* ---------------- BLOCK SLOT ---------------- */
+
+  const handleBlockSlotConfirm = async (title: string, notes: string) => {
+    if (!blockSlot) return;
+    try {
+      const res = await fetch("/api/calendar/block-slot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          title,
+          notes,
+          start: blockSlot.start.toISOString(),
+          end: blockSlot.end.toISOString(),
+        }),
+      });
+      if (res.ok) {
+        await fetchEvents();
+      } else {
+        console.error("BLOCK_SLOT_ERROR", await res.json());
+      }
+    } catch (e) {
+      console.error("BLOCK_SLOT_ERROR", e);
+    }
+  };
+
   /* ---------------- AI ---------------- */
 
   const generateAI = async () => {
@@ -292,6 +423,13 @@ export default function CalendarPage() {
 
   return (
     <AppShell>
+      {blockSlot && (
+        <BlockSlotModal
+          slot={blockSlot}
+          onClose={() => setBlockSlot(null)}
+          onConfirm={handleBlockSlotConfirm}
+        />
+      )}
       <div className="h-full flex flex-col" style={{ background: "rgb(250 250 250)" }}>
 
         {/* Header */}
@@ -327,7 +465,7 @@ export default function CalendarPage() {
                     Chargement…
                   </div>
                 ) : (
-                  <DayTimeline events={dayEvents} onSelect={setSelected} date={date} />
+                  <DayTimeline events={dayEvents} onSelect={setSelected} date={date} onBlockSlot={setBlockSlot} />
                 )}
 
                 {selected && (

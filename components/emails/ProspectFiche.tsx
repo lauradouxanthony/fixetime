@@ -1,98 +1,97 @@
 "use client";
 
-/**
- * ProspectFiche — Extraction heuristique de 8 champs depuis le corps d'un email LOCATION.
- * Affiche chaque champ avec un statut ✅ / ⚠️ / ❓ et une barre de progression.
- */
+import { useState, useEffect } from "react";
+import type { ProspectData } from "@/types/email";
 
-type FieldStatus = "ok" | "partial" | "missing";
+/* ─── Types ─── */
+type FieldStatus = "ok" | "missing";
 
-interface ProspectField {
-  key: string;
+interface FieldMeta {
+  key: keyof ProspectData;
   label: string;
-  value: string | null;
-  status: FieldStatus;
+  placeholder: string;
+  type: "text" | "number" | "select";
+  options?: { value: string; label: string }[];
 }
 
-/* ─── Extraction heuristique ─── */
-export interface ProspectData {
+const FIELDS: FieldMeta[] = [
+  { key: "nom", label: "Nom / Prénom", placeholder: "Ex: Thomas Martin", type: "text" },
+  { key: "telephone", label: "Téléphone", placeholder: "Ex: 06 12 34 56 78", type: "text" },
+  { key: "situation_pro", label: "Situation pro", placeholder: "Choisir…", type: "select",
+    options: [
+      { value: "CDI", label: "CDI" },
+      { value: "CDD", label: "CDD" },
+      { value: "AUTO_ENTREPRENEUR", label: "Auto-entrepreneur" },
+      { value: "ETUDIANT", label: "Étudiant" },
+      { value: "RETRAITE", label: "Retraité" },
+    ]
+  },
+  { key: "revenus_mensuels", label: "Revenus (€/mois)", placeholder: "Ex: 4200", type: "number" },
+  { key: "loyer_max", label: "Loyer max (€)", placeholder: "Ex: 950", type: "number" },
+  { key: "animaux", label: "Animaux", placeholder: "Choisir…", type: "select",
+    options: [
+      { value: "OUI", label: "Oui" },
+      { value: "NON", label: "Non" },
+    ]
+  },
+  { key: "nb_personnes", label: "Nb personnes", placeholder: "Ex: 2", type: "number" },
+  { key: "date_emmenagement", label: "Date emménagement", placeholder: "Ex: 1er juillet 2025", type: "text" },
+];
+
+/* ─── Heuristique fallback ─── */
+export interface ProspectDataLegacy {
   nom: string | null;
   tel: string | null;
-  situation: string | null;   // CDI / CDD / Étudiant / Auto-entrepreneur / Retraité
-  revenus: number | null;     // €/mois
-  loyerMax: number | null;    // € loyer max envisagé
-  animaux: string | null;     // oui / non
-  personnes: number | null;   // nb de personnes
+  situation: string | null;
+  revenus: number | null;
+  loyerMax: number | null;
+  animaux: string | null;
+  personnes: number | null;
   dateEmmenagement: string | null;
 }
 
-const SITUATION_KEYWORDS: [string, string][] = [
-  ["étudiant", "Étudiant"],
-  ["etudiante", "Étudiant"],
-  ["lycéen", "Étudiant"],
-  ["école", "Étudiant"],
-  ["université", "Étudiant"],
-  ["cdi", "CDI"],
-  ["cdd", "CDD"],
-  ["auto-entrepreneur", "Auto-entrepreneur"],
-  ["autoentrepreneur", "Auto-entrepreneur"],
-  ["freelance", "Auto-entrepreneur"],
-  ["indépendant", "Auto-entrepreneur"],
-  ["retraité", "Retraité"],
-  ["retraitée", "Retraité"],
-  ["intermittent", "Intermittent"],
-];
-
 export function extractProspect(body: string | null | undefined): ProspectData {
-  if (!body) return {
-    nom: null, tel: null, situation: null, revenus: null,
-    loyerMax: null, animaux: null, personnes: null, dateEmmenagement: null,
-  };
-
+  if (!body) return {};
   const text = body;
   const lower = text.toLowerCase();
   const lines = text.split(/\r?\n/);
 
-  // ── Nom ──
+  // Nom
   let nom: string | null = null;
-  // Cherche "Je m'appelle X", "Prénom : X", "Nom : X", ligne de signature courte
   const nomPatterns = [
     /(?:je m['']appelle|je suis|prénom\s*:?\s*|nom\s*:?\s*)([A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+(?:\s+[A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+)*)/,
-    /^([A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+\s+[A-ZÀÂÄ][A-ZÀÂÄ][A-ZÀÂÄ]+)$/m, // Prénom NOM
+    /^([A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+\s+[A-ZÀÂÄ][A-ZÀÂÄ][A-ZÀÂÄ]+)$/m,
   ];
   for (const p of nomPatterns) {
     const m = text.match(p);
-    const matched = m?.[1];
-    if (matched && matched.length >= 3 && matched.length <= 50) { nom = matched.trim(); break; }
+    if (m?.[1] && m[1].length >= 3 && m[1].length <= 50) { nom = m[1].trim(); break; }
   }
-  // Fallback : signature (dernière ligne non vide < 40 chars et 2+ mots)
   if (!nom) {
-    const nonEmptyLines = lines.map((l) => l.trim()).filter((l) => l.length > 2 && l.length < 45);
-    const lastLine = nonEmptyLines[nonEmptyLines.length - 1] ?? null;
-    if (lastLine && lastLine.split(/\s+/).length >= 2 && !/[.@]/.test(lastLine)) nom = lastLine;
+    const nonEmpty = lines.map(l => l.trim()).filter(l => l.length > 2 && l.length < 45);
+    const last = nonEmpty[nonEmpty.length - 1] ?? null;
+    if (last && last.split(/\s+/).length >= 2 && !/[.@]/.test(last)) nom = last;
   }
 
-  // ── Téléphone ──
-  let tel: string | null = null;
+  // Tel
   const telMatch = text.match(/(?:(?:\+33|0033|0)[1-9](?:[.\- ]?\d{2}){4})/);
-  if (telMatch) tel = telMatch[0].replace(/[.\- ]/g, " ").trim();
+  const telephone = telMatch ? telMatch[0].replace(/[.\- ]/g, " ").trim() : null;
 
-  // ── Situation professionnelle ──
-  let situation: string | null = null;
-  for (const [kw, label] of SITUATION_KEYWORDS) {
-    if (lower.includes(kw)) { situation = label; break; }
+  // Situation
+  const SITUATIONS: [string, ProspectData["situation_pro"]][] = [
+    ["étudiant", "ETUDIANT"], ["etudiante", "ETUDIANT"], ["école", "ETUDIANT"], ["université", "ETUDIANT"],
+    ["cdi", "CDI"], ["cdd", "CDD"],
+    ["auto-entrepreneur", "AUTO_ENTREPRENEUR"], ["autoentrepreneur", "AUTO_ENTREPRENEUR"],
+    ["freelance", "AUTO_ENTREPRENEUR"], ["indépendant", "AUTO_ENTREPRENEUR"],
+    ["retraité", "RETRAITE"], ["retraitée", "RETRAITE"],
+  ];
+  let situation_pro: ProspectData["situation_pro"] = null;
+  for (const [kw, label] of SITUATIONS) {
+    if (lower.includes(kw)) { situation_pro = label; break; }
   }
 
-  // ── Revenus & loyer max ──
-  const moneyRe = /(\d[\d\s]*(?:[,\.]\d+)?)\s*(?:€|euros?|eur)/gi;
-  const allMoney = [...text.matchAll(moneyRe)].map((m) => ({
-    val: parseFloat(m[1].replace(/\s/g, "").replace(",", ".")),
-    idx: m.index ?? 0,
-  }));
-
-  let revenus: number | null = null;
-  let loyerMax: number | null = null;
-
+  // Revenus & loyer
+  let revenus_mensuels: number | null = null;
+  let loyer_max: number | null = null;
   for (const line of lines) {
     const l = line.toLowerCase();
     const m = line.match(/(\d[\d\s]*)\s*(?:€|euros?)/i);
@@ -100,99 +99,178 @@ export function extractProspect(body: string | null | undefined): ProspectData {
     const val = parseFloat(m[1].replace(/\s/g, ""));
     if (!val || val < 100) continue;
     if (l.includes("salaire") || l.includes("revenu") || l.includes("gagne") || l.includes("touche")) {
-      if (!revenus) revenus = val;
+      if (!revenus_mensuels) revenus_mensuels = val;
     } else if (l.includes("loyer") || l.includes("budget") || l.includes("mensuel")) {
-      if (!loyerMax) loyerMax = val;
+      if (!loyer_max) loyer_max = val;
     }
   }
 
-  // Fallback sur les 2 premiers montants > 200 trouvés
-  const bigMoney = allMoney.filter((m) => m.val >= 200).slice(0, 3);
-  if (!revenus && !loyerMax && bigMoney.length >= 2) {
-    loyerMax = bigMoney[0].val;
-    revenus = bigMoney[1].val;
-  } else if (!revenus && bigMoney.length >= 1 && !loyerMax) {
-    revenus = bigMoney[0].val;
-  }
+  // Animaux
+  let animaux: ProspectData["animaux"] = null;
+  if (lower.includes("pas d'animal") || lower.includes("sans animal")) animaux = "NON";
+  else if (lower.includes("chat") || lower.includes("chien") || lower.includes("animal")) animaux = "OUI";
 
-  // ── Animaux ──
-  let animaux: string | null = null;
-  if (lower.includes("pas d'animal") || lower.includes("sans animal") || lower.includes("pas d'animaux")) {
-    animaux = "Non";
-  } else if (lower.includes("chat") || lower.includes("chien") || lower.includes("animal") || lower.includes("animaux")) {
-    animaux = "Oui";
-  }
+  // Nb personnes
+  let nb_personnes: number | null = null;
+  const persMatch = text.match(/(\d+)\s*(?:personnes?|occupants?)/i);
+  if (persMatch) nb_personnes = parseInt(persMatch[1]);
+  else if (lower.includes("seul") || lower.includes("célibataire")) nb_personnes = 1;
+  else if (lower.includes("couple")) nb_personnes = 2;
 
-  // ── Nombre de personnes ──
-  let personnes: number | null = null;
-  const persMatch = text.match(/(\d+)\s*(?:personnes?|occupants?|habitants?|adultes?)/i);
-  if (persMatch) personnes = parseInt(persMatch[1]);
-  else if (lower.includes("seul") || lower.includes("seule") || lower.includes("célibataire")) personnes = 1;
-  else if (lower.includes("couple") || lower.includes("deux personnes") || lower.includes("2 personnes")) personnes = 2;
-
-  // ── Date d'emménagement ──
-  let dateEmmenagement: string | null = null;
+  // Date
+  let date_emmenagement: string | null = null;
   const datePatterns = [
-    /(?:dès le|à partir du?|emménager(?:\s+le)?|disponible(?:\s+le)?|entrée(?:\s+le)?)\s+([^\n,]{3,30})/i,
+    /(?:dès le|à partir du?|emménager|disponible|entrée)\s+([^\n,]{3,30})/i,
     /\b(\d{1,2}(?:er)?\s+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s+\d{4})/i,
     /\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/,
-    /(?:mois de|en)\s+(janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)/i,
   ];
   for (const p of datePatterns) {
     const m = text.match(p);
-    if (m?.[1]) { dateEmmenagement = m[1].trim(); break; }
+    if (m?.[1]) { date_emmenagement = m[1].trim(); break; }
   }
 
-  return { nom, tel, situation, revenus, loyerMax, animaux, personnes, dateEmmenagement };
+  return { nom, telephone, situation_pro, revenus_mensuels, loyer_max, animaux, nb_personnes, date_emmenagement };
 }
 
-function statusIcon(status: FieldStatus): string {
-  if (status === "ok") return "✅";
-  if (status === "partial") return "⚠️";
-  return "❓";
-}
-
-function statusColor(status: FieldStatus): string {
-  if (status === "ok") return "rgb(22 163 74)";
-  if (status === "partial") return "rgb(234 88 12)";
-  return "rgb(148 163 184)";
-}
-
-function toFields(data: ProspectData): ProspectField[] {
-  const f = (key: string, label: string, raw: string | number | null): ProspectField => {
-    const value = raw !== null ? String(raw) : null;
-    const status: FieldStatus = value ? "ok" : "missing";
-    return { key, label, value, status };
-  };
-
-  return [
-    f("nom", "Nom / Prénom", data.nom),
-    f("tel", "Téléphone", data.tel),
-    f("situation", "Situation pro", data.situation),
-    f("revenus", "Revenus (€/mois)", data.revenus !== null ? `${data.revenus.toLocaleString("fr-FR")} €` : null),
-    f("loyerMax", "Loyer max", data.loyerMax !== null ? `${data.loyerMax.toLocaleString("fr-FR")} €/mois` : null),
-    f("animaux", "Animaux", data.animaux),
-    f("personnes", "Nb personnes", data.personnes !== null ? String(data.personnes) : null),
-    f("dateEmmenagement", "Date emménagement", data.dateEmmenagement),
-  ];
-}
-
+/* ─── Couleurs ─── */
 function scoreColor(pct: number): string {
   if (pct >= 75) return "rgb(22 163 74)";
   if (pct >= 40) return "rgb(234 88 12)";
   return "rgb(220 38 38)";
 }
 
-interface ProspectFicheProps {
-  body: string | null | undefined;
+/* ─── Score circle solvabilité ─── */
+function SolvabiliteCircle({ revenus, loyer, multiplicateur = 3 }: { revenus: number | null; loyer: number | null; multiplicateur?: number }) {
+  if (!revenus || !loyer) return null;
+  const ratio = revenus / loyer;
+  const solvable = ratio >= multiplicateur;
+  const color = ratio >= multiplicateur ? "rgb(22 163 74)" : ratio >= multiplicateur * 0.75 ? "rgb(234 88 12)" : "rgb(220 38 38)";
+  // SVG circle: 36px, strokeWidth=4, r=14, circumference≈87.96
+  const R = 14; const C = 2 * Math.PI * R;
+  const cap = multiplicateur * 1.5; // au-delà de cap, on considère 100%
+  const fill = Math.min(ratio / cap, 1);
+  const dash = fill * C;
+  return (
+    <div className="flex flex-col items-center gap-0.5" title={`Ratio revenus/loyer: ${ratio.toFixed(1)}x (seuil: ${multiplicateur}x)`}>
+      <svg width="44" height="44" viewBox="0 0 44 44" style={{ transform: "rotate(-90deg)" }}>
+        <circle cx="22" cy="22" r={R} fill="none" stroke="rgb(226 232 240)" strokeWidth="4" />
+        <circle
+          cx="22" cy="22" r={R} fill="none"
+          stroke={color} strokeWidth="4"
+          strokeDasharray={`${dash} ${C}`}
+          strokeLinecap="round"
+          style={{ transition: "stroke-dasharray 0.6s ease" }}
+        />
+      </svg>
+      <div className="absolute text-xs font-bold" style={{ color, marginTop: "-32px", fontSize: "10px", position: "relative", top: "-38px" }}>
+        {ratio.toFixed(1)}x
+      </div>
+      <div className="text-xs" style={{ color: "rgb(100 116 139)", fontSize: "10px", marginTop: "-4px" }}>
+        {solvable ? "✅ Solvable" : "❌ Insolvable"}
+      </div>
+    </div>
+  );
 }
 
-export default function ProspectFiche({ body }: ProspectFicheProps) {
-  const data = extractProspect(body);
-  const fields = toFields(data);
-  const okCount = fields.filter((f) => f.status === "ok").length;
-  const pct = Math.round((okCount / fields.length) * 100);
+function formatValue(key: keyof ProspectData, val: unknown): string {
+  if (val === null || val === undefined || val === "") return "";
+  if (key === "revenus_mensuels" || key === "loyer_max") return `${Number(val).toLocaleString("fr-FR")} €`;
+  if (key === "nb_personnes") return `${val} personne${Number(val) > 1 ? "s" : ""}`;
+  if (key === "animaux") return val === "OUI" ? "Oui" : "Non";
+  if (key === "situation_pro") {
+    const map: Record<string, string> = {
+      CDI: "CDI", CDD: "CDD", AUTO_ENTREPRENEUR: "Auto-entrepreneur",
+      ETUDIANT: "Étudiant", RETRAITE: "Retraité",
+    };
+    return map[val as string] ?? String(val);
+  }
+  return String(val);
+}
+
+/* ─── Props ─── */
+interface ProspectFicheProps {
+  body?: string | null;
+  prospectData?: ProspectData | null;
+  emailId?: string;
+  onSave?: (data: ProspectData) => Promise<void>;
+  isAI?: boolean; // true = données extraites par l'IA
+}
+
+export default function ProspectFiche({ body, prospectData, emailId, onSave, isAI = false }: ProspectFicheProps) {
+  // Initialiser avec les données IA ou heuristique
+  const [data, setData] = useState<ProspectData>(() => {
+    if (prospectData && Object.values(prospectData).some(v => v !== null && v !== undefined)) {
+      return prospectData;
+    }
+    return extractProspect(body);
+  });
+
+  const [editingKey, setEditingKey] = useState<keyof ProspectData | null>(null);
+  const [editValue, setEditValue] = useState<string>("");
+  const [saving, setSaving] = useState(false);
+  const [savedOk, setSavedOk] = useState(false);
+  const [dirty, setDirty] = useState(false);
+
+  // Mettre à jour si les données IA arrivent après coup
+  useEffect(() => {
+    if (prospectData && Object.values(prospectData).some(v => v !== null && v !== undefined)) {
+      setData(d => {
+        const merged = { ...prospectData };
+        // Garder les valeurs modifiées manuellement
+        for (const [k, v] of Object.entries(d)) {
+          const key = k as keyof ProspectData;
+          if (v !== null && v !== undefined && v !== (prospectData as any)[key]) {
+            (merged as any)[key] = v;
+          }
+        }
+        return merged;
+      });
+    }
+  }, [JSON.stringify(prospectData)]);
+
+  const okCount = FIELDS.filter(f => {
+    const v = data[f.key];
+    return v !== null && v !== undefined && v !== "";
+  }).length;
+  const pct = Math.round((okCount / FIELDS.length) * 100);
   const color = scoreColor(pct);
+
+  const startEdit = (f: FieldMeta) => {
+    setEditingKey(f.key);
+    setEditValue(formatRaw(f.key, data[f.key]));
+  };
+
+  function formatRaw(key: keyof ProspectData, val: unknown): string {
+    if (val === null || val === undefined) return "";
+    return String(val);
+  }
+
+  const commitEdit = () => {
+    if (editingKey === null) return;
+    const f = FIELDS.find(f => f.key === editingKey)!;
+    let newVal: string | number | null = editValue.trim() || null;
+    if (f.type === "number" && newVal !== null) {
+      const n = parseFloat(String(newVal).replace(/\s/g, ""));
+      newVal = isNaN(n) ? null : n;
+    }
+    setData(d => ({ ...d, [editingKey]: newVal }));
+    setEditingKey(null);
+    setEditValue("");
+    setDirty(true);
+  };
+
+  const handleSave = async () => {
+    if (!onSave) return;
+    setSaving(true);
+    try {
+      await onSave(data);
+      setSavedOk(true);
+      setDirty(false);
+      setTimeout(() => setSavedOk(false), 2000);
+    } finally {
+      setSaving(false);
+    }
+  };
 
   return (
     <div
@@ -200,53 +278,126 @@ export default function ProspectFiche({ body }: ProspectFicheProps) {
       style={{ borderColor: "rgb(226 232 240)", background: "white" }}
     >
       {/* Header */}
-      <div className="flex items-center justify-between">
-        <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>
-          Fiche prospect
+      <div className="flex items-start justify-between gap-3">
+        <div className="flex-1">
+          <div className="flex items-center gap-2 mb-2">
+            <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>
+              Fiche prospect
+            </div>
+            {isAI && (
+              <span className="text-xs px-1.5 py-0.5 rounded font-medium" style={{ background: "rgba(79,70,229,0.1)", color: "rgb(79 70 229)" }}>
+                ✨ IA
+              </span>
+            )}
+          </div>
+          <div className="flex items-center gap-2 mb-2">
+            <span className="text-xs font-semibold" style={{ color }}>
+              {okCount}/{FIELDS.length} infos
+            </span>
+            <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: `${color}18`, color }}>
+              {pct}%
+            </span>
+          </div>
+          {/* Progress bar */}
+          <div className="relative h-2 rounded-full overflow-hidden" style={{ background: "rgb(226 232 240)" }}>
+            <div className="h-full rounded-full transition-all duration-700" style={{ width: `${pct}%`, background: color }} />
+          </div>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-xs font-semibold" style={{ color }}>
-            {okCount}/{fields.length} infos
-          </span>
-          <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: `${color}18`, color }}>
-            {pct}%
-          </span>
-        </div>
-      </div>
-
-      {/* Barre de progression */}
-      <div className="relative h-2 rounded-full overflow-hidden" style={{ background: "rgb(226 232 240)" }}>
-        <div
-          className="h-full rounded-full transition-all duration-700"
-          style={{ width: `${pct}%`, background: color }}
+        {/* Score circle solvabilité */}
+        <SolvabiliteCircle
+          revenus={typeof data.revenus_mensuels === "number" ? data.revenus_mensuels : null}
+          loyer={typeof data.loyer_max === "number" ? data.loyer_max : null}
         />
       </div>
 
-      {/* Champs */}
+      {/* Fields */}
       <div className="space-y-1.5">
-        {fields.map((field) => (
-          <div
-            key={field.key}
-            className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg"
-            style={{
-              background: field.status === "ok" ? "rgba(22,163,74,0.04)" : "rgb(248 250 252)",
-              border: `1px solid ${field.status === "ok" ? "rgba(22,163,74,0.15)" : "rgb(226 232 240)"}`,
-            }}
-          >
-            <div className="flex items-center gap-2 min-w-0">
-              <span className="text-xs" style={{ minWidth: "16px" }}>{statusIcon(field.status)}</span>
-              <span className="text-xs" style={{ color: "rgb(100 116 139)", minWidth: "120px", flexShrink: 0 }}>
-                {field.label}
-              </span>
+        {FIELDS.map((field) => {
+          const val = data[field.key];
+          const hasValue = val !== null && val !== undefined && val !== "";
+          const isEditing = editingKey === field.key;
+          const displayVal = formatValue(field.key, val);
+
+          return (
+            <div
+              key={field.key}
+              className="flex items-center justify-between gap-2 px-3 py-2 rounded-lg group"
+              style={{
+                background: hasValue ? "rgba(22,163,74,0.04)" : "rgb(248 250 252)",
+                border: `1px solid ${hasValue ? "rgba(22,163,74,0.15)" : "rgb(226 232 240)"}`,
+              }}
+            >
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <span className="text-xs" style={{ minWidth: "16px" }}>
+                  {hasValue ? "✅" : "❓"}
+                </span>
+                <span className="text-xs flex-shrink-0" style={{ color: "rgb(100 116 139)", minWidth: "130px" }}>
+                  {field.label}
+                </span>
+              </div>
+
+              {isEditing ? (
+                <div className="flex items-center gap-1 flex-1">
+                  {field.type === "select" ? (
+                    <select
+                      value={editValue}
+                      onChange={e => setEditValue(e.target.value)}
+                      onBlur={commitEdit}
+                      autoFocus
+                      className="flex-1 rounded border px-2 py-1 text-xs focus:outline-none"
+                      style={{ borderColor: "rgb(79 70 229)", color: "rgb(30 41 59)" }}
+                    >
+                      <option value="">— Non renseigné</option>
+                      {field.options?.map(o => (
+                        <option key={o.value} value={o.value}>{o.label}</option>
+                      ))}
+                    </select>
+                  ) : (
+                    <input
+                      type={field.type}
+                      value={editValue}
+                      onChange={e => setEditValue(e.target.value)}
+                      onBlur={commitEdit}
+                      onKeyDown={e => { if (e.key === "Enter") commitEdit(); if (e.key === "Escape") { setEditingKey(null); } }}
+                      placeholder={field.placeholder}
+                      autoFocus
+                      className="flex-1 rounded border px-2 py-1 text-xs focus:outline-none"
+                      style={{ borderColor: "rgb(79 70 229)", color: "rgb(30 41 59)" }}
+                    />
+                  )}
+                  <button onClick={commitEdit} className="text-xs px-2 py-1 rounded font-medium text-white" style={{ background: "rgb(79 70 229)" }}>✓</button>
+                </div>
+              ) : (
+                <div
+                  className="flex items-center gap-2 cursor-pointer"
+                  onClick={() => startEdit(field)}
+                >
+                  <span className="text-xs font-medium" style={{ color: hasValue ? "rgb(30 41 59)" : "rgb(148 163 184)" }}>
+                    {displayVal || "Cliquer pour renseigner"}
+                  </span>
+                  <span className="text-xs opacity-0 group-hover:opacity-100 transition-opacity" style={{ color: "rgb(79 70 229)" }}>✏️</span>
+                </div>
+              )}
             </div>
-            <div className="text-xs font-medium truncate text-right" style={{ color: field.value ? "rgb(30 41 59)" : statusColor(field.status) }}>
-              {field.value ?? "Non détecté"}
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
-      {/* Message contextuel */}
+      {/* Save button */}
+      {(dirty || onSave) && (
+        <div className="flex justify-end pt-1">
+          <button
+            onClick={handleSave}
+            disabled={saving || !dirty}
+            className="flex items-center gap-1.5 px-4 py-2 rounded-lg text-sm font-medium text-white transition-all disabled:opacity-50"
+            style={{ background: savedOk ? "rgb(22 163 74)" : "rgb(79 70 229)" }}
+          >
+            {saving ? "Sauvegarde…" : savedOk ? "✅ Sauvegardé" : "💾 Sauvegarder"}
+          </button>
+        </div>
+      )}
+
+      {/* Status message */}
       {pct < 40 && (
         <div className="rounded-lg px-3 py-2 text-xs" style={{ background: "rgba(220,38,38,0.06)", color: "rgb(185 28 28)", border: "1px solid rgba(220,38,38,0.15)" }}>
           ⚠️ Dossier incomplet — l'IA demandera les informations manquantes dans le brouillon.

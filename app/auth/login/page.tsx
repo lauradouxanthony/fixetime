@@ -29,10 +29,11 @@ export default function LoginPage() {
         className="hidden lg:flex lg:w-1/2 flex-col justify-between p-12"
         style={{ background: "linear-gradient(135deg, rgb(79 70 229) 0%, rgb(55 48 163) 100%)" }}
       >
-        {/* Logo texte (fond indigo — image fond blanc incompatible avec filtre) */}
-        <div className="flex items-center gap-2">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center text-indigo-700 text-sm font-bold" style={{ background: "rgba(255,255,255,0.9)" }}>FT</div>
-          <span className="text-white font-bold text-xl tracking-tight">FixTime</span>
+        {/* Logo dans conteneur blanc — visible sur fond indigo */}
+        <div className="flex items-center">
+          <div className="rounded-2xl overflow-hidden" style={{ background: "rgba(255,255,255,0.96)", padding: "10px 18px" }}>
+            <img src="/logo-fixtime.png" alt="FixTime" className="h-12 w-auto object-contain" />
+          </div>
         </div>
 
         {/* Tagline */}

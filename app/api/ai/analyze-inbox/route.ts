@@ -408,21 +408,92 @@ IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
         }
       }
 
-      await supabaseAdmin
-        .from("emails")
-        .update({
-          summary: rdvConfirmed
-            ? `✅ RDV de visite confirmé par ${email.sender?.split("@")[0] || "le prospect"}`
-            : typeof result.summary === "string" ? result.summary : null,
-          decision: decisionMap[result.decision] ?? "traiter",
-          estimated_time: result.estimated_time ?? 5,
-          recommended_action: actionMap[result.recommended_action] ?? "reply",
-          is_urgent: result.priority === "URGENT",
-          is_important: rdvConfirmed ? true : result.priority === "IMPORTANT",
-          category: intentionMap[result.intention] ?? "INFO",
-          classification_reason: classificationReason,
-        })
-        .eq("id", email.id);
+      // ── Extraction IA données prospect (LOCATION uniquement) ──────────
+      let prospectData: Record<string, unknown> | null = null;
+      const isLocationEmail = (intentionMap[result.intention] ?? "INFO") === "LOCATION";
+
+      if (isLocationEmail && content && content.length > 10) {
+        try {
+          const prospectPrompt = `Tu es un assistant immobilier. Extrait les informations du prospect depuis cet email de candidature locative.
+Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans texte autour) :
+{
+  "nom": "Prénom Nom ou null",
+  "telephone": "numéro formaté ou null",
+  "situation_pro": "CDI" | "CDD" | "AUTO_ENTREPRENEUR" | "ETUDIANT" | "RETRAITE" | null,
+  "revenus_mensuels": nombre entier ou null,
+  "loyer_max": nombre entier ou null,
+  "animaux": "OUI" | "NON" | null,
+  "nb_personnes": nombre entier ou null,
+  "date_emmenagement": "description lisible ou null"
+}
+
+Règles :
+- Mets null pour tout champ non explicitement mentionné dans l'email
+- revenus_mensuels et loyer_max sont des nombres sans symbole €
+- situation_pro doit être exactement une des valeurs listées ou null
+- Réponds UNIQUEMENT avec le JSON
+
+Expéditeur: ${email.sender}
+Sujet: ${email.subject}
+Email: ${content.slice(0, 1500)}`;
+
+          const prospectCompletion = await openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: [{ role: "user", content: prospectPrompt }],
+            temperature: 0,
+          });
+          const prospectRaw = prospectCompletion.choices[0]?.message?.content || "";
+          const prospectMatch = prospectRaw.match(/\{[\s\S]*\}/);
+          if (prospectMatch) {
+            const parsed = JSON.parse(prospectMatch[0]);
+            prospectData = parsed;
+          }
+        } catch (e) {
+          console.warn("[ANALYZE-INBOX] Extraction prospect échouée:", e);
+        }
+      }
+
+      // ── Mise à jour DB principale ─────────────────────────────────────
+      const mainUpdate: Record<string, unknown> = {
+        summary: rdvConfirmed
+          ? `✅ RDV de visite confirmé par ${email.sender?.split("@")[0] || "le prospect"}`
+          : typeof result.summary === "string" ? result.summary : null,
+        decision: decisionMap[result.decision] ?? "traiter",
+        estimated_time: result.estimated_time ?? 5,
+        recommended_action: actionMap[result.recommended_action] ?? "reply",
+        is_urgent: result.priority === "URGENT",
+        is_important: rdvConfirmed ? true : result.priority === "IMPORTANT",
+        category: intentionMap[result.intention] ?? "INFO",
+        classification_reason: classificationReason,
+      };
+
+      // Ajouter prospect_data si extrait (merge non-destructif : ne pas écraser les champs remplis)
+      if (prospectData) {
+        // Lire l'existant d'abord pour merger
+        const { data: existingEmail } = await supabaseAdmin
+          .from("emails")
+          .select("prospect_data")
+          .eq("id", email.id)
+          .maybeSingle();
+        const existing = (existingEmail as any)?.prospect_data ?? {};
+        // Merger : ne remplacer que les champs null/undefined existants
+        const merged: Record<string, unknown> = { ...prospectData };
+        for (const [k, v] of Object.entries(existing)) {
+          if (v !== null && v !== undefined && v !== "") {
+            merged[k] = v; // Conserver la valeur existante non-nulle
+          }
+        }
+        (mainUpdate as any).prospect_data = merged;
+      }
+
+      // Tenter la mise à jour (prospect_data peut ne pas exister encore en DB)
+      try {
+        await supabaseAdmin.from("emails").update(mainUpdate).eq("id", email.id);
+      } catch {
+        // Fallback sans prospect_data si la colonne n'existe pas
+        delete (mainUpdate as any).prospect_data;
+        await supabaseAdmin.from("emails").update(mainUpdate).eq("id", email.id);
+      }
 
       // ── AUTOPILOTE : envoi automatique ──────────────────────────
       const pipelineMode = (settings?.email_rules as any)?.pipeline_mode ?? "DRAFT";
@@ -455,31 +526,96 @@ IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
             });
             autoReply = faqCompletion.choices[0]?.message?.content ?? null;
           } else if (intention === "LOCATION") {
-            // Demander les documents + proposer créneaux
-            const docsConfig = emailRules.ft_locatif?.docs ?? {};
-            const docsRequired = Object.entries(docsConfig)
-              .filter(([, v]) => v === true)
-              .map(([k]) => {
-                const labels: Record<string, string> = {
-                  fiches_paie: "3 dernières fiches de paie",
-                  contrat: "Contrat de travail",
-                  avis_imposition: "Dernier avis d'imposition",
-                  piece_identite: "Pièce d'identité",
-                  rib: "RIB",
-                };
-                return labels[k] ?? k;
-              });
+            // ── Logique 4 cas (même que generate-reply) ──────────────────────
+            const locatif = emailRules.ft_locatif ?? {};
+            const docsSection = emailRules.ft_documents ?? {};
+            const calSection = emailRules.ft_calendrier ?? {};
+            const nomAgence = locatif.nomAgence ?? "l'agence";
+            const multiplicateur = locatif.multiplicateur ?? 3;
+            const garantObligatoire = locatif.garantObligatoire ?? { cdd: true, auto: true, etudiant: true, retraite: false };
+            const heureDebut = calSection.heureDebut ?? 9;
+            const heureFin = calSection.heureFin ?? 18;
+            const dureeVisite = calSection.dureeVisite ?? 60;
+            const docsProfiles: Record<string, string[]> = {
+              cdi: (docsSection.cdi as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail", "Avis d'imposition", "Pièce d'identité"],
+              etudiant: (docsSection.etudiant as string[]) ?? ["Carte étudiante", "Certificat de scolarité", "Justificatif de garant", "Pièce d'identité"],
+              auto: (docsSection.auto as string[]) ?? ["Extrait Kbis", "Bilans (2 ans)", "Avis d'imposition", "Pièce d'identité"],
+            };
 
-            const docsText = docsRequired.length > 0
-              ? `Pour étudier votre dossier, merci de nous transmettre :\n${docsRequired.map((d) => `• ${d}`).join("\n")}`
-              : "Merci de nous transmettre votre dossier de location complet.";
+            const body = email.body ?? "";
+            const bodyLower = body.toLowerCase();
+
+            // Situation
+            let situation: string | null = null;
+            if (bodyLower.includes("étudiant") || bodyLower.includes("université") || bodyLower.includes("école")) situation = "etudiant";
+            else if (bodyLower.includes("cdi")) situation = "cdi";
+            else if (bodyLower.includes("cdd")) situation = "cdd";
+            else if (bodyLower.includes("auto-entrepreneur") || bodyLower.includes("freelance")) situation = "auto";
+            else if (bodyLower.includes("retraité")) situation = "retraite";
+            // Utiliser aussi les données IA extraites si disponibles
+            if (prospectData?.situation_pro) {
+              const spMap: Record<string, string> = {
+                CDI: "cdi", CDD: "cdd", AUTO_ENTREPRENEUR: "auto", ETUDIANT: "etudiant", RETRAITE: "retraite"
+              };
+              situation = spMap[prospectData.situation_pro as string] ?? situation;
+            }
+
+            // Revenus/loyer (priorité aux données IA)
+            let revenus: number | null = (prospectData?.revenus_mensuels as number | null) ?? null;
+            let loyer: number | null = (prospectData?.loyer_max as number | null) ?? null;
+            if (!revenus || !loyer) {
+              for (const line of body.split(/\r?\n/)) {
+                const l = line.toLowerCase();
+                const m = line.match(/(\d[\d\s]*)\s*(?:€|euros?)/i);
+                if (!m) continue;
+                const val = parseFloat(m[1].replace(/\s/g, ""));
+                if (!val || val < 100) continue;
+                if (l.includes("salaire") || l.includes("revenu") || l.includes("gagne")) { if (!revenus) revenus = val; }
+                else if (l.includes("loyer") || l.includes("budget")) { if (!loyer) loyer = val; }
+              }
+            }
+
+            // Nom (priorité aux données IA)
+            let nom = prospectData?.nom ?? "Madame, Monsieur";
+            if (!prospectData?.nom) {
+              const nomMatch = body.match(/(?:je m['']appelle|je suis|prénom\s*:?\s*)([A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+(?:\s+[A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+)*)/);
+              if (nomMatch?.[1]) nom = nomMatch[1].trim();
+            }
+
+            // Cas
+            let cas: "etudiant" | "insolvable" | "incomplet" | "complet";
+            if (situation === "etudiant") cas = "etudiant";
+            else if (revenus !== null && loyer !== null && revenus / loyer < multiplicateur) cas = "insolvable";
+            else if (!revenus || !loyer || !situation) cas = "incomplet";
+            else cas = "complet";
+
+            console.log(`[AUTOPILOTE] emailId=${email.id} cas=${cas} situation=${situation} revenus=${revenus} loyer=${loyer}`);
+
+            let autopilotePrompt = "";
+            const agenceLine = `agence ${nomAgence}`;
+
+            if (cas === "etudiant") {
+              const docsList = docsProfiles.etudiant.map(d => `• ${d}`).join("\n");
+              const needsGarant = garantObligatoire["etudiant"] !== false;
+              autopilotePrompt = `Tu es l'assistant de l'${agenceLine}. Rédige un email professionnel et chaleureux pour un candidat étudiant.\nRemercier ${nom} pour sa candidature.\nExpliquer que pour les étudiants, un garant est ${needsGarant ? "obligatoire" : "recommandé"}.\nDemander les documents suivants:\n${docsList}\nSignature: Cordialement, L'équipe ${nomAgence}\n\nEmail reçu:\nExpéditeur: ${email.sender}\nSujet: ${email.subject}\nContenu: ${body}`;
+            } else if (cas === "insolvable") {
+              const ratio = revenus && loyer ? (revenus / loyer).toFixed(1) : "insuffisant";
+              autopilotePrompt = `Tu es l'assistant de l'${agenceLine}. Rédige un email poli et respectueux pour décliner cette candidature.\nRemercier ${nom}.\nExpliquer poliment que les revenus sont insuffisants (critère: ${multiplicateur}x le loyer, ratio actuel: ${ratio}x).\nSuggérer la possibilité d'un garant solide.\nSignature: Cordialement, L'équipe ${nomAgence}\n\nEmail reçu:\nExpéditeur: ${email.sender}\nSujet: ${email.subject}\nContenu: ${body}`;
+            } else if (cas === "incomplet") {
+              const missing: string[] = [];
+              if (!situation) missing.push("votre situation professionnelle (CDI, CDD, étudiant, indépendant…)");
+              if (!revenus) missing.push("vos revenus nets mensuels (€)");
+              if (!loyer) missing.push("le loyer du bien qui vous intéresse");
+              autopilotePrompt = `Tu es l'assistant de l'${agenceLine}. Rédige un email pour demander les informations manquantes.\nRemercier ${nom} pour sa candidature.\nDemander:\n${missing.map((m, i) => `${i + 1}. ${m}`).join("\n")}\nSignature: Cordialement, L'équipe ${nomAgence}\n\nEmail reçu:\nExpéditeur: ${email.sender}\nSujet: ${email.subject}\nContenu: ${body}`;
+            } else {
+              const sitKey = situation === "auto" ? "auto" : "cdi";
+              const docsList = (docsProfiles[sitKey as keyof typeof docsProfiles] ?? docsProfiles.cdi).map(d => `• ${d}`).join("\n");
+              autopilotePrompt = `Tu es l'assistant de l'${agenceLine}. Accueille favorablement ce candidat solvable.\nRemercier ${nom}.\nDemander les documents suivants:\n${docsList}\nProposer des créneaux de visite (entre ${heureDebut}h et ${heureFin}h en semaine, durée ${dureeVisite}min).\nSignature: Cordialement, L'équipe ${nomAgence}\n\nEmail reçu:\nExpéditeur: ${email.sender}\nSujet: ${email.subject}\nContenu: ${body}`;
+            }
 
             const locationCompletion = await openai.chat.completions.create({
               model: "gpt-4o-mini",
-              messages: [{
-                role: "user",
-                content: `Tu es l'assistant d'une agence immobilière. Réponds à cette demande de location. Accuse réception, ${docsText}. Indique que tu reviendras rapidement avec des créneaux de visite. Sois chaleureux et professionnel. En français.\n\nEmail de: ${email.sender}\nSujet: ${email.subject}\nContenu: ${email.body ?? ""}`,
-              }],
+              messages: [{ role: "user", content: autopilotePrompt }],
               temperature: 0.3,
             });
             autoReply = locationCompletion.choices[0]?.message?.content ?? null;

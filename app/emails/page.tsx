@@ -40,6 +40,7 @@ export default function PipelinePage() {
   const [lastSync, setLastSync] = useState<Date | null>(null);
   const [now, setNow] = useState(new Date());
   const [search, setSearch] = useState("");
+  const [syncNotif, setSyncNotif] = useState<string | null>(null);
 
   // Tick toutes les 10s pour mettre à jour "il y a Xs"
   useEffect(() => {
@@ -70,7 +71,7 @@ export default function PipelinePage() {
 
     let query = supabase
       .from("emails")
-      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply")
+      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply, prospect_data")
       .eq("user_id", user.id)
       .eq("is_archived", false)
       .order("received_at", { ascending: false });
@@ -103,7 +104,7 @@ export default function PipelinePage() {
 
     let query = supabase
       .from("emails")
-      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply")
+      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply, prospect_data")
       .eq("user_id", user.id)
       .eq("is_archived", false)
       .order("received_at", { ascending: false });
@@ -111,7 +112,8 @@ export default function PipelinePage() {
     if (fromDate) query = query.gte("received_at", fromDate.toISOString());
     if (intentionFilter !== "all") query = query.eq("category", intentionFilter);
 
-    const { data } = await query;
+    const { data, error: silentErr } = await query;
+    if (silentErr) { console.error("[FETCH_SILENT] SUPABASE_ERROR:", silentErr); return; }
     if (!data) return;
 
     const normalized: Email[] = data.map((e) => ({
@@ -165,24 +167,37 @@ export default function PipelinePage() {
     if (refreshing) return;
     setRefreshing(true);
     try {
-      // analyze-now retourne après sync Gmail (rapide ~2s)
-      // l'analyse IA tourne en background
-      await fetch("/api/emails/analyze-now", {
+      // 1) Sync Gmail (quick=50 msgs) + lancer IA en background
+      const analyzeRes = await fetch("/api/emails/analyze-now", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ trigger: "manual" }),
       });
-      // Fetch immédiat après sync (les nouveaux emails sont déjà en DB)
-      await fetchEmailsSilent();
+      const analyzeJson = await analyzeRes.json().catch(() => ({}));
+      const newCount: number = analyzeJson?.sync?.inserted ?? 0;
+      console.log("[REFRESH] Sync terminé — nouveaux:", newCount, "| détail:", analyzeJson?.sync);
+
+      // 2) Fetch complet (avec gestion erreur + redirect si session expirée)
+      await fetchEmails();
       setLastSync(new Date());
       setRefreshing(false);
 
-      // Re-fetch après 15s pour récupérer les catégories IA classifiées
+      // 3) Notification résultat
+      setSyncNotif(
+        newCount > 0
+          ? `✅ ${newCount} nouvel${newCount > 1 ? "s" : ""} email${newCount > 1 ? "s" : ""}`
+          : "✅ Boîte à jour"
+      );
+      setTimeout(() => setSyncNotif(null), 3000);
+
+      // 4) Re-fetch après 15s pour afficher les catégories IA (analyse background)
       setTimeout(async () => {
         await fetchEmailsSilent();
       }, 15_000);
     } catch (e) {
-      console.error("REFRESH_ERROR", e);
+      console.error("[REFRESH_ERROR]", e);
+      setSyncNotif("❌ Erreur de sync");
+      setTimeout(() => setSyncNotif(null), 3000);
       setRefreshing(false);
     }
   };
@@ -279,6 +294,19 @@ export default function PipelinePage() {
                 <span className={refreshing ? "animate-spin inline-block" : ""}>🔄</span>
                 <span>{refreshing ? "Sync…" : "Actualiser"}</span>
               </button>
+
+              {/* Notification résultat sync */}
+              {syncNotif && (
+                <span
+                  className="text-xs px-2.5 py-1 rounded-lg font-medium transition-all"
+                  style={{
+                    background: syncNotif.startsWith("✅") ? "rgba(22,163,74,0.1)" : "rgba(220,38,38,0.1)",
+                    color: syncNotif.startsWith("✅") ? "rgb(22,163,74)" : "rgb(220,38,38)",
+                  }}
+                >
+                  {syncNotif}
+                </span>
+              )}
             </div>
           </div>
 

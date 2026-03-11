@@ -10,6 +10,7 @@ import {
   getSuggestedSlotsForEmail,
 } from "@/components/calendar/getOptimalSlotForEmail";
 import ProspectFiche from "@/components/emails/ProspectFiche";
+import type { ProspectData } from "@/types/email";
 
 type PipelineMode = "DRAFT" | "AUTOPILOTE";
 
@@ -583,7 +584,24 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
       {/* ── Widgets LOCATION ── */}
       {intention === "LOCATION" && (
         <>
-          <ProspectFiche body={body || email.body} />
+          <ProspectFiche
+            body={body || email.body}
+            prospectData={(email as any).prospect_data ?? null}
+            emailId={email.id}
+            isAI={!!(email as any).prospect_data}
+            onSave={async (data: ProspectData) => {
+              const res = await fetch(`/api/leads/${email.id}/prospect`, {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ prospect_data: data }),
+              });
+              if (!res.ok) {
+                notify("Erreur sauvegarde fiche prospect", "error");
+              } else {
+                notify("Fiche prospect sauvegardée ✅", "success");
+              }
+            }}
+          />
           <SolvabiliteWidget body={body || email.body} />
           <DossierWidget body={body || email.body} />
           <DocumentsTemplateWidget />

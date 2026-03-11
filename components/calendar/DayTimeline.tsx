@@ -36,12 +36,14 @@ export function DayTimeline({
   events,
   onSelect,
   date,
+  onBlockSlot,
 }: {
   events: Array<CalendarEvent & { start: Date; end: Date }>;
   onSelect: (ev: CalendarEvent & { start: Date; end: Date }) => void;
   date?: Date;
+  onBlockSlot?: (slot: { start: Date; end: Date; minutes: number }) => void;
 }) {
-  const slots = date ? freeSlots(events, date, 8, 18) : [];
+  const slots = date ? freeSlots(events, date, 9, 18) : [];
 
   if (!events.length) {
     return (
@@ -61,8 +63,15 @@ export function DayTimeline({
             {slots.slice(0, 3).map((s, i) => (
               <div
                 key={i}
-                className="rounded-lg px-4 py-2 flex items-center gap-2"
-                style={{ background: "rgba(22,163,74,0.06)", border: "1px solid rgba(22,163,74,0.2)" }}
+                onClick={() => onBlockSlot?.(s)}
+                className="rounded-lg px-4 py-2 flex items-center gap-2 transition-all"
+                style={{
+                  background: "rgba(22,163,74,0.06)",
+                  border: "1px solid rgba(22,163,74,0.2)",
+                  cursor: onBlockSlot ? "pointer" : "default",
+                }}
+                onMouseEnter={(e) => { if (onBlockSlot) (e.currentTarget as HTMLElement).style.background = "rgba(22,163,74,0.12)"; }}
+                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(22,163,74,0.06)"; }}
               >
                 <span style={{ color: "rgb(22 163 74)" }}>●</span>
                 <span className="text-xs font-medium" style={{ color: "rgb(22 163 74)" }}>
@@ -71,6 +80,7 @@ export function DayTimeline({
                 <span className="text-xs ml-auto" style={{ color: "rgb(100 116 139)" }}>
                   {s.minutes} min libres
                 </span>
+                {onBlockSlot && <span className="text-xs" style={{ color: "rgb(22 163 74)" }}>＋ Bloquer</span>}
               </div>
             ))}
           </div>
@@ -137,8 +147,15 @@ export function DayTimeline({
           {slots.map((s, i) => (
             <div
               key={i}
-              className="rounded-lg px-4 py-2 flex items-center gap-2"
-              style={{ background: "rgba(22,163,74,0.06)", border: "1px solid rgba(22,163,74,0.15)" }}
+              onClick={() => onBlockSlot?.(s)}
+              className="rounded-lg px-4 py-2 flex items-center gap-2 transition-all"
+              style={{
+                background: "rgba(22,163,74,0.06)",
+                border: "1px solid rgba(22,163,74,0.15)",
+                cursor: onBlockSlot ? "pointer" : "default",
+              }}
+              onMouseEnter={(e) => { if (onBlockSlot) (e.currentTarget as HTMLElement).style.background = "rgba(22,163,74,0.12)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "rgba(22,163,74,0.06)"; }}
             >
               <span className="text-xs" style={{ color: "rgb(22 163 74)" }}>●</span>
               <span className="text-xs font-medium" style={{ color: "rgb(22 163 74)" }}>
@@ -147,6 +164,7 @@ export function DayTimeline({
               <span className="text-xs ml-auto" style={{ color: "rgb(100 116 139)" }}>
                 {s.minutes} min disponibles
               </span>
+              {onBlockSlot && <span className="text-xs font-medium" style={{ color: "rgb(22 163 74)" }}>＋ Bloquer</span>}
             </div>
           ))}
         </div>

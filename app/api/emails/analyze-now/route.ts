@@ -2,6 +2,9 @@ import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
 
 export async function POST(req: Request) {
+  const t0 = Date.now();
+  console.log("[ANALYZE-NOW] ▶ Démarrée", new Date().toISOString());
+
   try {
     const supabase = await supabaseServer();
     const { data: { user } } = await supabase.auth.getUser();
@@ -10,28 +13,38 @@ export async function POST(req: Request) {
       return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
     }
 
+    const body = await req.json().catch(() => ({}));
+    const trigger = body?.trigger ?? "auto"; // "manual" | "auto"
     const baseUrl = process.env.NEXT_PUBLIC_APP_URL || new URL(req.url).origin;
     const cookie = req.headers.get("cookie") ?? "";
 
+    console.log(`[ANALYZE-NOW] user=${user.id} trigger=${trigger}`);
+
     // =========================
     // 1) SYNC GMAIL — PRIORITAIRE : on attend qu'il finisse
-    //    → les emails apparaissent immédiatement dans la liste
+    //    mode=quick pour refresh manuel (50 msgs INBOX, rapide)
+    //    mode=full  pour cron (200 msgs, complet)
     // =========================
     const syncRes = await fetch(`${baseUrl}/api/gmail/sync`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ user_id: user.id }),
+      body: JSON.stringify({
+        user_id: user.id,
+        mode: trigger === "manual" ? "quick" : "full",
+      }),
       cache: "no-store",
     });
 
     const syncJson = await syncRes.json().catch(() => ({}));
+    const syncMs = Date.now() - t0;
 
     if (!syncRes.ok) {
-      console.error("[ANALYZE-NOW] Sync Gmail échoué:", syncJson);
-      // On continue quand même pour l'analyse IA
+      console.error("[ANALYZE-NOW] ❌ Sync Gmail échoué:", syncJson);
+    } else {
+      console.log(
+        `[ANALYZE-NOW] ✅ Sync Gmail OK en ${syncMs}ms — nouveaux=${syncJson.inserted ?? "?"} parcourus=${syncJson.fetched ?? "?"}`
+      );
     }
-
-    console.log("[ANALYZE-NOW] Sync Gmail:", syncJson);
 
     // =========================
     // 2) ANALYSE IA — BACKGROUND : on ne bloque pas le retour
@@ -43,15 +56,15 @@ export async function POST(req: Request) {
       headers: {
         "Content-Type": "application/json",
         "x-fixetime-cron-key": process.env.FIXETIME_INTERNAL_CRON_KEY || "",
-        ...(cookie ? { "cookie": cookie } : {}),
+        ...(cookie ? { cookie } : {}),
       },
       body: JSON.stringify({ user_id: user.id, period: "30d" }),
       cache: "no-store",
     }).then(async (aiRes) => {
       const aiJson = await aiRes.json().catch(() => ({}));
-      console.log("[ANALYZE-NOW] Analyse IA terminée:", aiJson);
+      console.log(`[ANALYZE-NOW] ✅ Analyse IA terminée: ${JSON.stringify(aiJson)}`);
     }).catch((err) => {
-      console.error("[ANALYZE-NOW] Analyse IA erreur background:", err);
+      console.error("[ANALYZE-NOW] ❌ Analyse IA erreur background:", err);
     });
 
     // =========================
@@ -59,12 +72,13 @@ export async function POST(req: Request) {
     // =========================
     return NextResponse.json({
       success: true,
+      trigger,
       sync: syncJson,
       ai: "running_background",
     });
 
   } catch (e) {
-    console.error("ANALYZE_NOW_FATAL", e);
+    console.error("[ANALYZE-NOW] FATAL:", e);
     return NextResponse.json({ error: "ANALYZE_NOW_FAILED" }, { status: 500 });
   }
 }
