@@ -1,47 +1,57 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
 const TOTAL_STEPS = 5;
 
+const PROPERTY_TYPES = [
+  { id: "appartements", label: "Appartements" },
+  { id: "maisons", label: "Maisons" },
+  { id: "studios", label: "Studios" },
+  { id: "parkings", label: "Parkings" },
+  { id: "locaux_commerciaux", label: "Locaux commerciaux" },
+];
+
 const IA_QUESTIONS = [
   {
     id: "loyer_moyen",
-    question: "Quel est le loyer moyen de vos biens ? (€/mois)",
-    placeholder: "Ex: 850",
-    type: "number",
-    emoji: "💰",
+    question: "Quel est le loyer moyen de vos biens ?",
+    placeholder: "Ex: 850 €/mois",
+    type: "text",
+    icon: "💰",
   },
   {
     id: "nb_biens",
     question: "Combien de biens gérez-vous ?",
-    placeholder: "Ex: 25",
-    type: "number",
-    emoji: "🏠",
+    placeholder: "Ex: 25 biens",
+    type: "text",
+    icon: "🏠",
   },
   {
     id: "multiplicateur",
     question: "Quel multiplicateur de revenus exigez-vous ?",
-    placeholder: "Ex: 3 (revenus ≥ 3x le loyer)",
-    type: "number",
-    emoji: "📊",
+    placeholder: "Ex: 3 (revenus ≥ 3× le loyer)",
+    type: "text",
+    icon: "📊",
   },
   {
     id: "zones",
     question: "Dans quelles zones géographiques opérez-vous ?",
     placeholder: "Ex: Paris 11e, Paris 12e, Vincennes",
     type: "text",
-    emoji: "📍",
+    icon: "📍",
   },
   {
     id: "specificites",
-    question: "Avez-vous des spécificités à communiquer aux prospects ?",
+    question: "Spécificités à communiquer aux prospects ?",
     placeholder: "Ex: Pas d'animaux, parking inclus, immeuble haussmannien",
     type: "text",
-    emoji: "📝",
+    icon: "📝",
   },
 ];
+
+// ── Composants utilitaires ──────────────────────────────────────────────────
 
 function ProgressBar({ step }: { step: number }) {
   return (
@@ -91,18 +101,53 @@ function QuestionDots({ total, current }: { total: number; current: number }) {
   );
 }
 
+// ── Composant principal ──────────────────────────────────────────────────────
+
 export default function OnboardingClient() {
   const router = useRouter();
+
+  // État principal
   const [step, setStep] = useState(1);
+  const [connectedProvider, setConnectedProvider] = useState<"gmail" | "outlook" | null>(null);
+
+  // Étape 1 — Infos agence
   const [agenceName, setAgenceName] = useState("");
+  const [firstName, setFirstName] = useState("");
+  const [city, setCity] = useState("");
+  const [propertyTypes, setPropertyTypes] = useState<string[]>(["appartements"]);
+
+  // Étape 4 — IA
   const [iaAnswers, setIaAnswers] = useState<Record<string, string>>({});
   const [currentQuestion, setCurrentQuestion] = useState(0);
+
+  // UI
   const [saving, setSaving] = useState(false);
+
+  // Lire les params URL au montage (step=X, provider=gmail|outlook)
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const params = new URLSearchParams(window.location.search);
+    const stepParam = parseInt(params.get("step") ?? "1");
+    const providerParam = params.get("provider");
+
+    if (!isNaN(stepParam) && stepParam >= 1 && stepParam <= TOTAL_STEPS) {
+      setStep(stepParam);
+    }
+    if (providerParam === "gmail" || providerParam === "outlook") {
+      setConnectedProvider(providerParam);
+    }
+  }, []);
 
   const goNext = () => setStep((s) => Math.min(s + 1, TOTAL_STEPS));
   const goPrev = () => setStep((s) => Math.max(s - 1, 1));
-  const skipIA = () => { setCurrentQuestion(0); goNext(); };
 
+  const togglePropertyType = (id: string) => {
+    setPropertyTypes((prev) =>
+      prev.includes(id) ? prev.filter((t) => t !== id) : [...prev, id]
+    );
+  };
+
+  // ── Sauvegarde finale (atomic, 1 seul POST) ─────────────────────────────
   const finalize = async () => {
     setSaving(true);
 
@@ -118,68 +163,80 @@ export default function OnboardingClient() {
       loyer_moyen: iaAnswers.loyer_moyen || "",
       nb_biens: iaAnswers.nb_biens || "",
     };
+    const agenceData = {
+      name: agenceName,
+      firstName,
+      city,
+      propertyTypes,
+    };
 
-    // Save to localStorage (instant fallback)
+    // localStorage fallback (instant)
     try {
-      localStorage.setItem("fixetime_agence", JSON.stringify({ name: agenceName }));
+      localStorage.setItem("fixetime_agence", JSON.stringify(agenceData));
       localStorage.setItem("fixetime_locatif", JSON.stringify(locatifData));
       localStorage.setItem("fixetime_ia", JSON.stringify(iaData));
       localStorage.setItem("fixetime_onboarding_done", "true");
     } catch { /* silent */ }
 
-    // Save to Supabase via settings API
+    // Save en DB — POST atomic (le serveur merge avec l'existant)
     try {
-      const res = await fetch("/api/settings", { cache: "no-store" });
-      const current = res.ok ? await res.json() : {};
-      const currentRules = (current?.email_rules && typeof current.email_rules === "object")
-        ? current.email_rules : {};
-
-      await fetch("/api/settings", {
+      const res = await fetch("/api/settings", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           email_rules: {
-            ...currentRules,
             ft_locatif: locatifData,
             ft_ia: iaData,
-            ft_agence: { name: agenceName },
+            ft_agence: agenceData,
+            ft_onboarding_done: true, // ← flag "onboarding terminé"
           },
         }),
       });
-    } catch { /* silent — localStorage is the fallback */ }
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        console.error("[ONBOARDING] POST settings échoué:", res.status, err);
+      } else {
+        console.log("[ONBOARDING] ✅ Settings sauvegardés");
+      }
+    } catch (e) {
+      console.error("[ONBOARDING] Erreur réseau settings:", e);
+    }
 
     setSaving(false);
     router.push("/home");
   };
 
+  // ── Rendu ───────────────────────────────────────────────────────────────
   return (
-    <div className="min-h-screen flex items-center justify-center" style={{ background: "rgb(250 250 250)" }}>
+    <div className="min-h-screen flex items-center justify-center" style={{ background: "rgb(250 250 252)" }}>
       <div
         className="w-full max-w-lg rounded-2xl bg-white p-8"
-        style={{ boxShadow: "0 8px 32px rgba(0,0,0,0.08)", border: "1px solid rgb(226 232 240)" }}
+        style={{ boxShadow: "0 8px 40px rgba(79,70,229,0.10)", border: "1px solid rgb(226 232 240)" }}
       >
         {/* Logo */}
         <div className="flex justify-center mb-6">
-          <img src="/logo-fixtime.png" alt="FixTime" className="h-16 w-auto object-contain mx-auto" />
+          <img src="/logo-fixtime.png" alt="FixTime" className="h-14 w-auto object-contain" />
         </div>
 
         <ProgressBar step={step} />
 
-        {/* ── ÉTAPE 1 : Nom de l'agence ── */}
+        {/* ── ÉTAPE 1 : Infos agence ── */}
         {step === 1 && (
-          <div className="space-y-6 animate-fade-in">
+          <div className="space-y-5">
             <StepBadge step={1} />
             <div>
               <h2 className="text-xl font-semibold mb-1" style={{ color: "rgb(30 41 59)" }}>
-                Bienvenue sur FixTime 🏠
+                Votre agence immobilière
               </h2>
               <p className="text-sm" style={{ color: "rgb(100 116 139)" }}>
-                Commençons par configurer votre agence immobilière.
+                Ces informations personnalisent votre assistant IA.
               </p>
             </div>
+
+            {/* Nom de l'agence */}
             <div>
-              <label className="text-sm font-medium block mb-2" style={{ color: "rgb(71 85 105)" }}>
-                Nom de votre agence
+              <label className="text-sm font-medium block mb-1.5" style={{ color: "rgb(71 85 105)" }}>
+                Nom de l'agence <span style={{ color: "rgb(79 70 229)" }}>*</span>
               </label>
               <input
                 type="text"
@@ -187,15 +244,72 @@ export default function OnboardingClient() {
                 onChange={(e) => setAgenceName(e.target.value)}
                 placeholder="Ex: Agence Dubois Immobilier"
                 autoFocus
-                className="w-full rounded-xl border px-4 py-3 text-sm focus:outline-none focus:ring-2"
+                className="w-full rounded-xl border px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
-                onKeyDown={(e) => { if (e.key === "Enter" && agenceName.trim()) goNext(); }}
               />
             </div>
+
+            {/* Prénom */}
+            <div>
+              <label className="text-sm font-medium block mb-1.5" style={{ color: "rgb(71 85 105)" }}>
+                Votre prénom
+              </label>
+              <input
+                type="text"
+                value={firstName}
+                onChange={(e) => setFirstName(e.target.value)}
+                placeholder="Ex: Marie"
+                className="w-full rounded-xl border px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+              />
+            </div>
+
+            {/* Ville */}
+            <div>
+              <label className="text-sm font-medium block mb-1.5" style={{ color: "rgb(71 85 105)" }}>
+                Ville principale d'activité
+              </label>
+              <input
+                type="text"
+                value={city}
+                onChange={(e) => setCity(e.target.value)}
+                placeholder="Ex: Paris, Lyon, Bordeaux…"
+                className="w-full rounded-xl border px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+              />
+            </div>
+
+            {/* Types de biens */}
+            <div>
+              <label className="text-sm font-medium block mb-2" style={{ color: "rgb(71 85 105)" }}>
+                Types de biens gérés
+              </label>
+              <div className="flex flex-wrap gap-2">
+                {PROPERTY_TYPES.map((pt) => {
+                  const selected = propertyTypes.includes(pt.id);
+                  return (
+                    <button
+                      key={pt.id}
+                      type="button"
+                      onClick={() => togglePropertyType(pt.id)}
+                      className="px-3 py-1.5 rounded-lg text-xs font-medium border transition-all"
+                      style={{
+                        borderColor: selected ? "rgb(79 70 229)" : "rgb(226 232 240)",
+                        background: selected ? "rgb(238 242 255)" : "white",
+                        color: selected ? "rgb(79 70 229)" : "rgb(71 85 105)",
+                      }}
+                    >
+                      {pt.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+
             <button
               onClick={goNext}
               disabled={!agenceName.trim()}
-              className="w-full py-3 rounded-xl text-sm font-medium text-white transition-opacity disabled:opacity-40"
+              className="w-full py-3 rounded-xl text-sm font-semibold text-white transition-opacity disabled:opacity-40"
               style={{ background: "rgb(79 70 229)" }}
             >
               Continuer →
@@ -203,13 +317,13 @@ export default function OnboardingClient() {
           </div>
         )}
 
-        {/* ── ÉTAPE 2 : Connexion Gmail ── */}
+        {/* ── ÉTAPE 2 : Connexion email ── */}
         {step === 2 && (
-          <div className="space-y-6 animate-fade-in">
+          <div className="space-y-5">
             <StepBadge step={2} />
             <div>
               <h2 className="text-xl font-semibold mb-1" style={{ color: "rgb(30 41 59)" }}>
-                Connectez votre boîte email
+                Connectez votre messagerie
               </h2>
               <p className="text-sm" style={{ color: "rgb(100 116 139)" }}>
                 FixTime analysera vos emails entrants pour détecter les prospects locataires.
@@ -217,34 +331,70 @@ export default function OnboardingClient() {
             </div>
 
             <div className="space-y-3">
+              {/* Gmail */}
               <a
                 href="/api/auth/google"
-                className="flex items-center gap-3 w-full px-4 py-3 rounded-xl border text-sm font-medium transition-all"
+                className="flex items-center gap-4 w-full px-4 py-4 rounded-xl border text-sm font-medium transition-all group"
                 style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
-                onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.borderColor = "rgb(79 70 229)"; }}
-                onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.borderColor = "rgb(226 232 240)"; }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLElement).style.borderColor = "rgb(79 70 229)";
+                  (e.currentTarget as HTMLElement).style.background = "rgb(248 249 255)";
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLElement).style.borderColor = "rgb(226 232 240)";
+                  (e.currentTarget as HTMLElement).style.background = "white";
+                }}
               >
-                <span className="text-xl">📧</span>
-                <div>
-                  <div className="font-medium">Gmail (Google Workspace)</div>
-                  <div className="text-xs" style={{ color: "rgb(100 116 139)" }}>Recommandé</div>
+                <div
+                  className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0"
+                  style={{ background: "rgb(234 67 53)" }}
+                >
+                  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="white">
+                    <path d="M20 4H4C2.9 4 2 4.9 2 6v12c0 1.1.9 2 2 2h16c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 4l-8 5-8-5V6l8 5 8-5v2z" />
+                  </svg>
                 </div>
-                <span className="ml-auto" style={{ color: "rgb(79 70 229)" }}>→</span>
+                <div className="flex-1">
+                  <div className="font-semibold text-sm" style={{ color: "rgb(30 41 59)" }}>Gmail / Google Workspace</div>
+                  <div className="text-xs mt-0.5" style={{ color: "rgb(100 116 139)" }}>
+                    Connexion sécurisée OAuth 2.0
+                  </div>
+                </div>
+                <span style={{ color: "rgb(79 70 229)" }}>→</span>
               </a>
 
-              <div
-                className="flex items-center gap-3 w-full px-4 py-3 rounded-xl border text-sm opacity-50"
-                style={{ borderColor: "rgb(226 232 240)", color: "rgb(100 116 139)" }}
+              {/* Outlook */}
+              <a
+                href="/api/auth/microsoft"
+                className="flex items-center gap-4 w-full px-4 py-4 rounded-xl border text-sm font-medium transition-all"
+                style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+                onMouseEnter={(e) => {
+                  (e.currentTarget as HTMLElement).style.borderColor = "rgb(79 70 229)";
+                  (e.currentTarget as HTMLElement).style.background = "rgb(248 249 255)";
+                }}
+                onMouseLeave={(e) => {
+                  (e.currentTarget as HTMLElement).style.borderColor = "rgb(226 232 240)";
+                  (e.currentTarget as HTMLElement).style.background = "white";
+                }}
               >
-                <span className="text-xl">📨</span>
-                <div>
-                  <div>Outlook / Microsoft 365</div>
-                  <div className="text-xs">Bientôt disponible</div>
+                <div
+                  className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0"
+                  style={{ background: "rgb(0 120 212)" }}
+                >
+                  <svg viewBox="0 0 24 24" className="w-5 h-5" fill="white">
+                    <path d="M21.5 8.5v9c0 1.1-.9 2-2 2h-15c-1.1 0-2-.9-2-2v-9l9.5 5.5 9.5-5.5zm0-2l-9.5 5.5L2.5 6.5c0-1.1.9-2 2-2h15c1.1 0 2 .9 2 2z" />
+                  </svg>
                 </div>
-              </div>
+                <div className="flex-1">
+                  <div className="font-semibold text-sm" style={{ color: "rgb(30 41 59)" }}>Outlook / Microsoft 365</div>
+                  <div className="text-xs mt-0.5" style={{ color: "rgb(100 116 139)" }}>
+                    Connexion sécurisée OAuth 2.0
+                  </div>
+                </div>
+                <span style={{ color: "rgb(79 70 229)" }}>→</span>
+              </a>
             </div>
 
-            <div className="flex items-center justify-between">
+            <div className="flex items-center justify-between pt-1">
               <button onClick={goPrev} className="text-sm" style={{ color: "rgb(100 116 139)" }}>
                 ← Retour
               </button>
@@ -257,31 +407,73 @@ export default function OnboardingClient() {
 
         {/* ── ÉTAPE 3 : Connexion calendrier ── */}
         {step === 3 && (
-          <div className="space-y-6 animate-fade-in">
+          <div className="space-y-5">
             <StepBadge step={3} />
             <div>
               <h2 className="text-xl font-semibold mb-1" style={{ color: "rgb(30 41 59)" }}>
-                Connectez votre calendrier
+                Votre calendrier est connecté
               </h2>
               <p className="text-sm" style={{ color: "rgb(100 116 139)" }}>
                 FixTime proposera des créneaux de visite selon votre disponibilité.
               </p>
             </div>
 
-            <div
-              className="rounded-xl border p-4 flex items-start gap-3"
-              style={{ borderColor: "rgb(199 210 254)", background: "rgb(238 242 255)" }}
-            >
-              <span className="text-lg">✅</span>
-              <div>
-                <div className="text-sm font-medium" style={{ color: "rgb(79 70 229)" }}>
-                  Google Calendar inclus
+            {/* Affichage dynamique selon le provider connecté */}
+            {connectedProvider === "outlook" ? (
+              <div
+                className="rounded-xl border p-4 flex items-start gap-3"
+                style={{ borderColor: "rgb(186 230 253)", background: "rgb(240 249 255)" }}
+              >
+                <div
+                  className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                  style={{ background: "rgb(0 120 212)" }}
+                >
+                  <svg viewBox="0 0 24 24" className="w-4 h-4" fill="white">
+                    <path d="M19 4h-1V2h-2v2H8V2H6v2H5C3.9 4 3 4.9 3 6v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11z" />
+                  </svg>
                 </div>
-                <div className="text-xs mt-0.5" style={{ color: "rgb(100 116 139)" }}>
-                  En connectant Gmail à l'étape précédente, Google Calendar est automatiquement inclus.
+                <div>
+                  <div className="text-sm font-semibold" style={{ color: "rgb(0 120 212)" }}>
+                    Outlook Calendar inclus
+                  </div>
+                  <div className="text-xs mt-0.5" style={{ color: "rgb(100 116 139)" }}>
+                    En connectant Outlook, votre calendrier Microsoft est automatiquement inclus.
+                  </div>
                 </div>
               </div>
-            </div>
+            ) : (
+              <div
+                className="rounded-xl border p-4 flex items-start gap-3"
+                style={{ borderColor: "rgb(199 210 254)", background: "rgb(238 242 255)" }}
+              >
+                <div
+                  className="w-8 h-8 rounded-lg flex items-center justify-center flex-shrink-0"
+                  style={{ background: "rgb(79 70 229)" }}
+                >
+                  <svg viewBox="0 0 24 24" className="w-4 h-4" fill="white">
+                    <path d="M19 4h-1V2h-2v2H8V2H6v2H5C3.9 4 3 4.9 3 6v14c0 1.1.9 2 2 2h14c1.1 0 2-.9 2-2V6c0-1.1-.9-2-2-2zm0 16H5V9h14v11z" />
+                  </svg>
+                </div>
+                <div>
+                  <div className="text-sm font-semibold" style={{ color: "rgb(79 70 229)" }}>
+                    Google Calendar inclus
+                  </div>
+                  <div className="text-xs mt-0.5" style={{ color: "rgb(100 116 139)" }}>
+                    En connectant Gmail, Google Calendar est automatiquement inclus dans votre espace.
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Message si aucun provider connecté */}
+            {!connectedProvider && (
+              <div
+                className="rounded-xl border p-3 text-xs"
+                style={{ borderColor: "rgb(226 232 240)", color: "rgb(100 116 139)", background: "rgb(248 250 252)" }}
+              >
+                💡 Connectez votre messagerie à l'étape précédente pour activer la synchronisation calendrier.
+              </div>
+            )}
 
             <div className="flex gap-3">
               <button
@@ -293,7 +485,7 @@ export default function OnboardingClient() {
               </button>
               <button
                 onClick={goNext}
-                className="flex-1 py-3 rounded-xl text-sm font-medium text-white"
+                className="flex-1 py-3 rounded-xl text-sm font-semibold text-white"
                 style={{ background: "rgb(79 70 229)" }}
               >
                 Continuer →
@@ -302,26 +494,26 @@ export default function OnboardingClient() {
           </div>
         )}
 
-        {/* ── ÉTAPE 4 : Agent IA de configuration ── */}
+        {/* ── ÉTAPE 4 : Configuration IA ── */}
         {step === 4 && (
-          <div className="space-y-6 animate-fade-in">
+          <div className="space-y-5">
             <StepBadge step={4} />
             <div>
               <h2 className="text-xl font-semibold mb-1" style={{ color: "rgb(30 41 59)" }}>
-                Configurons votre agent IA 🤖
+                Configurez votre agent IA
               </h2>
               <div className="flex items-center justify-between">
                 <p className="text-sm" style={{ color: "rgb(100 116 139)" }}>
-                  {currentQuestion + 1}/{IA_QUESTIONS.length} — Personnalisation FixTime
+                  Question {currentQuestion + 1} sur {IA_QUESTIONS.length}
                 </p>
                 <QuestionDots total={IA_QUESTIONS.length} current={currentQuestion} />
               </div>
             </div>
 
             {/* Question courante */}
-            <div key={IA_QUESTIONS[currentQuestion].id} className="space-y-3 animate-fade-in">
+            <div key={IA_QUESTIONS[currentQuestion].id} className="space-y-3">
               <div className="flex items-center gap-2">
-                <span className="text-xl">{IA_QUESTIONS[currentQuestion].emoji}</span>
+                <span className="text-xl">{IA_QUESTIONS[currentQuestion].icon}</span>
                 <p className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
                   {IA_QUESTIONS[currentQuestion].question}
                 </p>
@@ -329,13 +521,15 @@ export default function OnboardingClient() {
               <input
                 type={IA_QUESTIONS[currentQuestion].type}
                 value={iaAnswers[IA_QUESTIONS[currentQuestion].id] || ""}
-                onChange={(e) => setIaAnswers((prev) => ({
-                  ...prev,
-                  [IA_QUESTIONS[currentQuestion].id]: e.target.value,
-                }))}
+                onChange={(e) =>
+                  setIaAnswers((prev) => ({
+                    ...prev,
+                    [IA_QUESTIONS[currentQuestion].id]: e.target.value,
+                  }))
+                }
                 placeholder={IA_QUESTIONS[currentQuestion].placeholder}
                 autoFocus
-                className="w-full rounded-xl border px-4 py-3 text-sm focus:outline-none focus:ring-2"
+                className="w-full rounded-xl border px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
                 style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
                 onKeyDown={(e) => {
                   if (e.key === "Enter") {
@@ -368,7 +562,7 @@ export default function OnboardingClient() {
                     goNext();
                   }
                 }}
-                className="flex-1 py-2 rounded-xl text-sm font-medium text-white"
+                className="flex-1 py-2 rounded-xl text-sm font-semibold text-white"
                 style={{ background: "rgb(79 70 229)" }}
               >
                 {currentQuestion < IA_QUESTIONS.length - 1 ? "Question suivante →" : "Terminer →"}
@@ -379,7 +573,11 @@ export default function OnboardingClient() {
               <button onClick={goPrev} className="text-sm" style={{ color: "rgb(148 163 184)" }}>
                 ← Retour
               </button>
-              <button onClick={skipIA} className="text-sm" style={{ color: "rgb(148 163 184)" }}>
+              <button
+                onClick={() => { setCurrentQuestion(0); goNext(); }}
+                className="text-sm"
+                style={{ color: "rgb(148 163 184)" }}
+              >
                 Passer cette étape →
               </button>
             </div>
@@ -388,57 +586,82 @@ export default function OnboardingClient() {
 
         {/* ── ÉTAPE 5 : Récap + Lancement ── */}
         {step === 5 && (
-          <div className="space-y-6 animate-fade-in">
+          <div className="space-y-5">
             <StepBadge step={5} />
             <div>
               <h2 className="text-xl font-semibold mb-1" style={{ color: "rgb(30 41 59)" }}>
-                Tout est prêt ! 🎉
+                Votre espace est prêt
               </h2>
               <p className="text-sm" style={{ color: "rgb(100 116 139)" }}>
-                Votre agent IA est configuré pour {agenceName || "votre agence"}.
+                Récapitulatif de votre configuration.
               </p>
             </div>
 
             {/* Récap */}
-            <div className="rounded-xl border p-4 space-y-2.5" style={{ borderColor: "rgb(226 232 240)", background: "rgb(248 250 252)" }}>
-              <div className="text-xs font-semibold mb-2" style={{ color: "rgb(100 116 139)" }}>
-                RÉCAPITULATIF
+            <div
+              className="rounded-xl border p-4 space-y-2.5"
+              style={{ borderColor: "rgb(226 232 240)", background: "rgb(248 250 252)" }}
+            >
+              <div className="text-xs font-semibold mb-2 tracking-wide" style={{ color: "rgb(100 116 139)" }}>
+                CONFIGURATION
               </div>
+
               {agenceName && (
                 <div className="flex justify-between text-sm">
                   <span style={{ color: "rgb(71 85 105)" }}>🏢 Agence</span>
                   <span className="font-medium" style={{ color: "rgb(30 41 59)" }}>{agenceName}</span>
                 </div>
               )}
-              {iaAnswers.loyer_moyen && (
+              {firstName && (
                 <div className="flex justify-between text-sm">
-                  <span style={{ color: "rgb(71 85 105)" }}>💰 Loyer moyen</span>
-                  <span className="font-medium" style={{ color: "rgb(30 41 59)" }}>{iaAnswers.loyer_moyen}€/mois</span>
+                  <span style={{ color: "rgb(71 85 105)" }}>👤 Responsable</span>
+                  <span className="font-medium" style={{ color: "rgb(30 41 59)" }}>{firstName}</span>
+                </div>
+              )}
+              {city && (
+                <div className="flex justify-between text-sm">
+                  <span style={{ color: "rgb(71 85 105)" }}>📍 Ville</span>
+                  <span className="font-medium" style={{ color: "rgb(30 41 59)" }}>{city}</span>
+                </div>
+              )}
+              {connectedProvider && (
+                <div className="flex justify-between text-sm">
+                  <span style={{ color: "rgb(71 85 105)" }}>✉️ Messagerie</span>
+                  <span className="font-medium" style={{ color: "rgb(79 70 229)" }}>
+                    {connectedProvider === "gmail" ? "Gmail connecté" : "Outlook connecté"}
+                  </span>
                 </div>
               )}
               {iaAnswers.multiplicateur && (
                 <div className="flex justify-between text-sm">
-                  <span style={{ color: "rgb(71 85 105)" }}>📊 Multiplicateur revenus</span>
-                  <span className="font-medium" style={{ color: "rgb(30 41 59)" }}>{iaAnswers.multiplicateur}x</span>
+                  <span style={{ color: "rgb(71 85 105)" }}>📊 Multiplicateur</span>
+                  <span className="font-medium" style={{ color: "rgb(30 41 59)" }}>{iaAnswers.multiplicateur}×</span>
                 </div>
               )}
-              {iaAnswers.zones && (
+              {iaAnswers.loyer_moyen && (
                 <div className="flex justify-between text-sm">
-                  <span style={{ color: "rgb(71 85 105)" }}>📍 Zones</span>
-                  <span className="font-medium text-right ml-4" style={{ color: "rgb(30 41 59)" }}>{iaAnswers.zones}</span>
+                  <span style={{ color: "rgb(71 85 105)" }}>💰 Loyer moyen</span>
+                  <span className="font-medium" style={{ color: "rgb(30 41 59)" }}>{iaAnswers.loyer_moyen}</span>
+                </div>
+              )}
+              {propertyTypes.length > 0 && (
+                <div className="flex justify-between text-sm">
+                  <span style={{ color: "rgb(71 85 105)" }}>🏠 Types de biens</span>
+                  <span className="font-medium text-right ml-4" style={{ color: "rgb(30 41 59)" }}>
+                    {propertyTypes.length} type{propertyTypes.length > 1 ? "s" : ""}
+                  </span>
                 </div>
               )}
               <div className="flex justify-between text-sm">
-                <span style={{ color: "rgb(71 85 105)" }}>🤖 Mode pipeline</span>
+                <span style={{ color: "rgb(71 85 105)" }}>🤖 Mode IA</span>
                 <span className="font-medium" style={{ color: "rgb(30 41 59)" }}>DRAFT (modifiable)</span>
               </div>
             </div>
 
-            {/* Sauvegarde en cours indicator */}
             <button
               onClick={finalize}
               disabled={saving}
-              className="w-full py-3 rounded-xl text-sm font-medium text-white transition-opacity disabled:opacity-60 flex items-center justify-center gap-2"
+              className="w-full py-3 rounded-xl text-sm font-semibold text-white transition-opacity disabled:opacity-60 flex items-center justify-center gap-2"
               style={{ background: "rgb(79 70 229)" }}
             >
               {saving ? (
@@ -450,12 +673,16 @@ export default function OnboardingClient() {
                   Sauvegarde en cours…
                 </>
               ) : (
-                "🚀 Accéder à mon tableau de bord"
+                "Accéder à mon tableau de bord →"
               )}
             </button>
 
-            <button onClick={goPrev} className="w-full text-sm text-center" style={{ color: "rgb(148 163 184)" }}>
-              ← Modifier les réponses
+            <button
+              onClick={goPrev}
+              className="w-full text-sm text-center"
+              style={{ color: "rgb(148 163 184)" }}
+            >
+              ← Modifier la configuration
             </button>
           </div>
         )}

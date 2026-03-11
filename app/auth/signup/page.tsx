@@ -8,6 +8,7 @@ export default function SignupPage() {
   const router = useRouter();
   const supabase = supabaseBrowser();
 
+  const [agenceName, setAgenceName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState("");
@@ -16,10 +17,15 @@ export default function SignupPage() {
   async function handleSignup() {
     setError("");
     setLoading(true);
-    const { error } = await supabase.auth.signUp({ email, password });
+    const { error } = await supabase.auth.signUp({
+      email,
+      password,
+      options: { data: { agency_name: agenceName } },
+    });
     setLoading(false);
     if (error) { setError(error.message); return; }
-    router.push("/home");
+    // Toujours → onboarding (pas de redirect /home pour les nouveaux comptes)
+    router.push("/onboarding");
   }
 
   return (
@@ -29,30 +35,30 @@ export default function SignupPage() {
         className="hidden lg:flex lg:w-1/2 flex-col justify-between p-12"
         style={{ background: "linear-gradient(135deg, rgb(79 70 229) 0%, rgb(55 48 163) 100%)" }}
       >
-        {/* Logo dans conteneur blanc — visible sur fond indigo */}
+        {/* Logo dans conteneur blanc */}
         <div className="flex items-center">
           <div className="rounded-2xl overflow-hidden" style={{ background: "rgba(255,255,255,0.96)", padding: "10px 18px" }}>
             <img src="/logo-fixtime.png" alt="FixTime" className="h-12 w-auto object-contain" />
           </div>
         </div>
 
-        {/* Tagline */}
+        {/* Tagline B2B pro */}
         <div className="space-y-8">
           <div>
             <h1 className="text-4xl font-bold text-white leading-tight">
-              Démarrez en quelques<br />minutes
+              L'IA qui gère vos<br />demandes locatives<br />à votre place
             </h1>
             <p className="text-indigo-200 mt-3 text-lg">
-              Connectez votre Gmail et laissez l'IA travailler.
+              Opérationnel en moins de 5 minutes.
             </p>
           </div>
 
           {/* Steps */}
           <div className="space-y-4">
             {[
-              { step: "1", title: "Créez votre compte", desc: "Email + mot de passe, c'est tout" },
-              { step: "2", title: "Connectez Gmail", desc: "Autorisation OAuth sécurisée Google" },
-              { step: "3", title: "L'IA trie et répond", desc: "Opérationnel en moins de 5 minutes" },
+              { step: "1", title: "Créez votre espace", desc: "Informations de votre agence" },
+              { step: "2", title: "Connectez votre messagerie", desc: "Gmail ou Outlook, OAuth sécurisé" },
+              { step: "3", title: "L'IA prend le relais", desc: "Triage, réponses et planification automatiques" },
             ].map((s) => (
               <div key={s.step} className="flex items-start gap-3">
                 <div
@@ -80,14 +86,13 @@ export default function SignupPage() {
           {/* Logo couleur */}
           <div className="flex flex-col items-center gap-2">
             <img src="/logo-fixtime.png" alt="FixTime" className="h-20 w-auto object-contain" />
-            <span className="text-xs font-medium" style={{ color: "rgb(79 70 229)" }}>Assistant IA</span>
           </div>
 
           {/* Titre */}
           <div className="text-center">
-            <h2 className="text-2xl font-bold" style={{ color: "rgb(30 41 59)" }}>Créer un compte</h2>
+            <h2 className="text-2xl font-bold" style={{ color: "rgb(30 41 59)" }}>Créer votre espace</h2>
             <p className="text-sm mt-1" style={{ color: "rgb(100 116 139)" }}>
-              Gratuit · Sans carte bancaire 🎉
+              Configurez votre agence en moins de 2 minutes.
             </p>
           </div>
 
@@ -95,7 +100,21 @@ export default function SignupPage() {
           <div className="space-y-4">
             <div>
               <label className="text-xs font-medium block mb-1.5" style={{ color: "rgb(71 85 105)" }}>
-                Adresse email
+                Nom de l'agence
+              </label>
+              <input
+                type="text"
+                placeholder="Agence Dupont Immobilier"
+                value={agenceName}
+                onChange={(e) => setAgenceName(e.target.value)}
+                onKeyDown={(e) => e.key === "Enter" && handleSignup()}
+                className="w-full rounded-xl border px-4 py-3 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400 transition-all"
+                style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+              />
+            </div>
+            <div>
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "rgb(71 85 105)" }}>
+                Adresse email professionnelle
               </label>
               <input
                 type="email"
@@ -136,7 +155,7 @@ export default function SignupPage() {
               onMouseEnter={(e) => { if (!loading) (e.currentTarget as HTMLElement).style.background = "rgb(67 56 202)"; }}
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "rgb(79 70 229)"; }}
             >
-              {loading ? "Création du compte…" : "Créer mon compte →"}
+              {loading ? "Création de l'espace…" : "Créer mon espace →"}
             </button>
           </div>
 

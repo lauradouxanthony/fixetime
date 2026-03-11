@@ -17,9 +17,20 @@ export default function LoginPage() {
     setErrorMsg("");
     setLoading(true);
     const { error } = await supabase.auth.signInWithPassword({ email, password });
-    setLoading(false);
-    if (error) { setErrorMsg(error.message); return; }
-    setTimeout(() => router.push("/home"), 150);
+    if (error) { setLoading(false); setErrorMsg(error.message); return; }
+
+    // Vérifier si l'onboarding est terminé → redirection intelligente
+    try {
+      const res = await fetch("/api/settings", { cache: "no-store" });
+      if (res.ok) {
+        const settings = await res.json();
+        const onboardingDone = settings?.email_rules?.ft_onboarding_done === true;
+        router.push(onboardingDone ? "/home" : "/onboarding");
+        return;
+      }
+    } catch { /* silent */ }
+
+    router.push("/home");
   }
 
   return (
@@ -29,21 +40,21 @@ export default function LoginPage() {
         className="hidden lg:flex lg:w-1/2 flex-col justify-between p-12"
         style={{ background: "linear-gradient(135deg, rgb(79 70 229) 0%, rgb(55 48 163) 100%)" }}
       >
-        {/* Logo dans conteneur blanc — visible sur fond indigo */}
+        {/* Logo dans conteneur blanc */}
         <div className="flex items-center">
           <div className="rounded-2xl overflow-hidden" style={{ background: "rgba(255,255,255,0.96)", padding: "10px 18px" }}>
             <img src="/logo-fixtime.png" alt="FixTime" className="h-12 w-auto object-contain" />
           </div>
         </div>
 
-        {/* Tagline */}
+        {/* Tagline B2B pro */}
         <div className="space-y-8">
           <div>
             <h1 className="text-4xl font-bold text-white leading-tight">
-              Gérez vos demandes<br />locatives avec l'IA
+              Gérez vos demandes<br />locatives en pilote<br />automatique
             </h1>
             <p className="text-indigo-200 mt-3 text-lg">
-              Triez, répondez et planifiez automatiquement.
+              Triez, répondez et planifiez sans effort.
             </p>
           </div>
 
@@ -72,17 +83,16 @@ export default function LoginPage() {
       {/* ── Colonne droite — formulaire ── */}
       <div className="flex-1 flex flex-col items-center justify-center px-8 bg-white">
         <div className="w-full max-w-sm space-y-7">
-          {/* Logo couleur (visible sur mobile + desktop côté droit) */}
+          {/* Logo couleur */}
           <div className="flex flex-col items-center gap-2">
             <img src="/logo-fixtime.png" alt="FixTime" className="h-20 w-auto object-contain" />
-            <span className="text-xs font-medium" style={{ color: "rgb(79 70 229)" }}>Assistant IA</span>
           </div>
 
           {/* Titre */}
           <div className="text-center">
             <h2 className="text-2xl font-bold" style={{ color: "rgb(30 41 59)" }}>Connexion</h2>
             <p className="text-sm mt-1" style={{ color: "rgb(100 116 139)" }}>
-              Content de vous revoir 👋
+              Bienvenue sur votre espace de gestion.
             </p>
           </div>
 
@@ -90,7 +100,7 @@ export default function LoginPage() {
           <div className="space-y-4">
             <div>
               <label className="text-xs font-medium block mb-1.5" style={{ color: "rgb(71 85 105)" }}>
-                Adresse email
+                Adresse email professionnelle
               </label>
               <input
                 type="email"
@@ -131,15 +141,15 @@ export default function LoginPage() {
               onMouseEnter={(e) => { if (!loading) (e.currentTarget as HTMLElement).style.background = "rgb(67 56 202)"; }}
               onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "rgb(79 70 229)"; }}
             >
-              {loading ? "Connexion…" : "Se connecter →"}
+              {loading ? "Connexion…" : "Accéder à mon espace →"}
             </button>
           </div>
 
           {/* Lien inscription */}
           <p className="text-center text-sm" style={{ color: "rgb(100 116 139)" }}>
-            Pas encore de compte ?{" "}
+            Pas encore client ?{" "}
             <a href="/auth/signup" className="font-medium hover:underline" style={{ color: "rgb(79 70 229)" }}>
-              S'inscrire gratuitement
+              Demander un accès
             </a>
           </p>
         </div>
