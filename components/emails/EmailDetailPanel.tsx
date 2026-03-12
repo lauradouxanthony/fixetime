@@ -585,6 +585,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
       {intention === "LOCATION" && (
         <>
           <ProspectFiche
+            key={email.id}
             body={body || email.body}
             prospectData={(email as any).prospect_data ?? null}
             emailId={email.id}

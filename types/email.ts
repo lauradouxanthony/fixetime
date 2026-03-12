@@ -13,7 +13,8 @@ export type ProspectData = {
   loyer_max?: number | null;
   animaux?: "OUI" | "NON" | null;
   nb_personnes?: number | null;
-  date_emmenagement?: string | null;
+  /** Garant disponible — remplace date_emmenagement */
+  garant?: "OUI" | "NON" | "A_CONFIRMER" | null;
 };
 
 export type Email = {
