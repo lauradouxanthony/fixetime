@@ -229,7 +229,7 @@ export async function POST(req: Request) {
 
     const { data: email, error } = await supabaseAdmin
       .from("emails")
-      .select("id, sender, subject, body, ai_reply, category")
+      .select("id, sender, subject, body, ai_reply, category, prospect_data")
       .eq("id", emailId)
       .eq("user_id", user.id)
       .single();
@@ -281,9 +281,35 @@ export async function POST(req: Request) {
     let prompt: string;
 
     if (isLocation) {
-      const situation = detectSituation(body);
-      const { revenus, loyer } = extractMoney(body);
-      const nom = extractNom(body);
+      // BLOC 1 FIX : utiliser prospect_data (données IA) en priorité au lieu de
+      // re-parser le body avec l'heuristique qui inversait revenus/loyer
+      const pd = (email as any).prospect_data as Record<string, unknown> | null;
+
+      // Mapper les valeurs situation_pro (enum DB) vers les clés internes
+      const situationProMap: Record<string, string> = {
+        ETUDIANT: "etudiant",
+        CDI: "cdi",
+        CDD: "cdd",
+        AUTO_ENTREPRENEUR: "auto",
+        RETRAITE: "retraite",
+      };
+
+      // Situation : prospect_data en priorité, fallback heuristique
+      const situation = pd?.situation_pro
+        ? (situationProMap[String(pd.situation_pro)] ?? detectSituation(body))
+        : detectSituation(body);
+
+      // Revenus & loyer : prospect_data en priorité, fallback extractMoney
+      const pdRevenus = typeof pd?.revenus_mensuels === "number" ? pd.revenus_mensuels as number : null;
+      const pdLoyer = typeof pd?.loyer_max === "number" ? pd.loyer_max as number : null;
+      const { revenus: bodyRevenus, loyer: bodyLoyer } = extractMoney(body);
+      const revenus = pdRevenus ?? bodyRevenus;
+      const loyer = pdLoyer ?? bodyLoyer;
+
+      // Nom : prospect_data.nom en priorité (extrait du corps, pas de l'expéditeur Gmail)
+      const nom = (typeof pd?.nom === "string" && pd.nom.trim().length > 0)
+        ? pd.nom.trim()
+        : extractNom(body);
 
       const cas = determineCase({
         situation,
@@ -293,7 +319,7 @@ export async function POST(req: Request) {
         garantObligatoire: settings.garantObligatoire,
       });
 
-      console.log(`[generate-reply] emailId=${emailId} cas=${cas} situation=${situation} revenus=${revenus} loyer=${loyer}`);
+      console.log(`[generate-reply] emailId=${emailId} cas=${cas} situation=${situation} revenus=${revenus} loyer=${loyer} nom="${nom}" source=${pd ? "prospect_data" : "heuristique"}`);
 
       prompt = buildPrompt({
         cas,

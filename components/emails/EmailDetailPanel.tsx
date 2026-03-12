@@ -193,6 +193,8 @@ function SolvabiliteWidget({ body, prospectData }: { body: string | null | undef
 }
 
 type DocStatus = "recu" | "manquant" | "unknown";
+type AttachmentInfo = { filename: string; mimeType: string; attachmentId: string; size: number };
+
 const DOCS = [
   { key: "fiches_paie", label: "Fiches de paie (3 derniers mois)" },
   { key: "contrat", label: "Contrat de travail" },
@@ -200,17 +202,46 @@ const DOCS = [
   { key: "piece_identite", label: "Pièce d'identité" },
 ];
 
-function DossierWidget({ body }: { body: string | null | undefined }) {
+function DossierWidget({ body, attachments, gmailMessageId }: {
+  body: string | null | undefined;
+  attachments?: AttachmentInfo[];
+  gmailMessageId?: string | null;
+}) {
   const [docs, setDocs] = useState<Record<string, DocStatus>>(
     Object.fromEntries(DOCS.map((d) => [d.key, "unknown"]))
   );
 
+  // BLOC 3 : auto-marquer depuis les noms de fichiers des pièces jointes
+  useEffect(() => {
+    if (!attachments || attachments.length === 0) return;
+    const updates: Record<string, DocStatus> = {};
+    for (const att of attachments) {
+      const fname = att.filename.toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // remove accents
+      if (fname.includes("fiche") || fname.includes("paie") || fname.includes("bulletin")) {
+        updates.fiches_paie = "recu";
+      }
+      if (fname.includes("contrat")) {
+        updates.contrat = "recu";
+      }
+      if (fname.includes("imposition") || fname.includes("avis") || fname.includes("impot")) {
+        updates.avis_imposition = "recu";
+      }
+      if (fname.includes("identite") || fname.includes("identity") || fname.includes("cni")
+        || fname.includes("passeport") || fname.includes("carte")) {
+        updates.piece_identite = "recu";
+      }
+    }
+    if (Object.keys(updates).length > 0) {
+      setDocs((prev) => ({ ...prev, ...updates }));
+    }
+  }, [attachments]);
+
+  // BUG #2 FIX : ne marquer "Reçu" depuis le corps QUE si mention explicite d'envoi
   useEffect(() => {
     if (!body) return;
     const text = body.toLowerCase();
 
-    // BUG #2 FIX : ne marquer "Reçu" QUE si le prospect mentionne EXPLICITEMENT envoyer un document
-    // Des mots comme "CDI", "salaire", "contrat" dans le corps = contexte, pas envoi de pièce jointe
     const sentKeywords = [
       "ci-joint", "ci joint", "pièce jointe", "pièces jointes",
       "vous trouverez", "je vous envoie", "je vous joins", "je joins",
@@ -219,23 +250,18 @@ function DossierWidget({ body }: { body: string | null | undefined }) {
     ];
     const hasSentContext = sentKeywords.some(k => text.includes(k));
 
-    // Sans contexte d'envoi explicite → tous les docs restent "manquant"
     if (!hasSentContext) return;
 
     const updates: Record<string, DocStatus> = {};
-    // Fiche de paie : seulement si explicitement nommée (pas "salaire" seul)
     if (text.includes("fiche de paie") || text.includes("bulletin de salaire") || text.includes("bulletins de salaire")) {
       updates.fiches_paie = "recu";
     }
-    // Contrat : seulement "contrat de travail" (pas "cdi", "cdd" seuls)
     if (text.includes("contrat de travail")) {
       updates.contrat = "recu";
     }
-    // Avis d'imposition
     if (text.includes("avis d'imposition") || text.includes("avis d imposition")) {
       updates.avis_imposition = "recu";
     }
-    // Pièce d'identité : mots précis (pas "identité" seul)
     if (text.includes("carte d'identité") || text.includes("passeport") || text.includes("pièce d'identité")) {
       updates.piece_identite = "recu";
     }
@@ -251,6 +277,10 @@ function DossierWidget({ body }: { body: string | null | undefined }) {
       [key]: prev[key] === "recu" ? "manquant" : "recu",
     }));
   };
+
+  const gmailUrl = gmailMessageId
+    ? `https://mail.google.com/mail/u/0/#inbox/${gmailMessageId}`
+    : null;
 
   return (
     <Section title="Dossier locataire">
@@ -276,12 +306,51 @@ function DossierWidget({ body }: { body: string | null | undefined }) {
           );
         })}
       </div>
+
+      {/* BLOC 3 : pièces jointes détectées */}
+      {attachments && attachments.length > 0 && (
+        <div className="mt-3 pt-3 border-t" style={{ borderColor: "rgb(226 232 240)" }}>
+          <div className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "rgb(100 116 139)" }}>
+            📎 Pièces jointes détectées ({attachments.length})
+          </div>
+          <div className="space-y-1.5">
+            {attachments.map((att, i) => (
+              <div
+                key={i}
+                className="flex items-center gap-2 px-3 py-2 rounded-lg"
+                style={{ background: "rgba(79,70,229,0.04)", border: "1px solid rgba(79,70,229,0.12)" }}
+              >
+                <span className="text-sm">📄</span>
+                <span className="text-xs flex-1 truncate" style={{ color: "rgb(51 65 85)" }} title={att.filename}>
+                  {att.filename}
+                </span>
+                <span className="text-xs flex-shrink-0" style={{ color: "rgb(148 163 184)" }}>
+                  {att.size > 0 ? `${Math.round(att.size / 1024)} Ko` : ""}
+                </span>
+                {gmailUrl && (
+                  <a
+                    href={gmailUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs px-2 py-0.5 rounded font-medium flex-shrink-0"
+                    style={{ background: "rgba(79,70,229,0.1)", color: "rgb(79 70 229)" }}
+                  >
+                    Voir
+                  </a>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
     </Section>
   );
 }
 
-function DocumentsTemplateWidget() {
+function DocumentsTemplateWidget({ email, mode }: { email: Email; mode: PipelineMode }) {
   const { toast: showToast } = useToast();
+  const [sending, setSending] = useState(false);
+  const [sent, setSent] = useState(false);
 
   const docsRequired = [
     "3 dernières fiches de paie",
@@ -298,6 +367,25 @@ function DocumentsTemplateWidget() {
 
   const template = `Bonjour,\n\nMerci pour votre candidature à la location. Afin de constituer votre dossier, merci de nous faire parvenir les documents suivants :\n\n📄 Dossier candidat :\n${docsRequired.map((d) => `• ${d}`).join("\n")}\n\n👥 Dossier garant (si applicable) :\n${guarantorDocs.map((d) => `• ${d}`).join("\n")}\n\nMerci de nous transmettre ces documents dès que possible afin de traiter votre candidature dans les meilleurs délais.\n\nCordialement,\nL'équipe de l'agence`;
 
+  const handleSendTemplate = async () => {
+    if (sending || sent) return;
+    setSending(true);
+    try {
+      const res = await fetch("/api/gmail/send", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailId: email.id, reply: template }),
+      });
+      if (!res.ok) throw new Error("Envoi échoué");
+      setSent(true);
+      showToast("Template envoyé ✅", "success");
+    } catch {
+      showToast("Erreur lors de l'envoi du template", "error");
+    } finally {
+      setSending(false);
+    }
+  };
+
   return (
     <Section title="📄 Documents requis — Template">
       <div
@@ -312,16 +400,29 @@ function DocumentsTemplateWidget() {
       >
         {template}
       </div>
-      <button
-        onClick={() => {
-          navigator.clipboard.writeText(template);
-          showToast("Template copié ✅", "success");
-        }}
-        className="text-xs px-3 py-1.5 rounded-lg transition-colors"
-        style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
-      >
-        📋 Copier ce template
-      </button>
+      <div className="flex flex-wrap gap-2">
+        <button
+          onClick={() => {
+            navigator.clipboard.writeText(template);
+            showToast("Template copié ✅", "success");
+          }}
+          className="text-xs px-3 py-1.5 rounded-lg transition-colors"
+          style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
+        >
+          📋 Copier ce template
+        </button>
+        {/* BLOC 2 : bouton envoi direct — visible en mode DRAFT uniquement */}
+        {mode === "DRAFT" && (
+          <button
+            onClick={handleSendTemplate}
+            disabled={sending || sent}
+            className="text-xs px-3 py-1.5 rounded-lg font-medium text-white transition-opacity disabled:opacity-60"
+            style={{ background: sent ? "rgb(22 163 74)" : "rgb(79 70 229)" }}
+          >
+            {sent ? "✅ Envoyé" : sending ? "Envoi…" : "✉️ Envoyer ce template"}
+          </button>
+        )}
+      </div>
     </Section>
   );
 }
@@ -635,8 +736,12 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
             }}
           />
           <SolvabiliteWidget body={body || email.body} prospectData={(email as any).prospect_data ?? null} />
-          <DossierWidget body={body || email.body} />
-          <DocumentsTemplateWidget />
+          <DossierWidget
+            body={body || email.body}
+            attachments={(email as any).attachments ?? []}
+            gmailMessageId={email.gmail_message_id}
+          />
+          <DocumentsTemplateWidget email={email} mode={mode} />
           <BookingWidget email={email} mode={mode} onApprove={handleBookingApprove} />
         </>
       )}

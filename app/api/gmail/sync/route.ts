@@ -99,9 +99,10 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        // Récupérer les métadonnées (uniquement pour les nouveaux messages)
+        // BLOC 3 : format=full pour obtenir payload.parts (pièces jointes)
+        // + headers From/Subject/Date dans payload.headers
         const detailRes = await fetch(
-          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=metadata&metadataHeaders=From&metadataHeaders=Subject&metadataHeaders=Date`,
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
           { headers: { Authorization: `Bearer ${accessToken}` } }
         );
 
@@ -125,6 +126,26 @@ export async function POST(req: NextRequest) {
         const date = headers.find((h) => h.name === "Date")?.value;
         const receivedAt = date ? new Date(date).toISOString() : new Date().toISOString();
 
+        // BLOC 3 : extraire les pièces jointes depuis payload.parts (récursif)
+        function extractAttachments(parts: any[]): { filename: string; mimeType: string; attachmentId: string; size: number }[] {
+          const result: { filename: string; mimeType: string; attachmentId: string; size: number }[] = [];
+          for (const part of parts ?? []) {
+            if (part.filename && part.filename.length > 0 && part.body?.attachmentId) {
+              result.push({
+                filename: part.filename,
+                mimeType: part.mimeType ?? "application/octet-stream",
+                attachmentId: part.body.attachmentId,
+                size: part.body.size ?? 0,
+              });
+            }
+            if (part.parts) {
+              result.push(...extractAttachments(part.parts));
+            }
+          }
+          return result;
+        }
+        const attachments = extractAttachments(detail.payload?.parts ?? []);
+
         // ✅ FIX BUG 1 : is_archived:false explicite + ignoreDuplicates
         // → les nouveaux emails ont is_archived=false (visible dans fetchEmails)
         // → on n'écrase pas les emails déjà archivés manuellement
@@ -136,6 +157,7 @@ export async function POST(req: NextRequest) {
             subject,
             received_at: receivedAt,
             is_archived: false,  // ← CRITIQUE : évite is_archived=NULL
+            attachments: attachments.length > 0 ? attachments : [],
           },
           {
             onConflict: "gmail_message_id",

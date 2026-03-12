@@ -143,9 +143,10 @@ ${content.slice(0, 2000)}`;
       delete parsed.date_emmenagement;
 
       // Écraser COMPLÈTEMENT prospect_data avec les nouvelles données corrigées
+      // + réinitialiser ai_reply pour forcer re-génération du brouillon avec les bonnes données
       const { error: updateError } = await supabaseAdmin
         .from("emails")
-        .update({ prospect_data: parsed })
+        .update({ prospect_data: parsed, ai_reply: null })
         .eq("id", email.id);
 
       if (updateError) {
