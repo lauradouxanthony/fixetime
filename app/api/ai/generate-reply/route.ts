@@ -90,7 +90,7 @@ function buildPrompt(params: {
     multiplicateur: number;
     animaux: string;
     garantObligatoire: Record<string, boolean>;
-    docsProfiles: { cdi: string[]; etudiant: string[]; auto: string[] };
+    docsProfiles: { cdi: string[]; cdd: string[]; etudiant: string[]; auto: string[]; retraite: string[] };
     faq: { question: string; reponse: string }[];
     instructions: string;
     heureDebut: number;
@@ -185,8 +185,17 @@ Réponse (française, professionnelle, directement envoyable) :`;
   }
 
   // cas === "complet" — solvable, envoyer les docs et proposer des créneaux
-  const sitKey = prospect.situation === "auto" ? "auto" : "cdi";
-  const docsList = docsProfiles[sitKey as keyof typeof docsProfiles] ?? docsProfiles.cdi;
+  // PROBLÈME 3 FIX : mapper chaque situation vers le bon profil docs
+  const sitKeyMap: Record<string, keyof typeof docsProfiles> = {
+    cdi:     "cdi",
+    cdd:     "cdd",
+    auto:    "auto",
+    retraite:"retraite",
+    etudiant:"etudiant", // étudiant solvable et avec garant
+  };
+  const sitKey: keyof typeof docsProfiles =
+    (prospect.situation ? (sitKeyMap[prospect.situation] ?? "cdi") : "cdi");
+  const docsList = docsProfiles[sitKey] ?? docsProfiles.cdi;
   const docsStr = docsList.map((d) => `• ${d}`).join("\n");
   const needsGarant = prospect.situation && garantObligatoire[prospect.situation];
   const garantLine = needsGarant ? "\n• Pour votre profil, un garant sera également requis (mêmes documents)." : "";
@@ -263,9 +272,11 @@ export async function POST(req: Request) {
       animaux: (locatif.animaux as string) ?? "selon",
       garantObligatoire: (locatif.garantObligatoire as Record<string, boolean>) ?? { cdd: true, auto: true, etudiant: true, retraite: false },
       docsProfiles: {
-        cdi: (docsSection.cdi as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail", "Avis d'imposition", "Pièce d'identité"],
-        etudiant: (docsSection.etudiant as string[]) ?? ["Carte étudiante", "Certificat de scolarité", "Justificatif de garant", "Pièce d'identité"],
-        auto: (docsSection.auto as string[]) ?? ["Extrait Kbis", "Bilans (2 ans)", "Avis d'imposition", "Pièce d'identité"],
+        cdi:     (docsSection.cdi     as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail", "Avis d'imposition", "Pièce d'identité"],
+        cdd:     (docsSection.cdd     as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail (durée + date de fin)", "Avis d'imposition", "Pièce d'identité"],
+        etudiant:(docsSection.etudiant as string[]) ?? ["Carte étudiante", "Certificat de scolarité", "Justificatif de garant", "Pièce d'identité"],
+        auto:    (docsSection.auto    as string[]) ?? ["Extrait Kbis", "Bilans comptables (2 dernières années)", "Avis d'imposition", "Pièce d'identité"],
+        retraite:(docsSection.retraite as string[]) ?? ["Relevés de pension (3 derniers mois)", "Avis d'imposition", "Pièce d'identité"],
       },
       faq: Array.isArray(faqSection) ? faqSection : [],
       instructions: (iaSection.instructions as string) ?? "",

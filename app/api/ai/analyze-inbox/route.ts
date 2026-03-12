@@ -114,7 +114,7 @@ const sinceISO = new Date(Date.now() - THIRTY_DAYS).toISOString();
 
 let q = supabaseAdmin
 .from("emails")
-.select("id, user_id, sender, subject, body, received_at, gmail_message_id")
+.select("id, user_id, sender, subject, body, received_at, gmail_message_id, thread_id")
 .gte("received_at", sinceISO)
 .or("category.is.null,decision.is.null,summary.is.null")
 .order("received_at", { ascending: false })
@@ -408,6 +408,35 @@ IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
         }
       }
 
+      // ── PROBLÈME 1 : Détection fil de conversation (thread multi-tours) ──
+      // Si un email du même thread_id existe déjà, c'est une réponse du prospect
+      // → merger le prospect_data accumulé pour ne demander que ce qui manque encore
+      let threadProspectData: Record<string, unknown> | null = null;
+      let isFollowUp = false;
+
+      if ((email as any).thread_id) {
+        try {
+          const { data: threadPrev } = await supabaseAdmin
+            .from("emails")
+            .select("id, prospect_data")
+            .eq("user_id", email.user_id)
+            .eq("thread_id", (email as any).thread_id)
+            .neq("id", email.id)
+            .not("prospect_data", "is", null)
+            .order("received_at", { ascending: true })
+            .limit(1)
+            .maybeSingle();
+
+          if (threadPrev?.prospect_data) {
+            isFollowUp = true;
+            threadProspectData = threadPrev.prospect_data as Record<string, unknown>;
+            console.log(`[ANALYZE-INBOX] ↩️ Réponse dans thread ${(email as any).thread_id} — merge prospect_data`);
+          }
+        } catch (e) {
+          console.warn("[ANALYZE-INBOX] Thread check échoué:", e);
+        }
+      }
+
       // ── Extraction IA données prospect (LOCATION uniquement) ──────────
       let prospectData: Record<string, unknown> | null = null;
       const isLocationEmail = (intentionMap[result.intention] ?? "INFO") === "LOCATION";
@@ -465,12 +494,28 @@ ${content.slice(0, 2000)}`;
         } catch (e) {
           console.warn("[ANALYZE-INBOX] Extraction prospect échouée:", e);
         }
+
+        // PROBLÈME 1 : Merger avec le prospect_data du thread si c'est une réponse
+        // Stratégie : les champs non-null du nouvel email écrasent les anciens null.
+        // Les champs déjà renseignés dans le thread sont conservés.
+        if (isFollowUp && threadProspectData) {
+          const merged: Record<string, unknown> = { ...threadProspectData };
+          if (prospectData) {
+            for (const [k, v] of Object.entries(prospectData)) {
+              if (v !== null && v !== undefined) merged[k] = v;
+            }
+          }
+          prospectData = merged;
+          console.log(`[ANALYZE-INBOX] ↩️ Merge thread OK:`, JSON.stringify(merged));
+        }
       }
 
       // ── Mise à jour DB principale ─────────────────────────────────────
       const mainUpdate: Record<string, unknown> = {
         summary: rdvConfirmed
           ? `✅ RDV de visite confirmé par ${email.sender?.split("@")[0] || "le prospect"}`
+          : isFollowUp
+          ? `↩️ Réponse — ${typeof result.summary === "string" ? result.summary : "nouvelles informations du prospect"}`
           : typeof result.summary === "string" ? result.summary : null,
         decision: decisionMap[result.decision] ?? "traiter",
         estimated_time: result.estimated_time ?? 5,
