@@ -144,27 +144,34 @@ function SolvabiliteCircle({ revenus, loyer, multiplicateur = 3 }: { revenus: nu
   const ratio = revenus / loyer;
   const solvable = ratio >= multiplicateur;
   const color = ratio >= multiplicateur ? "rgb(22 163 74)" : ratio >= multiplicateur * 0.75 ? "rgb(234 88 12)" : "rgb(220 38 38)";
-  // SVG circle: 36px, strokeWidth=4, r=14, circumference≈87.96
+  // SVG circle: 44px, strokeWidth=4, r=14
   const R = 14; const C = 2 * Math.PI * R;
-  const cap = multiplicateur * 1.5; // au-delà de cap, on considère 100%
+  const cap = multiplicateur * 1.5;
   const fill = Math.min(ratio / cap, 1);
   const dash = fill * C;
   return (
+    // BUG #3 FIX : wrapper relatif + overlay absolu pour centrer le texte dans le cercle
     <div className="flex flex-col items-center gap-0.5" title={`Ratio revenus/loyer: ${ratio.toFixed(1)}x (seuil: ${multiplicateur}x)`}>
-      <svg width="44" height="44" viewBox="0 0 44 44" style={{ transform: "rotate(-90deg)" }}>
-        <circle cx="22" cy="22" r={R} fill="none" stroke="rgb(226 232 240)" strokeWidth="4" />
-        <circle
-          cx="22" cy="22" r={R} fill="none"
-          stroke={color} strokeWidth="4"
-          strokeDasharray={`${dash} ${C}`}
-          strokeLinecap="round"
-          style={{ transition: "stroke-dasharray 0.6s ease" }}
-        />
-      </svg>
-      <div className="absolute text-xs font-bold" style={{ color, marginTop: "-32px", fontSize: "10px", position: "relative", top: "-38px" }}>
-        {ratio.toFixed(1)}x
+      <div className="relative" style={{ width: 44, height: 44 }}>
+        <svg width="44" height="44" viewBox="0 0 44 44" style={{ transform: "rotate(-90deg)" }}>
+          <circle cx="22" cy="22" r={R} fill="none" stroke="rgb(226 232 240)" strokeWidth="4" />
+          <circle
+            cx="22" cy="22" r={R} fill="none"
+            stroke={color} strokeWidth="4"
+            strokeDasharray={`${dash} ${C}`}
+            strokeLinecap="round"
+            style={{ transition: "stroke-dasharray 0.6s ease" }}
+          />
+        </svg>
+        {/* Texte centré dans le cercle via absolute inset-0 */}
+        <div
+          className="absolute inset-0 flex items-center justify-center font-bold"
+          style={{ color, fontSize: "10px" }}
+        >
+          {ratio.toFixed(1)}x
+        </div>
       </div>
-      <div className="text-xs" style={{ color: "rgb(100 116 139)", fontSize: "10px", marginTop: "-4px" }}>
+      <div className="text-xs text-center" style={{ color: "rgb(100 116 139)", fontSize: "10px" }}>
         {solvable ? "✅ Solvable" : "❌ Insolvable"}
       </div>
     </div>
