@@ -67,6 +67,29 @@ function fallbackDecision(email: { subject?: string | null; sender?: string | nu
   return { decision: "traiter", is_urgent: false, is_important: false };
 }
 
+/**
+ * Fusion cumulative de deux objets prospect_data.
+ * Règle absolue : un champ non-null dans `base` n'est JAMAIS écrasé.
+ * Un champ null/vide dans `base` peut être enrichi par `incoming`.
+ * → "on accumule, on n'efface jamais"
+ */
+function mergeProspect(
+  base: Record<string, unknown>,
+  incoming: Record<string, unknown> | null
+): Record<string, unknown> {
+  const result: Record<string, unknown> = { ...base };
+  if (!incoming) return result;
+  for (const [k, v] of Object.entries(incoming)) {
+    const existing = result[k];
+    const isEmpty = existing === null || existing === undefined || existing === "";
+    const hasValue = v !== null && v !== undefined && v !== "";
+    if (isEmpty && hasValue) {
+      result[k] = v; // enrichissement uniquement
+    }
+  }
+  return result;
+}
+
 export async function POST(req: Request) {
   const isCron = isInternalCron(req);
   const isManual = isManualRequest(req);
@@ -416,21 +439,26 @@ IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
 
       if ((email as any).thread_id) {
         try {
-          const { data: threadPrev } = await supabaseAdmin
+          // Récupérer TOUS les emails du thread (ordre chronologique) pour un merge complet
+          // → si le thread contient 3 emails, on fusionne les 3 fiches pour rien perdre
+          const { data: threadEmails } = await supabaseAdmin
             .from("emails")
-            .select("id, prospect_data")
+            .select("id, prospect_data, received_at")
             .eq("user_id", email.user_id)
             .eq("thread_id", (email as any).thread_id)
             .neq("id", email.id)
             .not("prospect_data", "is", null)
-            .order("received_at", { ascending: true })
-            .limit(1)
-            .maybeSingle();
+            .order("received_at", { ascending: true }); // plus ancien en premier → fold correct
 
-          if (threadPrev?.prospect_data) {
+          if (threadEmails && threadEmails.length > 0) {
             isFollowUp = true;
-            threadProspectData = threadPrev.prospect_data as Record<string, unknown>;
-            console.log(`[ANALYZE-INBOX] ↩️ Réponse dans thread ${(email as any).thread_id} — merge prospect_data`);
+            // Fold cumulatif : chaque email enrichit le précédent sans jamais écraser
+            let accumulated: Record<string, unknown> = {};
+            for (const t of threadEmails) {
+              accumulated = mergeProspect(accumulated, t.prospect_data as Record<string, unknown>);
+            }
+            threadProspectData = accumulated;
+            console.log(`[ANALYZE-INBOX] ↩️ Thread ${(email as any).thread_id} — ${threadEmails.length} email(s) précédent(s) fusionnés`);
           }
         } catch (e) {
           console.warn("[ANALYZE-INBOX] Thread check échoué:", e);
@@ -495,18 +523,12 @@ ${content.slice(0, 2000)}`;
           console.warn("[ANALYZE-INBOX] Extraction prospect échouée:", e);
         }
 
-        // PROBLÈME 1 : Merger avec le prospect_data du thread si c'est une réponse
-        // Stratégie : les champs non-null du nouvel email écrasent les anciens null.
-        // Les champs déjà renseignés dans le thread sont conservés.
+        // Merge cumulatif thread : base = données accumulées du thread, incoming = email courant
+        // Règle mergeProspect : on n'écrase JAMAIS un champ non-null (le thread gagne sur null)
+        // mais on enrichit les champs vides du thread avec les nouvelles infos de cet email
         if (isFollowUp && threadProspectData) {
-          const merged: Record<string, unknown> = { ...threadProspectData };
-          if (prospectData) {
-            for (const [k, v] of Object.entries(prospectData)) {
-              if (v !== null && v !== undefined) merged[k] = v;
-            }
-          }
-          prospectData = merged;
-          console.log(`[ANALYZE-INBOX] ↩️ Merge thread OK:`, JSON.stringify(merged));
+          prospectData = mergeProspect(threadProspectData, prospectData);
+          console.log(`[ANALYZE-INBOX] ↩️ Merge thread OK:`, JSON.stringify(prospectData));
         }
       }
 
@@ -526,23 +548,16 @@ ${content.slice(0, 2000)}`;
         classification_reason: classificationReason,
       };
 
-      // Ajouter prospect_data si extrait (merge non-destructif : ne pas écraser les champs remplis)
+      // Merge DB non-destructif : ne jamais écraser un champ déjà renseigné en base
       if (prospectData) {
-        // Lire l'existant d'abord pour merger
         const { data: existingEmail } = await supabaseAdmin
           .from("emails")
           .select("prospect_data")
           .eq("id", email.id)
           .maybeSingle();
-        const existing = (existingEmail as any)?.prospect_data ?? {};
-        // Merger : ne remplacer que les champs null/undefined existants
-        const merged: Record<string, unknown> = { ...prospectData };
-        for (const [k, v] of Object.entries(existing)) {
-          if (v !== null && v !== undefined && v !== "") {
-            merged[k] = v; // Conserver la valeur existante non-nulle
-          }
-        }
-        (mainUpdate as any).prospect_data = merged;
+        const existing = ((existingEmail as any)?.prospect_data as Record<string, unknown> | null) ?? {};
+        // mergeProspect(base=existant, incoming=nouvel extrait) : existant non-null gagne toujours
+        (mainUpdate as any).prospect_data = mergeProspect(existing, prospectData);
       }
 
       // Tenter la mise à jour (prospect_data peut ne pas exister encore en DB)
@@ -596,9 +611,11 @@ ${content.slice(0, 2000)}`;
             const heureFin = calSection.heureFin ?? 18;
             const dureeVisite = calSection.dureeVisite ?? 60;
             const docsProfiles: Record<string, string[]> = {
-              cdi: (docsSection.cdi as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail", "Avis d'imposition", "Pièce d'identité"],
-              etudiant: (docsSection.etudiant as string[]) ?? ["Carte étudiante", "Certificat de scolarité", "Justificatif de garant", "Pièce d'identité"],
-              auto: (docsSection.auto as string[]) ?? ["Extrait Kbis", "Bilans (2 ans)", "Avis d'imposition", "Pièce d'identité"],
+              cdi:     (docsSection.cdi     as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail", "Avis d'imposition", "Pièce d'identité"],
+              cdd:     (docsSection.cdd     as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail (durée + date de fin)", "Avis d'imposition", "Pièce d'identité"],
+              etudiant:(docsSection.etudiant as string[]) ?? ["Carte étudiante", "Certificat de scolarité", "Justificatif de garant", "Pièce d'identité"],
+              auto:    (docsSection.auto    as string[]) ?? ["Extrait Kbis", "Bilans comptables (2 dernières années)", "Avis d'imposition", "Pièce d'identité"],
+              retraite:(docsSection.retraite as string[]) ?? ["Relevés de pension (3 derniers mois)", "Avis d'imposition", "Pièce d'identité"],
             };
 
             const body = email.body ?? "";
@@ -667,8 +684,9 @@ ${content.slice(0, 2000)}`;
               if (!loyer) missing.push("le loyer du bien qui vous intéresse");
               autopilotePrompt = `Tu es l'assistant de l'${agenceLine}. Rédige un email pour demander les informations manquantes.\nRemercier ${nom} pour sa candidature.\nDemander:\n${missing.map((m, i) => `${i + 1}. ${m}`).join("\n")}\nSignature: Cordialement, L'équipe ${nomAgence}\n\nEmail reçu:\nExpéditeur: ${email.sender}\nSujet: ${email.subject}\nContenu: ${body}`;
             } else {
-              const sitKey = situation === "auto" ? "auto" : "cdi";
-              const docsList = (docsProfiles[sitKey as keyof typeof docsProfiles] ?? docsProfiles.cdi).map(d => `• ${d}`).join("\n");
+              const sitKeyMap: Record<string, string> = { cdi: "cdi", cdd: "cdd", auto: "auto", retraite: "retraite", etudiant: "etudiant" };
+              const sitKey = (situation ? (sitKeyMap[situation] ?? "cdi") : "cdi");
+              const docsList = (docsProfiles[sitKey] ?? docsProfiles.cdi).map(d => `• ${d}`).join("\n");
               autopilotePrompt = `Tu es l'assistant de l'${agenceLine}. Accueille favorablement ce candidat solvable.\nRemercier ${nom}.\nDemander les documents suivants:\n${docsList}\nProposer des créneaux de visite (entre ${heureDebut}h et ${heureFin}h en semaine, durée ${dureeVisite}min).\nSignature: Cordialement, L'équipe ${nomAgence}\n\nEmail reçu:\nExpéditeur: ${email.sender}\nSujet: ${email.subject}\nContenu: ${body}`;
             }
 
