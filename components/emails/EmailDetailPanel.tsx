@@ -91,15 +91,27 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function SolvabiliteWidget({ body }: { body: string | null | undefined }) {
+function SolvabiliteWidget({ body, prospectData }: { body: string | null | undefined; prospectData?: ProspectData | null }) {
   const [revenus, setRevenus] = useState<string>("");
   const [loyer, setLoyer] = useState<string>("");
 
   useEffect(() => {
-    const extracted = extractSolvabilite(body);
-    if (extracted.revenus) setRevenus(String(extracted.revenus));
-    if (extracted.loyer) setLoyer(String(extracted.loyer));
-  }, [body]);
+    // BUG #1 FIX : priorité aux données IA (prospect_data), fallback corps email
+    if (prospectData?.revenus_mensuels) {
+      setRevenus(String(prospectData.revenus_mensuels));
+    } else {
+      const extracted = extractSolvabilite(body);
+      setRevenus(extracted.revenus ? String(extracted.revenus) : "");
+    }
+
+    if (prospectData?.loyer_max) {
+      setLoyer(String(prospectData.loyer_max));
+    } else {
+      const extracted = extractSolvabilite(body);
+      setLoyer(extracted.loyer ? String(extracted.loyer) : "");
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [body, JSON.stringify(prospectData)]);
 
   const ratio = revenus && loyer ? parseFloat(revenus) / parseFloat(loyer) : null;
   const solvable = ratio !== null && ratio >= 3;
@@ -196,19 +208,38 @@ function DossierWidget({ body }: { body: string | null | undefined }) {
   useEffect(() => {
     if (!body) return;
     const text = body.toLowerCase();
+
+    // BUG #2 FIX : ne marquer "Reçu" QUE si le prospect mentionne EXPLICITEMENT envoyer un document
+    // Des mots comme "CDI", "salaire", "contrat" dans le corps = contexte, pas envoi de pièce jointe
+    const sentKeywords = [
+      "ci-joint", "ci joint", "pièce jointe", "pièces jointes",
+      "vous trouverez", "je vous envoie", "je vous joins", "je joins",
+      "j'envoie", "j'ai joint", "en annexe", "en pièce", "vous faire parvenir",
+      "je vous transmets", "je vous fais parvenir",
+    ];
+    const hasSentContext = sentKeywords.some(k => text.includes(k));
+
+    // Sans contexte d'envoi explicite → tous les docs restent "manquant"
+    if (!hasSentContext) return;
+
     const updates: Record<string, DocStatus> = {};
-    if (text.includes("fiche de paie") || text.includes("bulletins") || text.includes("salaire")) {
+    // Fiche de paie : seulement si explicitement nommée (pas "salaire" seul)
+    if (text.includes("fiche de paie") || text.includes("bulletin de salaire") || text.includes("bulletins de salaire")) {
       updates.fiches_paie = "recu";
     }
-    if (text.includes("contrat") || text.includes("cdi") || text.includes("cdd")) {
+    // Contrat : seulement "contrat de travail" (pas "cdi", "cdd" seuls)
+    if (text.includes("contrat de travail")) {
       updates.contrat = "recu";
     }
-    if (text.includes("avis d'imposition") || text.includes("impôt") || text.includes("fiscal")) {
+    // Avis d'imposition
+    if (text.includes("avis d'imposition") || text.includes("avis d imposition")) {
       updates.avis_imposition = "recu";
     }
-    if (text.includes("carte d'identité") || text.includes("passeport") || text.includes("identité")) {
+    // Pièce d'identité : mots précis (pas "identité" seul)
+    if (text.includes("carte d'identité") || text.includes("passeport") || text.includes("pièce d'identité")) {
       updates.piece_identite = "recu";
     }
+
     if (Object.keys(updates).length > 0) {
       setDocs((prev) => ({ ...prev, ...updates }));
     }
@@ -603,7 +634,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
               }
             }}
           />
-          <SolvabiliteWidget body={body || email.body} />
+          <SolvabiliteWidget body={body || email.body} prospectData={(email as any).prospect_data ?? null} />
           <DossierWidget body={body || email.body} />
           <DocumentsTemplateWidget />
           <BookingWidget email={email} mode={mode} onApprove={handleBookingApprove} />
