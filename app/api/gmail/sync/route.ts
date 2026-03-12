@@ -146,6 +146,9 @@ export async function POST(req: NextRequest) {
         }
         const attachments = extractAttachments(detail.payload?.parts ?? []);
 
+        // PROBLÈME 1 : thread_id pour la détection des fils de conversation
+        const threadId: string | null = detail.threadId ?? null;
+
         // ✅ FIX BUG 1 : is_archived:false explicite + ignoreDuplicates
         // → les nouveaux emails ont is_archived=false (visible dans fetchEmails)
         // → on n'écrase pas les emails déjà archivés manuellement
@@ -158,6 +161,7 @@ export async function POST(req: NextRequest) {
             received_at: receivedAt,
             is_archived: false,  // ← CRITIQUE : évite is_archived=NULL
             attachments: attachments.length > 0 ? attachments : [],
+            thread_id: threadId,
           },
           {
             onConflict: "gmail_message_id",
