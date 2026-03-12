@@ -414,28 +414,37 @@ IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
 
       if (isLocationEmail && content && content.length > 10) {
         try {
-          const prospectPrompt = `Tu es un assistant immobilier. Extrait les informations du prospect depuis cet email de candidature locative.
-Réponds UNIQUEMENT avec un JSON valide (sans markdown, sans texte autour) :
+          // BUG FIX #1+3+4 : prompt amélioré
+          // - nom extrait du CORPS de l'email (pas de l'expéditeur Gmail)
+          // - revenus_mensuels = ce que GAGNE le candidat (≠ loyer)
+          // - loyer_max = loyer du BIEN visité (≠ revenus)
+          // - garant remplace date_emmenagement
+          const prospectPrompt = `Tu es un assistant immobilier. Extrais TOUTES les informations suivantes depuis le corps de cet email de candidature locative. Si une info est absente, retourne null.
+Retourne UNIQUEMENT ce JSON valide sans aucun texte autour :
 {
-  "nom": "Prénom Nom ou null",
-  "telephone": "numéro formaté ou null",
+  "nom": string | null,
+  "telephone": string | null,
   "situation_pro": "CDI" | "CDD" | "AUTO_ENTREPRENEUR" | "ETUDIANT" | "RETRAITE" | null,
-  "revenus_mensuels": nombre entier ou null,
-  "loyer_max": nombre entier ou null,
+  "revenus_mensuels": number | null,
+  "loyer_max": number | null,
   "animaux": "OUI" | "NON" | null,
-  "nb_personnes": nombre entier ou null,
-  "date_emmenagement": "description lisible ou null"
+  "nb_personnes": number | null,
+  "garant": "OUI" | "NON" | null
 }
 
-Règles :
-- Mets null pour tout champ non explicitement mentionné dans l'email
-- revenus_mensuels et loyer_max sont des nombres sans symbole €
-- situation_pro doit être exactement une des valeurs listées ou null
-- Réponds UNIQUEMENT avec le JSON
+RÈGLES IMPORTANTES :
+- nom : extraire le NOM DU CANDIDAT depuis le corps de l'email (signature, "je suis X", "je m'appelle X", "cordialement X"). NE PAS utiliser l'adresse email ni le nom de l'expéditeur Gmail. Si plusieurs noms, prendre le signataire.
+- revenus_mensuels : salaire NET MENSUEL que GAGNE le candidat en € (ex: "je gagne 3200€/mois" → 3200, "CDI 2800€" → 2800). C'est ce que gagne la personne.
+- loyer_max : montant du LOYER DU BIEN que le candidat souhaite louer, mentionné dans l'email en € (ex: "l'appartement à 850€/mois" → 850, "loyer de 950€" → 950). C'est le prix du logement.
+- ATTENTION : ne pas inverser revenus_mensuels et loyer_max. Les revenus sont toujours > loyer dans un dossier solvable.
+- animaux : "OUI" si animaux mentionnés, "NON" si dit explicitement ne pas en avoir, null si non mentionné.
+- garant : "OUI" si le candidat mentionne avoir un garant, "NON" si dit explicitement ne pas avoir de garant, null si non mentionné.
+- situation_pro : déduire depuis le contexte (étudiant/école → ETUDIANT, freelance/indépendant → AUTO_ENTREPRENEUR, retraité → RETRAITE).
+- Retourne null pour tout champ non trouvé dans l'email.
 
-Expéditeur: ${email.sender}
 Sujet: ${email.subject}
-Email: ${content.slice(0, 1500)}`;
+Email à analyser (corps complet) :
+${content.slice(0, 2000)}`;
 
           const prospectCompletion = await openai.chat.completions.create({
             model: "gpt-4o-mini",
@@ -446,6 +455,11 @@ Email: ${content.slice(0, 1500)}`;
           const prospectMatch = prospectRaw.match(/\{[\s\S]*\}/);
           if (prospectMatch) {
             const parsed = JSON.parse(prospectMatch[0]);
+            // Normaliser le champ "nom" → peut venir de "nom" ou "nom_prenom"
+            if (!parsed.nom && parsed.nom_prenom) parsed.nom = parsed.nom_prenom;
+            delete parsed.nom_prenom;
+            // Supprimer date_emmenagement si présent (ancien prompt)
+            delete parsed.date_emmenagement;
             prospectData = parsed;
           }
         } catch (e) {

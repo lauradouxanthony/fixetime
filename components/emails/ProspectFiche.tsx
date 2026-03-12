@@ -26,16 +26,22 @@ const FIELDS: FieldMeta[] = [
       { value: "RETRAITE", label: "Retraité" },
     ]
   },
-  { key: "revenus_mensuels", label: "Revenus (€/mois)", placeholder: "Ex: 4200", type: "number" },
-  { key: "loyer_max", label: "Loyer max (€)", placeholder: "Ex: 950", type: "number" },
-  { key: "animaux", label: "Animaux", placeholder: "Choisir…", type: "select",
+  { key: "revenus_mensuels", label: "Revenus nets/mois (€)", placeholder: "Ex: 3200", type: "number" },
+  { key: "loyer_max", label: "Loyer visé (€)", placeholder: "Ex: 850", type: "number" },
+  { key: "nb_personnes", label: "Nb personnes foyer", placeholder: "Ex: 2", type: "number" },
+  { key: "animaux", label: "Animaux ?", placeholder: "Choisir…", type: "select",
     options: [
       { value: "OUI", label: "Oui" },
       { value: "NON", label: "Non" },
     ]
   },
-  { key: "nb_personnes", label: "Nb personnes", placeholder: "Ex: 2", type: "number" },
-  { key: "date_emmenagement", label: "Date emménagement", placeholder: "Ex: 1er juillet 2025", type: "text" },
+  { key: "garant", label: "Garant ?", placeholder: "Choisir…", type: "select",
+    options: [
+      { value: "OUI", label: "Oui" },
+      { value: "NON", label: "Non" },
+      { value: "A_CONFIRMER", label: "À confirmer" },
+    ]
+  },
 ];
 
 /* ─── Heuristique fallback ─── */
@@ -47,7 +53,7 @@ export interface ProspectDataLegacy {
   loyerMax: number | null;
   animaux: string | null;
   personnes: number | null;
-  dateEmmenagement: string | null;
+  garant: string | null;
 }
 
 export function extractProspect(body: string | null | undefined): ProspectData {
@@ -107,7 +113,7 @@ export function extractProspect(body: string | null | undefined): ProspectData {
 
   // Animaux
   let animaux: ProspectData["animaux"] = null;
-  if (lower.includes("pas d'animal") || lower.includes("sans animal")) animaux = "NON";
+  if (lower.includes("pas d'animal") || lower.includes("sans animal") || lower.includes("pas d'animaux")) animaux = "NON";
   else if (lower.includes("chat") || lower.includes("chien") || lower.includes("animal")) animaux = "OUI";
 
   // Nb personnes
@@ -117,19 +123,12 @@ export function extractProspect(body: string | null | undefined): ProspectData {
   else if (lower.includes("seul") || lower.includes("célibataire")) nb_personnes = 1;
   else if (lower.includes("couple")) nb_personnes = 2;
 
-  // Date
-  let date_emmenagement: string | null = null;
-  const datePatterns = [
-    /(?:dès le|à partir du?|emménager|disponible|entrée)\s+([^\n,]{3,30})/i,
-    /\b(\d{1,2}(?:er)?\s+(?:janvier|février|mars|avril|mai|juin|juillet|août|septembre|octobre|novembre|décembre)\s+\d{4})/i,
-    /\b(\d{1,2}\/\d{1,2}\/\d{2,4})\b/,
-  ];
-  for (const p of datePatterns) {
-    const m = text.match(p);
-    if (m?.[1]) { date_emmenagement = m[1].trim(); break; }
-  }
+  // Garant (remplace date_emmenagement)
+  let garant: ProspectData["garant"] = null;
+  if (lower.includes("sans garant") || lower.includes("pas de garant") || lower.includes("n'ai pas de garant")) garant = "NON";
+  else if (lower.includes("garant") || lower.includes("caution")) garant = "OUI";
 
-  return { nom, telephone, situation_pro, revenus_mensuels, loyer_max, animaux, nb_personnes, date_emmenagement };
+  return { nom, telephone, situation_pro, revenus_mensuels, loyer_max, animaux, nb_personnes, garant };
 }
 
 /* ─── Couleurs ─── */
@@ -177,6 +176,12 @@ function formatValue(key: keyof ProspectData, val: unknown): string {
   if (key === "revenus_mensuels" || key === "loyer_max") return `${Number(val).toLocaleString("fr-FR")} €`;
   if (key === "nb_personnes") return `${val} personne${Number(val) > 1 ? "s" : ""}`;
   if (key === "animaux") return val === "OUI" ? "Oui" : "Non";
+  if (key === "garant") {
+    if (val === "OUI") return "Oui ✅";
+    if (val === "NON") return "Non ❌";
+    if (val === "A_CONFIRMER") return "À confirmer";
+    return String(val);
+  }
   if (key === "situation_pro") {
     const map: Record<string, string> = {
       CDI: "CDI", CDD: "CDD", AUTO_ENTREPRENEUR: "Auto-entrepreneur",
@@ -211,22 +216,25 @@ export default function ProspectFiche({ body, prospectData, emailId, onSave, isA
   const [savedOk, setSavedOk] = useState(false);
   const [dirty, setDirty] = useState(false);
 
-  // Mettre à jour si les données IA arrivent après coup
+  // BUG #2 FIX : reset COMPLET quand on change d'email (emailId change)
+  // Cela évite que les données du prospect précédent restent affichées
   useEffect(() => {
     if (prospectData && Object.values(prospectData).some(v => v !== null && v !== undefined)) {
-      setData(d => {
-        const merged = { ...prospectData };
-        // Garder les valeurs modifiées manuellement
-        for (const [k, v] of Object.entries(d)) {
-          const key = k as keyof ProspectData;
-          if (v !== null && v !== undefined && v !== (prospectData as any)[key]) {
-            (merged as any)[key] = v;
-          }
-        }
-        return merged;
-      });
+      setData(prospectData);
+    } else {
+      setData(extractProspect(body));
     }
-  }, [JSON.stringify(prospectData)]);
+    setEditingKey(null);
+    setDirty(false);
+    setSavedOk(false);
+  }, [emailId]); // ← dépend de emailId, pas de prospectData
+
+  // Mettre à jour si les données IA arrivent après coup (même email, body chargé async)
+  useEffect(() => {
+    if (prospectData && Object.values(prospectData).some(v => v !== null && v !== undefined)) {
+      setData(prospectData);
+    }
+  }, [JSON.stringify(prospectData)]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const okCount = FIELDS.filter(f => {
     const v = data[f.key];
