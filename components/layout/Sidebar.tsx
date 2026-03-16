@@ -64,6 +64,21 @@ export function Sidebar() {
         <span className="text-xs font-medium mt-0.5" style={{ color: "rgb(79 70 229)" }}>Assistant IA</span>
       </div>
 
+      {/* Search trigger */}
+      <div className="px-3 pt-3">
+        <button
+          onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }))}
+          className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-xs transition-colors mb-2"
+          style={{ background: "rgb(241 245 249)", color: "rgb(100 116 139)" }}
+          onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.background = "rgb(226 232 240)"}
+          onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.background = "rgb(241 245 249)"}
+        >
+          <span>🔍</span>
+          <span className="flex-1 text-left">Recherche…</span>
+          <span className="text-xs px-1 py-0.5 rounded" style={{ background: "rgb(226 232 240)" }}>⌘K</span>
+        </button>
+      </div>
+
       {/* Navigation */}
       <nav className="flex-1 px-3 py-4 space-y-0.5">
         {navItems.map((item) => {

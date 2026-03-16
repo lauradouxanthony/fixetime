@@ -54,6 +54,25 @@ ALTER TABLE public.emails
 CREATE INDEX IF NOT EXISTS idx_properties_user_id ON public.properties(user_id);
 CREATE INDEX IF NOT EXISTS idx_emails_property_id ON public.emails(property_id) WHERE property_id IS NOT NULL;
 
+-- Step 6: prospect_timeline table
+CREATE TABLE IF NOT EXISTS public.prospect_timeline (
+  id UUID DEFAULT gen_random_uuid() PRIMARY KEY,
+  user_id UUID REFERENCES auth.users(id) ON DELETE CASCADE,
+  email_id UUID REFERENCES public.emails(id) ON DELETE CASCADE,
+  action_type TEXT NOT NULL,
+  description TEXT,
+  metadata JSONB DEFAULT '{}'::jsonb,
+  created_at TIMESTAMPTZ DEFAULT now() NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_prospect_timeline_email_id ON public.prospect_timeline(email_id);
+CREATE INDEX IF NOT EXISTS idx_prospect_timeline_user_id ON public.prospect_timeline(user_id);
+ALTER TABLE public.prospect_timeline ENABLE ROW LEVEL SECURITY;
+DROP POLICY IF EXISTS "Users can manage their timeline" ON public.prospect_timeline;
+CREATE POLICY "Users can manage their timeline"
+  ON public.prospect_timeline FOR ALL
+  USING (auth.uid() = user_id)
+  WITH CHECK (auth.uid() = user_id);
+
 SELECT 'Migration applied successfully' AS result;
 `;
 
@@ -109,6 +128,6 @@ export async function GET(req: Request) {
   return NextResponse.json({
     sql: MIGRATION_SQL.trim(),
     manual_url: `https://supabase.com/dashboard/project/${PROJECT_REF}/sql`,
-    columns_missing: ["title", "type", "description", "available", "required_docs", "updated_at"],
+    columns_missing: ["title", "type", "description", "available", "required_docs", "updated_at", "prospect_timeline"],
   });
 }

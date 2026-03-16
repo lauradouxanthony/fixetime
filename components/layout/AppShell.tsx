@@ -4,6 +4,7 @@ import { ReactNode, useEffect, useRef } from "react";
 import { Sidebar } from "./Sidebar";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useToast } from "@/components/ui/Toast";
+import GlobalSearch from "./GlobalSearch";
 
 /* ── Realtime watcher pour notifications autopilote ── */
 function RealtimeWatcher() {
@@ -61,6 +62,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
     <div className="h-screen flex overflow-hidden" style={{ background: "rgb(250 250 250)" }}>
       <Sidebar />
       <RealtimeWatcher />
+      <GlobalSearch />
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {children}
       </main>

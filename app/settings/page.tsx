@@ -10,10 +10,6 @@ type FaqEntry = { id: string; question: string; reponse: string };
 
 const DAYS_FR = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"];
 
-const DEFAULT_DOCS_CDI = ["Fiches de paie (3 mois)", "Contrat de travail", "Avis d'imposition", "Pièce d'identité"];
-const DEFAULT_DOCS_ETUDIANT = ["Carte étudiante", "Certificat de scolarité", "Justificatif de garant (obligatoire)", "Pièce d'identité"];
-const DEFAULT_DOCS_AUTO = ["Extrait Kbis", "Bilans (2 ans)", "Avis d'imposition", "Pièce d'identité", "Justificatif de garant"];
-
 /* ── API HELPERS ── */
 
 async function loadSection<T>(section: string, defaultVal: T): Promise<T> {
@@ -304,50 +300,127 @@ function TabLocatif() {
 }
 
 /* ── TAB 2 : DOCUMENTS PAR PROFIL ── */
-type DocsProfile = { cdi: string[]; etudiant: string[]; auto: string[] };
 
-function DocListEditor({
-  label,
-  items,
+type DocItem = { label: string; required: boolean };
+type DocProfileData = { docs: DocItem[] };
+type DocumentsSettings = {
+  CDI: DocProfileData;
+  CDD: DocProfileData;
+  ETUDIANT: DocProfileData;
+  AUTO_ENTREPRENEUR: DocProfileData;
+  RETRAITE: DocProfileData;
+};
+
+const DEFAULT_DOCS_V2: DocumentsSettings = {
+  CDI: {
+    docs: [
+      { label: "3 dernières fiches de paie", required: true },
+      { label: "Contrat de travail CDI", required: true },
+      { label: "Dernier avis d'imposition", required: true },
+      { label: "Pièce d'identité", required: true },
+    ],
+  },
+  CDD: {
+    docs: [
+      { label: "3 dernières fiches de paie", required: true },
+      { label: "Contrat de travail CDD", required: true },
+      { label: "Dernier avis d'imposition", required: true },
+      { label: "Pièce d'identité", required: true },
+      { label: "2 derniers relevés bancaires", required: true },
+    ],
+  },
+  ETUDIANT: {
+    docs: [
+      { label: "Carte étudiante", required: true },
+      { label: "Justificatif de bourse ou financement", required: true },
+      { label: "Pièce d'identité", required: true },
+      { label: "Garant obligatoire (fiches de paie + pièce d'identité)", required: true },
+    ],
+  },
+  AUTO_ENTREPRENEUR: {
+    docs: [
+      { label: "3 derniers bilans ou avis d'imposition", required: true },
+      { label: "Pièce d'identité", required: true },
+      { label: "2 derniers relevés bancaires", required: true },
+      { label: "Extrait Kbis ou SIREN", required: true },
+    ],
+  },
+  RETRAITE: {
+    docs: [
+      { label: "3 derniers relevés de pension", required: true },
+      { label: "Dernier avis d'imposition", required: true },
+      { label: "Pièce d'identité", required: true },
+    ],
+  },
+};
+
+const PROFILE_LABELS: Record<keyof DocumentsSettings, string> = {
+  CDI: "CDI / Salarié",
+  CDD: "CDD",
+  ETUDIANT: "Étudiant",
+  AUTO_ENTREPRENEUR: "Indépendant",
+  RETRAITE: "Retraité",
+};
+
+function DocProfileEditor({
+  docs,
   onChange,
 }: {
-  label: string;
-  items: string[];
-  onChange: (items: string[]) => void;
+  docs: DocItem[];
+  onChange: (docs: DocItem[]) => void;
 }) {
-  const [newItem, setNewItem] = useState("");
+  const [newLabel, setNewLabel] = useState("");
 
   const add = () => {
-    const trimmed = newItem.trim();
+    const trimmed = newLabel.trim();
     if (!trimmed) return;
-    onChange([...items, trimmed]);
-    setNewItem("");
+    onChange([...docs, { label: trimmed, required: true }]);
+    setNewLabel("");
   };
 
-  const remove = (idx: number) => onChange(items.filter((_, i) => i !== idx));
+  const remove = (idx: number) => onChange(docs.filter((_, i) => i !== idx));
+
+  const toggleRequired = (idx: number) =>
+    onChange(docs.map((d, i) => i === idx ? { ...d, required: !d.required } : d));
 
   return (
     <div className="space-y-3">
-      <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>{label}</div>
-      <div className="space-y-1.5">
-        {items.map((item, idx) => (
+      <div className="space-y-2">
+        {docs.map((doc, idx) => (
           <div
             key={idx}
             className="flex items-center gap-2 px-3 py-2 rounded-lg"
             style={{ background: "rgb(248 250 252)", border: "1px solid rgb(226 232 240)" }}
           >
-            <span className="text-xs flex-1" style={{ color: "rgb(30 41 59)" }}>{item}</span>
+            {/* Required toggle */}
+            <input
+              type="checkbox"
+              checked={doc.required}
+              onChange={() => toggleRequired(idx)}
+              className="accent-indigo-600 flex-shrink-0"
+              title="Obligatoire"
+            />
+            <span className="text-xs flex-1" style={{ color: "rgb(30 41 59)" }}>{doc.label}</span>
+            <span
+              className="text-xs flex-shrink-0 px-1.5 py-0.5 rounded"
+              style={doc.required
+                ? { background: "rgb(238 242 255)", color: "rgb(79 70 229)" }
+                : { background: "rgb(248 250 252)", color: "rgb(148 163 184)", border: "1px solid rgb(226 232 240)" }}
+            >
+              {doc.required ? "Obligatoire" : "Optionnel"}
+            </span>
             <button
               onClick={() => remove(idx)}
-              className="text-xs flex-shrink-0 transition-colors hover:opacity-70"
+              className="text-xs flex-shrink-0 w-5 h-5 flex items-center justify-center rounded transition-colors hover:opacity-70"
               style={{ color: "rgb(220 38 38)" }}
+              title="Supprimer"
             >
-              ✕
+              ×
             </button>
           </div>
         ))}
-        {items.length === 0 && (
-          <div className="text-xs text-center py-3" style={{ color: "rgb(148 163 184)" }}>
+        {docs.length === 0 && (
+          <div className="text-xs text-center py-4" style={{ color: "rgb(148 163 184)" }}>
             Aucun document configuré
           </div>
         )}
@@ -355,8 +428,8 @@ function DocListEditor({
       <div className="flex gap-2">
         <input
           type="text"
-          value={newItem}
-          onChange={(e) => setNewItem(e.target.value)}
+          value={newLabel}
+          onChange={(e) => setNewLabel(e.target.value)}
           onKeyDown={(e) => e.key === "Enter" && add()}
           placeholder="Ajouter un document…"
           className="flex-1 rounded-lg border px-3 py-1.5 text-sm focus:outline-none"
@@ -367,7 +440,7 @@ function DocListEditor({
           className="px-3 py-1.5 rounded-lg text-sm font-medium"
           style={{ background: "rgb(238 242 255)", color: "rgb(79 70 229)" }}
         >
-          + Ajouter
+          Ajouter
         </button>
       </div>
     </div>
@@ -376,24 +449,21 @@ function DocListEditor({
 
 function TabDocuments() {
   const { toast } = useToast();
-  const [docsProfiles, setDocsProfiles] = useState<DocsProfile>({
-    cdi: DEFAULT_DOCS_CDI,
-    etudiant: DEFAULT_DOCS_ETUDIANT,
-    auto: DEFAULT_DOCS_AUTO,
-  });
+  const [data, setData] = useState<DocumentsSettings>(DEFAULT_DOCS_V2);
+  const [activeProfile, setActiveProfile] = useState<keyof DocumentsSettings>("CDI");
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    loadSection<DocsProfile>("documents", { cdi: DEFAULT_DOCS_CDI, etudiant: DEFAULT_DOCS_ETUDIANT, auto: DEFAULT_DOCS_AUTO })
-      .then((d) => {
-        if (d.cdi || d.etudiant || d.auto) setDocsProfiles(d);
-      });
+    loadSection<DocumentsSettings>("documents_v2", DEFAULT_DOCS_V2).then((d) => {
+      // Basic shape check — must have CDI key
+      if (d && d.CDI) setData(d);
+    });
   }, []);
 
   const save = async () => {
     setSaving(true);
-    const ok = await saveSection("documents", docsProfiles);
+    const ok = await saveSection("documents_v2", data);
     setSaving(false);
     if (ok) {
       setSaved(true);
@@ -404,36 +474,45 @@ function TabDocuments() {
     }
   };
 
+  const profileKeys = Object.keys(PROFILE_LABELS) as (keyof DocumentsSettings)[];
+
   return (
     <div className="space-y-4">
       <Card>
         <p className="text-sm" style={{ color: "rgb(100 116 139)" }}>
-          Configurez la liste de documents demandée par l'IA selon le profil du candidat.
-          Ces listes seront mentionnées dans les brouillons automatiques.
+          Configurez la liste de documents demandée par l&apos;IA selon le profil du candidat.
+          Cochez la case pour marquer un document comme obligatoire ou optionnel.
         </p>
       </Card>
 
-      <Card title="📄 CDI / Salarié">
-        <DocListEditor
-          label="Documents requis — CDI"
-          items={docsProfiles.cdi}
-          onChange={(items) => setDocsProfiles({ ...docsProfiles, cdi: items })}
-        />
-      </Card>
+      {/* Profile tabs */}
+      <div className="flex gap-1 p-1 rounded-xl overflow-x-auto" style={{ background: "rgb(248 250 252)", border: "1px solid rgb(226 232 240)" }}>
+        {profileKeys.map((key) => (
+          <button
+            key={key}
+            onClick={() => setActiveProfile(key)}
+            className="px-3 py-2 text-xs font-medium rounded-lg transition-all whitespace-nowrap"
+            style={activeProfile === key
+              ? { background: "rgb(238 242 255)", color: "rgb(79 70 229)" }
+              : { color: "rgb(100 116 139)" }}
+          >
+            {PROFILE_LABELS[key]}
+            <span
+              className="ml-1.5 text-xs rounded-full px-1.5 py-0.5"
+              style={activeProfile === key
+                ? { background: "rgb(79 70 229)", color: "white" }
+                : { background: "rgb(226 232 240)", color: "rgb(71 85 105)" }}
+            >
+              {data[key].docs.length}
+            </span>
+          </button>
+        ))}
+      </div>
 
-      <Card title="🎓 Étudiant">
-        <DocListEditor
-          label="Documents requis — Étudiant"
-          items={docsProfiles.etudiant}
-          onChange={(items) => setDocsProfiles({ ...docsProfiles, etudiant: items })}
-        />
-      </Card>
-
-      <Card title="💼 Auto-entrepreneur">
-        <DocListEditor
-          label="Documents requis — Auto-entrepreneur"
-          items={docsProfiles.auto}
-          onChange={(items) => setDocsProfiles({ ...docsProfiles, auto: items })}
+      <Card title={`📄 ${PROFILE_LABELS[activeProfile]}`}>
+        <DocProfileEditor
+          docs={data[activeProfile].docs}
+          onChange={(docs) => setData({ ...data, [activeProfile]: { docs } })}
         />
       </Card>
 

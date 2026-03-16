@@ -42,37 +42,44 @@ export default function LoginPage() {
       >
         {/* Logo dans conteneur blanc */}
         <div className="flex items-center">
-          <div className="rounded-2xl overflow-hidden" style={{ background: "rgba(255,255,255,0.96)", padding: "10px 18px" }}>
-            <img src="/logo-fixtime.png" alt="FixTime" className="h-12 w-auto object-contain" />
+          <div className="h-16 flex items-center rounded-2xl overflow-hidden" style={{ background: "rgba(255,255,255,0.96)", padding: "10px 18px" }}>
+            <img src="/logo-fixtime.png" alt="FixTime" className="h-full w-auto object-contain" />
           </div>
         </div>
 
-        {/* Tagline B2B pro */}
+        {/* Tagline + bullets */}
         <div className="space-y-8">
           <div>
             <h1 className="text-4xl font-bold text-white leading-tight">
               Gérez vos demandes<br />locatives en pilote<br />automatique
             </h1>
-            <p className="text-indigo-200 mt-3 text-lg">
-              Triez, répondez et planifiez sans effort.
-            </p>
           </div>
 
-          {/* Features */}
+          {/* Bullet points */}
           <div className="space-y-4">
             {[
-              { icon: "⚡", title: "Triage automatique", desc: "L'IA classe vos emails entrants en temps réel" },
-              { icon: "✉️", title: "Brouillons contextuels", desc: "Réponses personnalisées selon le profil locataire" },
-              { icon: "📊", title: "Dashboard en direct", desc: "Leads actifs, RDV et taux de réponse IA" },
-            ].map((f) => (
-              <div key={f.title} className="flex items-start gap-3">
-                <span className="text-xl mt-0.5">{f.icon}</span>
-                <div>
-                  <div className="text-white font-medium text-sm">{f.title}</div>
-                  <div className="text-indigo-300 text-xs mt-0.5">{f.desc}</div>
-                </div>
+              "Répondez à tous vos prospects en 2min",
+              "Zéro email manqué, zéro visite ratée",
+              "Remplacez 10h de travail par semaine",
+            ].map((text) => (
+              <div key={text} className="flex items-start gap-3">
+                <span className="text-green-300 font-bold text-lg leading-none mt-0.5">✓</span>
+                <span className="text-white text-base leading-snug">{text}</span>
               </div>
             ))}
+          </div>
+
+          {/* Testimonial */}
+          <div
+            className="rounded-xl p-4"
+            style={{ background: "rgba(255,255,255,0.1)", borderLeft: "4px solid rgb(79 70 229)", backdropFilter: "blur(4px)" }}
+          >
+            <p className="text-white italic text-sm leading-relaxed">
+              &ldquo;FixTime nous a fait gagner 2 jours par semaine sur la gestion locative.&rdquo;
+            </p>
+            <p className="text-indigo-200 text-xs mt-2 font-medium">
+              — Marie L., Agence Immo Lyon
+            </p>
           </div>
         </div>
 
@@ -85,14 +92,14 @@ export default function LoginPage() {
         <div className="w-full max-w-sm space-y-7">
           {/* Logo couleur */}
           <div className="flex flex-col items-center gap-2">
-            <img src="/logo-fixtime.png" alt="FixTime" className="h-20 w-auto object-contain" />
+            <img src="/logo-fixtime.png" alt="FixTime" className="h-14 w-auto object-contain" />
           </div>
 
           {/* Titre */}
           <div className="text-center">
-            <h2 className="text-2xl font-bold" style={{ color: "rgb(30 41 59)" }}>Connexion</h2>
+            <h2 className="text-2xl font-bold" style={{ color: "rgb(30 41 59)" }}>Accéder à mon espace</h2>
             <p className="text-sm mt-1" style={{ color: "rgb(100 116 139)" }}>
-              Bienvenue sur votre espace de gestion.
+              Votre assistant IA vous attend.
             </p>
           </div>
 
@@ -100,7 +107,7 @@ export default function LoginPage() {
           <div className="space-y-4">
             <div>
               <label className="text-xs font-medium block mb-1.5" style={{ color: "rgb(71 85 105)" }}>
-                Adresse email professionnelle
+                Adresse email
               </label>
               <input
                 type="email"

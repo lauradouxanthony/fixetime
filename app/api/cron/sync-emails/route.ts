@@ -20,9 +20,9 @@ const RELANCE_DELAYS: Record<string, number> = {
 
 /** Messages de relance par étape */
 const RELANCE_MESSAGES: Record<string, string> = {
-  QUALIFICATION:  "Avez-vous pu rassembler les informations demandées ?",
-  VISITE_PROPOSEE: "Avez-vous pu consulter nos créneaux de visite proposés ?",
-  DOSSIER_DEMANDE: "Avez-vous pu préparer votre dossier ?",
+  QUALIFICATION:   "Avez-vous pu rassembler les informations demandées ? Nous sommes disponibles pour répondre à vos questions.",
+  VISITE_PROPOSEE: "Avez-vous pu consulter nos créneaux de visite ? N'hésitez pas à nous faire part de vos disponibilités.",
+  DOSSIER_DEMANDE: "Avez-vous pu préparer votre dossier ? Nous restons disponibles pour toute question.",
 };
 
 /**
@@ -137,8 +137,11 @@ async function processRelances(userId: string): Promise<number> {
   const pipelineMode = (rules.pipeline_mode as string) ?? "DRAFT";
   const nomAgence = ((rules.ft_locatif as Record<string, unknown>)?.nomAgence as string) ?? "l'agence";
 
-  // En mode DRAFT, on ne relance pas automatiquement
-  if (pipelineMode !== "AUTOPILOTE") return 0;
+  // Relances auto uniquement en AUTOPILOTE — en DRAFT, on log seulement
+  if (pipelineMode !== "AUTOPILOTE") {
+    console.log(`[CRON RELANCES] user=${userId} mode=DRAFT — relances non envoyées`);
+    return 0;
+  }
 
   const now = new Date();
   let count = 0;
@@ -220,6 +223,18 @@ async function processRelances(userId: string): Promise<number> {
         }
 
         await supabaseAdmin.from("emails").update(updateData).eq("id", lead.id);
+
+        // Log in prospect_timeline (BLOC 3)
+        try {
+          await supabaseAdmin.from("prospect_timeline").insert({
+            user_id: userId,
+            email_id: lead.id,
+            action_type: "RELANCE",
+            description: `Relance ${relanceCount}/2 envoyée — étape : ${etape}`,
+            metadata: { etape, relance_count: relanceCount, message: relanceText?.substring(0, 200) },
+          });
+        } catch {} // silently ignore if table doesn't exist yet
+
         count++;
         console.log(`[CRON RELANCES] Relance ${relanceCount}/2 envoyée — lead=${lead.id} etape=${etape}`);
       } catch (sendErr) {

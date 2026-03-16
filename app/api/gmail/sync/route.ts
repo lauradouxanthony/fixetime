@@ -53,6 +53,35 @@ export async function POST(req: NextRequest) {
       return fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
     };
 
+    // Try to ensure the bucket exists (idempotent — ignore error if already exists)
+    await supabaseAdmin.storage.createBucket("documents", { public: true }).catch(() => {});
+
+    async function downloadAndUploadAttachment(
+      gmailMsgId: string,
+      att: { filename: string; mimeType: string; attachmentId: string; size: number },
+      token: string
+    ): Promise<string | null> {
+      try {
+        const res = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${gmailMsgId}/attachments/${att.attachmentId}`,
+          { headers: { Authorization: `Bearer ${token}` } }
+        );
+        if (!res.ok) return null;
+        const json = await res.json();
+        if (!json.data) return null;
+        const buffer = Buffer.from(json.data, "base64url");
+        const storagePath = `${userId}/${gmailMsgId}/${att.filename}`;
+        const { error: uploadErr } = await supabaseAdmin.storage
+          .from("documents")
+          .upload(storagePath, buffer, { contentType: att.mimeType, upsert: true });
+        if (uploadErr) return null;
+        const { data: urlData } = supabaseAdmin.storage.from("documents").getPublicUrl(storagePath);
+        return urlData.publicUrl;
+      } catch {
+        return null;
+      }
+    }
+
     // ── Récupérer les gmail_message_id déjà en DB pour éviter les appels inutiles ──
     const { data: existingRows } = await supabaseAdmin
       .from("emails")
@@ -177,6 +206,17 @@ export async function POST(req: NextRequest) {
         }
         const attachments = extractAttachments(detail.payload?.parts ?? []);
 
+        // Upload attachments to Supabase Storage and enrich with storage_url
+        const enrichedAttachments: typeof attachments & { storage_url?: string }[] = [];
+        for (const att of attachments) {
+          if (att.attachmentId && att.size < 20 * 1024 * 1024) { // max 20MB
+            const storageUrl = await downloadAndUploadAttachment(msg.id, att, accessToken);
+            enrichedAttachments.push({ ...att, storage_url: storageUrl ?? undefined });
+          } else {
+            enrichedAttachments.push(att);
+          }
+        }
+
         // PROBLÈME 1 : thread_id pour la détection des fils de conversation
         const threadId: string | null = detail.threadId ?? null;
 
@@ -194,7 +234,7 @@ export async function POST(req: NextRequest) {
             body: emailBody || null,
             received_at: receivedAt,
             is_archived: false,  // ← CRITIQUE : évite is_archived=NULL
-            attachments: attachments.length > 0 ? attachments : [],
+            attachments: enrichedAttachments.length > 0 ? enrichedAttachments : [],
             thread_id: threadId,
           },
           {
