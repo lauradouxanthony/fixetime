@@ -11,6 +11,7 @@ import {
 } from "@/components/calendar/getOptimalSlotForEmail";
 import ProspectFiche from "@/components/emails/ProspectFiche";
 import type { ProspectData } from "@/types/email";
+import type { GeneratePdfParams } from "@/lib/pdf/generateProspectPdf";
 
 type PipelineMode = "DRAFT" | "AUTOPILOTE";
 
@@ -284,6 +285,28 @@ function DossierWidget({ body, attachments, gmailMessageId }: {
 
   return (
     <Section title="Dossier locataire">
+      {/* Statut dossier automatique */}
+      {(() => {
+        const receivedCount = Object.values(docs).filter(s => s === "recu").length;
+        const total = DOCS.length;
+        const status = receivedCount >= total ? "COMPLET" : receivedCount >= 2 ? "PARTIEL" : "INCOMPLET";
+        const statusStyle = status === "COMPLET"
+          ? { bg: "rgba(22,163,74,0.1)", color: "rgb(22 163 74)", label: "✅ Dossier complet" }
+          : status === "PARTIEL"
+          ? { bg: "rgba(234,88,12,0.1)", color: "rgb(234 88 12)", label: `📋 Dossier partiel (${receivedCount}/${total})` }
+          : { bg: "rgba(220,38,38,0.1)", color: "rgb(220 38 38)", label: `⚠️ Dossier incomplet (${receivedCount}/${total})` };
+        return (
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs px-2.5 py-1 rounded-full font-semibold"
+              style={{ background: statusStyle.bg, color: statusStyle.color }}>
+              {statusStyle.label}
+            </span>
+            <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+              {receivedCount}/{total} docs reçus
+            </span>
+          </div>
+        );
+      })()}
       <div className="space-y-2">
         {DOCS.map((doc) => {
           const status = docs[doc.key];
@@ -307,39 +330,50 @@ function DossierWidget({ body, attachments, gmailMessageId }: {
         })}
       </div>
 
-      {/* BLOC 3 : pièces jointes détectées */}
       {attachments && attachments.length > 0 && (
         <div className="mt-3 pt-3 border-t" style={{ borderColor: "rgb(226 232 240)" }}>
           <div className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "rgb(100 116 139)" }}>
-            📎 Pièces jointes détectées ({attachments.length})
+            📎 Pièces jointes ({attachments.length})
           </div>
           <div className="space-y-1.5">
-            {attachments.map((att, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-2 px-3 py-2 rounded-lg"
-                style={{ background: "rgba(79,70,229,0.04)", border: "1px solid rgba(79,70,229,0.12)" }}
-              >
-                <span className="text-sm">📄</span>
-                <span className="text-xs flex-1 truncate" style={{ color: "rgb(51 65 85)" }} title={att.filename}>
-                  {att.filename}
-                </span>
-                <span className="text-xs flex-shrink-0" style={{ color: "rgb(148 163 184)" }}>
-                  {att.size > 0 ? `${Math.round(att.size / 1024)} Ko` : ""}
-                </span>
-                {gmailUrl && (
-                  <a
-                    href={gmailUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs px-2 py-0.5 rounded font-medium flex-shrink-0"
-                    style={{ background: "rgba(79,70,229,0.1)", color: "rgb(79 70 229)" }}
-                  >
-                    Voir
-                  </a>
-                )}
-              </div>
-            ))}
+            {attachments.map((att, i) => {
+              const storageUrl = (att as any).storage_url ?? null;
+              const isPdf = att.mimeType?.includes("pdf");
+              const isImage = att.mimeType?.startsWith("image/");
+              const icon = isPdf ? "📄" : isImage ? "🖼️" : "📎";
+              return (
+                <div key={i} className="flex items-center gap-2 px-3 py-2 rounded-lg"
+                  style={{ background: "rgba(79,70,229,0.04)", border: "1px solid rgba(79,70,229,0.12)" }}>
+                  <span className="text-sm">{icon}</span>
+                  <span className="text-xs flex-1 truncate" style={{ color: "rgb(51 65 85)" }} title={att.filename}>
+                    {att.filename}
+                  </span>
+                  <span className="text-xs flex-shrink-0" style={{ color: "rgb(148 163 184)" }}>
+                    {att.size > 0 ? `${Math.round(att.size / 1024)} Ko` : ""}
+                  </span>
+                  {storageUrl ? (
+                    <div className="flex gap-1 flex-shrink-0">
+                      <a href={storageUrl} target="_blank" rel="noopener noreferrer"
+                        className="text-xs px-2 py-0.5 rounded font-medium"
+                        style={{ background: "rgba(79,70,229,0.1)", color: "rgb(79 70 229)" }}>
+                        Voir
+                      </a>
+                      <a href={storageUrl} download={att.filename}
+                        className="text-xs px-2 py-0.5 rounded font-medium"
+                        style={{ background: "rgba(22,163,74,0.1)", color: "rgb(22 163 74)" }}>
+                        ↓
+                      </a>
+                    </div>
+                  ) : gmailUrl ? (
+                    <a href={gmailUrl} target="_blank" rel="noopener noreferrer"
+                      className="text-xs px-2 py-0.5 rounded font-medium flex-shrink-0"
+                      style={{ background: "rgba(79,70,229,0.1)", color: "rgb(79 70 229)" }}>
+                      Voir Gmail
+                    </a>
+                  ) : null}
+                </div>
+              );
+            })}
           </div>
         </div>
       )}
@@ -539,6 +573,163 @@ function BookingWidget({
   );
 }
 
+/* ===================== BLOC 6 : NOTES INTERNES ===================== */
+
+function NotesWidget({ emailId }: { emailId: string }) {
+  const [notes, setNotes] = useState<Array<{ id: string; description: string | null; created_at: string }>>([]);
+  const [newNote, setNewNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const { toast: showToast } = useToast();
+
+  const fetchNotes = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/leads/${emailId}/timeline`);
+      const data = await res.json();
+      setNotes((data.timeline ?? []).filter((e: any) => e.action_type === "NOTE_INTERNE"));
+    } catch {}
+  }, [emailId]);
+
+  useEffect(() => { fetchNotes(); }, [fetchNotes]);
+
+  const saveNote = async () => {
+    if (!newNote.trim() || saving) return;
+    setSaving(true);
+    try {
+      const res = await fetch(`/api/leads/${emailId}/timeline`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action_type: "NOTE_INTERNE",
+          description: newNote.trim(),
+          metadata: { internal: true },
+        }),
+      });
+      if (res.ok) {
+        setNewNote("");
+        showToast("Note sauvegardée ✅", "success");
+        fetchNotes();
+      }
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
+      <div className="px-4 py-3 border-b" style={{ borderColor: "rgb(226 232 240)" }}>
+        <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>
+          📝 Notes internes
+        </div>
+      </div>
+      <div className="p-4 space-y-3">
+        {/* Existing notes */}
+        {notes.length > 0 && (
+          <div className="space-y-2">
+            {notes.map((note) => (
+              <div key={note.id} className="rounded-lg p-3" style={{ background: "rgb(250 250 252)", border: "1px solid rgb(226 232 240)" }}>
+                <div className="text-sm" style={{ color: "rgb(30 41 59)" }}>{note.description}</div>
+                <div className="text-xs mt-1" style={{ color: "rgb(148 163 184)" }}>
+                  {new Date(note.created_at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
+                  {" "}
+                  {new Date(note.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {/* New note */}
+        <textarea
+          value={newNote}
+          onChange={(e) => setNewNote(e.target.value)}
+          placeholder="Ajouter une note interne (visible uniquement par vous)…"
+          rows={3}
+          className="w-full rounded-lg border px-3 py-2 text-sm resize-none outline-none focus:ring-2 focus:ring-indigo-300"
+          style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+        />
+        <button
+          onClick={saveNote}
+          disabled={saving || !newNote.trim()}
+          className="px-4 py-2 rounded-lg text-sm font-medium text-white transition-opacity disabled:opacity-50"
+          style={{ background: "rgb(79 70 229)" }}
+        >
+          {saving ? "Sauvegarde…" : "💾 Sauvegarder"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ===================== BLOC 2 : TIMELINE ===================== */
+
+const ACTION_ICONS: Record<string, string> = {
+  EMAIL_RECU: "📧",
+  IA_REPONDU: "🤖",
+  PROSPECT_REPONDU: "📧",
+  VISITE_PROPOSEE: "📅",
+  VISITE_CONFIRMEE: "✅",
+  VISITE_EFFECTUEE: "🏠",
+  DOSSIER_DEMANDE: "📋",
+  DOCUMENT_RECU: "📎",
+  VALIDE: "🎉",
+  REFUSE: "❌",
+  RELANCE: "🔁",
+  NOTE_INTERNE: "📝",
+};
+
+function TimelineWidget({ emailId }: { emailId: string }) {
+  const [timeline, setTimeline] = useState<Array<{
+    id: string;
+    action_type: string;
+    description: string | null;
+    created_at: string;
+    metadata: Record<string, unknown>;
+  }>>([]);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    if (!emailId) return;
+    fetch(`/api/leads/${emailId}/timeline`)
+      .then(r => r.json())
+      .then(data => setTimeline(data.timeline ?? []))
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [emailId]);
+
+  if (loading) return null;
+  if (timeline.length === 0) return null;
+
+  return (
+    <div className="rounded-xl border bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
+      <div className="px-4 py-3 border-b" style={{ borderColor: "rgb(226 232 240)" }}>
+        <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>
+          🕐 Historique
+        </div>
+      </div>
+      <div className="divide-y" style={{ borderColor: "rgb(241 245 249)" }}>
+        {timeline.map((entry) => {
+          const icon = ACTION_ICONS[entry.action_type] ?? "•";
+          const date = new Date(entry.created_at);
+          const dateStr = date.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+          const timeStr = date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+          return (
+            <div key={entry.id} className="px-4 py-2.5 flex items-start gap-3">
+              <span className="text-sm flex-shrink-0 mt-0.5">{icon}</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-medium" style={{ color: "rgb(30 41 59)" }}>
+                  {entry.description ?? entry.action_type}
+                </div>
+              </div>
+              <div className="text-xs flex-shrink-0" style={{ color: "rgb(148 163 184)" }}>
+                {dateStr} {timeStr}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 /* ===================== BLOC 7 : BIEN CONCERNÉ ===================== */
 
 function BienConcerneWidget({ propertyId }: { propertyId: string | null }) {
@@ -611,6 +802,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
   const [emailSent, setEmailSent] = useState(false);
   const [sending, setSending] = useState(false);
   const [reclassifyOpen, setReclassifyOpen] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   const intention = getIntention(email);
   const decision = email?.decision ?? fallbackDecision(email);
@@ -712,6 +904,68 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
     notify("RDV créé dans Google Calendar ✅", "success");
   };
 
+  const exportPdf = async () => {
+    if (!email || exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      // Fetch timeline
+      let timeline: GeneratePdfParams["timeline"] = [];
+      try {
+        const tlRes = await fetch(`/api/leads/${email.id}/timeline`);
+        if (tlRes.ok) {
+          const tlData = await tlRes.json();
+          timeline = tlData.timeline ?? [];
+        }
+      } catch {}
+
+      // Fetch property if linked
+      let property: GeneratePdfParams["property"] = null;
+      const propertyId = (email as any).property_id ?? (email as any).prospect_data?.property_id;
+      if (propertyId) {
+        try {
+          const propRes = await fetch("/api/properties");
+          if (propRes.ok) {
+            const propData = await propRes.json();
+            const props: Array<{ id: string; title: string; rent: number; type: string | null }> =
+              propData.properties ?? [];
+            property = props.find((p) => p.id === propertyId) ?? null;
+          }
+        } catch {}
+      }
+
+      // Fetch agency name from settings
+      let agenceName = "Votre agence";
+      try {
+        const sRes = await fetch("/api/settings", { cache: "no-store" });
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          agenceName = (sData?.email_rules?.ft_locatif as any)?.nomAgence ?? agenceName;
+        }
+      } catch {}
+
+      const { generateProspectPdf } = await import("@/lib/pdf/generateProspectPdf");
+      await generateProspectPdf({
+        email: {
+          id: email.id,
+          sender: email.sender,
+          subject: email.subject,
+          received_at: email.received_at,
+          prospect_data: (email as any).prospect_data ?? null,
+          attachments: (email as any).attachments ?? [],
+        },
+        property,
+        timeline,
+        agenceName,
+      });
+      notify("PDF exporté ✅", "success");
+    } catch (e) {
+      console.error("[exportPdf] erreur:", e);
+      notify("Erreur lors de l'export PDF", "error");
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
   if (!email) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-3 p-8" style={{ color: "rgb(148 163 184)" }}>
@@ -806,6 +1060,32 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
           />
           <DocumentsTemplateWidget email={email} mode={mode} />
           <BookingWidget email={email} mode={mode} onApprove={handleBookingApprove} />
+          <TimelineWidget emailId={email.id} />
+          <NotesWidget emailId={email.id} />
+
+          {/* BLOC 4 — Export dossier PDF */}
+          <div className="flex justify-end">
+            <button
+              onClick={exportPdf}
+              disabled={exportingPdf}
+              className="flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-xl transition-opacity disabled:opacity-60"
+              style={{
+                background: "rgb(79 70 229)",
+                color: "white",
+              }}
+            >
+              {exportingPdf ? (
+                <>
+                  <span className="animate-spin">⏳</span>
+                  Génération en cours…
+                </>
+              ) : (
+                <>
+                  📄 Exporter dossier PDF
+                </>
+              )}
+            </button>
+          </div>
         </>
       )}
 
