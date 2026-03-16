@@ -41,6 +41,9 @@ export type Email = {
   body?: string | null;
   received_at: string | null;
 
+  // Bien immobilier lié (colonne top-level emails.property_id)
+  property_id?: string | null;
+
   summary?: string | null;
   classification_reason?: string | null;
 

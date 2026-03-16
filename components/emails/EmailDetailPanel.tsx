@@ -539,6 +539,65 @@ function BookingWidget({
   );
 }
 
+/* ===================== BLOC 7 : BIEN CONCERNÉ ===================== */
+
+function BienConcerneWidget({ propertyId }: { propertyId: string | null }) {
+  const [property, setProperty] = useState<{ title: string; rent: number; type: string | null } | null>(null);
+
+  useEffect(() => {
+    if (!propertyId) { setProperty(null); return; }
+    fetch("/api/properties")
+      .then((r) => r.json())
+      .then((data) => {
+        const props: Array<{ id: string; title: string; rent: number; type: string | null }> = data.properties ?? [];
+        const found = props.find((p) => p.id === propertyId);
+        setProperty(found ?? null);
+      })
+      .catch(() => {});
+  }, [propertyId]);
+
+  if (!propertyId) return null;
+
+  return (
+    <div
+      className="rounded-xl border p-3 bg-white animate-fade-in"
+      style={{ borderColor: "rgba(79,70,229,0.25)", background: "rgba(79,70,229,0.03)" }}
+    >
+      <div className="flex items-center gap-2">
+        <span className="text-sm">🏠</span>
+        <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>
+          Bien concerné
+        </div>
+      </div>
+      {property ? (
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <div>
+            <div className="text-sm font-semibold" style={{ color: "rgb(30 41 59)" }}>
+              {property.title}
+            </div>
+            {property.type && (
+              <span className="text-xs px-1.5 py-0.5 rounded mt-0.5 inline-block"
+                style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79,70,229)" }}>
+                {property.type}
+              </span>
+            )}
+          </div>
+          <div className="text-right">
+            <div className="text-base font-bold" style={{ color: "rgb(79 70 229)" }}>
+              {property.rent.toLocaleString("fr-FR")} €
+            </div>
+            <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>/mois</div>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-2 text-xs" style={{ color: "rgb(148 163 184)" }}>
+          Chargement…
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ===================== COMPONENT PRINCIPAL ===================== */
 
 export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | null; mode?: PipelineMode }) {
@@ -716,6 +775,10 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
       {/* ── Widgets LOCATION ── */}
       {intention === "LOCATION" && (
         <>
+          {/* BLOC 7 : Bien concerné */}
+          <BienConcerneWidget
+            propertyId={(email as any).property_id ?? (email as any).prospect_data?.property_id ?? null}
+          />
           <ProspectFiche
             key={email.id}
             body={body || email.body}

@@ -20,6 +20,7 @@ type Lead = {
   is_urgent: boolean | null;
   is_important: boolean | null;
   classification_reason: string | null;
+  property_id?: string | null;
   prospect_data: {
     nom?: string | null;
     situation_pro?: string | null;
@@ -30,6 +31,8 @@ type Lead = {
     etape_process?: EtapeProcess | null;
   } | null;
 };
+
+type PropertyInfo = { id: string; title: string; rent: number };
 
 const ETAPE_CONFIG: Record<EtapeProcess, { label: string; color: string; bg: string; border: string }> = {
   NEW:              { label: "Nouveau",          color: "rgb(100 116 139)", bg: "rgb(248 250 252)",  border: "rgb(226 232 240)" },
@@ -192,6 +195,12 @@ export default function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
   const [showRefused, setShowRefused] = useState(false);
+  const [viewMode, setViewMode] = useState<"kanban" | "list">("kanban");
+  const [properties, setProperties] = useState<PropertyInfo[]>([]);
+  // Filtres vue liste
+  const [filterEtape, setFilterEtape] = useState<EtapeProcess | "">("");
+  const [filterProperty, setFilterProperty] = useState<string>("");
+  const [filterSolvable, setFilterSolvable] = useState<"" | "oui" | "non">("");
   const { toast } = useToast();
 
   const fetchLeads = useCallback(async () => {
@@ -201,16 +210,28 @@ export default function LeadsPage() {
     const since = new Date();
     since.setDate(since.getDate() - 30);
 
+    // Tenter de récupérer property_id (graceful si colonne manquante)
+    let selectFields = "id, sender, subject, summary, body, received_at, category, is_urgent, is_important, classification_reason, prospect_data";
     const { data } = await supabase
       .from("emails")
-      .select("id, sender, subject, summary, body, received_at, category, is_urgent, is_important, classification_reason, prospect_data")
+      .select(selectFields)
       .eq("user_id", user.id)
       .eq("category", "LOCATION")
       .gte("received_at", since.toISOString())
       .order("received_at", { ascending: false })
       .limit(200);
 
-    if (data) setLeads(data as Lead[]);
+    if (data) setLeads(data as unknown as Lead[]);
+
+    // Charger les biens pour les filtres
+    try {
+      const propsRes = await fetch("/api/properties");
+      if (propsRes.ok) {
+        const propsData = await propsRes.json();
+        setProperties((propsData.properties ?? []).map((p: any) => ({ id: p.id, title: p.title, rent: p.rent })));
+      }
+    } catch { /* graceful */ }
+
     setLoading(false);
   }, []);
 
@@ -263,13 +284,34 @@ export default function LeadsPage() {
   const visiteProposeCount = stageLeads("VISITE_PROPOSEE").length + stageLeads("VISITE_CONFIRMEE").length;
   const dossierCount = stageLeads("DOSSIER_DEMANDE").length + stageLeads("DOSSIER_RECU").length;
 
+  // Vue liste avec filtres
+  const getPropertyTitle = (propertyId: string | null | undefined) => {
+    if (!propertyId) return null;
+    return properties.find(p => p.id === propertyId)?.title ?? null;
+  };
+
+  const filteredListLeads = leads.filter(l => {
+    if (filterEtape && getEtapeFromLead(l) !== filterEtape) return false;
+    if (filterProperty && (l.property_id ?? "") !== filterProperty) return false;
+    if (filterSolvable) {
+      const pd = l.prospect_data;
+      const revenus = pd?.revenus_mensuels ?? null;
+      const loyer = pd?.loyer_max ?? null;
+      if (!revenus || !loyer) return false;
+      const solvable = revenus / loyer >= 3;
+      if (filterSolvable === "oui" && !solvable) return false;
+      if (filterSolvable === "non" && solvable) return false;
+    }
+    return true;
+  });
+
   return (
     <AppShell>
       <div className="h-full flex flex-col" style={{ background: "rgb(250 250 250)" }}>
 
         {/* Header */}
         <div className="px-6 py-4 border-b bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
-          <div className="flex items-center justify-between">
+          <div className="flex items-center justify-between gap-4">
             <div>
               <h1 className="text-lg font-semibold" style={{ color: "rgb(30 41 59)" }}>Prospects</h1>
               <p className="text-xs mt-0.5" style={{ color: "rgb(148 163 184)" }}>
@@ -278,7 +320,7 @@ export default function LeadsPage() {
                 {staleCount > 0 && <span className="ml-2 font-medium" style={{ color: "rgb(220 38 38)" }}>⏰ {staleCount} sans réponse &gt;48h</span>}
               </p>
             </div>
-            <div className="flex gap-4">
+            <div className="flex items-center gap-3">
               {visiteProposeCount > 0 && (
                 <div className="text-center">
                   <div className="text-lg font-bold" style={{ color: "rgb(2 132 199)" }}>{visiteProposeCount}</div>
@@ -291,6 +333,22 @@ export default function LeadsPage() {
                   <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Dossiers</div>
                 </div>
               )}
+              {/* Toggle Kanban / Liste */}
+              <div className="flex rounded-lg overflow-hidden border" style={{ borderColor: "rgb(226 232 240)" }}>
+                {(["kanban", "list"] as const).map((mode) => (
+                  <button
+                    key={mode}
+                    onClick={() => setViewMode(mode)}
+                    className="px-3 py-1.5 text-xs font-medium transition-colors"
+                    style={viewMode === mode
+                      ? { background: "rgb(79 70 229)", color: "white" }
+                      : { background: "white", color: "rgb(100 116 139)" }
+                    }
+                  >
+                    {mode === "kanban" ? "⊞ Kanban" : "☰ Liste"}
+                  </button>
+                ))}
+              </div>
               <button
                 onClick={() => setShowRefused(v => !v)}
                 className="text-xs px-3 py-1.5 rounded-lg"
@@ -300,10 +358,212 @@ export default function LeadsPage() {
               </button>
             </div>
           </div>
+
+          {/* Filtres (vue liste seulement) */}
+          {viewMode === "list" && (
+            <div className="flex items-center gap-3 mt-3 pt-3 border-t" style={{ borderColor: "rgb(241 245 249)" }}>
+              <span className="text-xs font-medium" style={{ color: "rgb(100 116 139)" }}>Filtrer :</span>
+              <select
+                value={filterEtape}
+                onChange={(e) => setFilterEtape(e.target.value as EtapeProcess | "")}
+                className="text-xs border rounded-lg px-2.5 py-1.5 outline-none"
+                style={{ borderColor: "rgb(226 232 240)", color: "rgb(71 85 105)" }}
+              >
+                <option value="">Toutes les étapes</option>
+                {(Object.keys(ETAPE_CONFIG) as EtapeProcess[]).map(e => (
+                  <option key={e} value={e}>{ETAPE_CONFIG[e].label}</option>
+                ))}
+              </select>
+              {properties.length > 0 && (
+                <select
+                  value={filterProperty}
+                  onChange={(e) => setFilterProperty(e.target.value)}
+                  className="text-xs border rounded-lg px-2.5 py-1.5 outline-none"
+                  style={{ borderColor: "rgb(226 232 240)", color: "rgb(71 85 105)" }}
+                >
+                  <option value="">Tous les biens</option>
+                  {properties.map(p => (
+                    <option key={p.id} value={p.id}>{p.title}</option>
+                  ))}
+                </select>
+              )}
+              <select
+                value={filterSolvable}
+                onChange={(e) => setFilterSolvable(e.target.value as "" | "oui" | "non")}
+                className="text-xs border rounded-lg px-2.5 py-1.5 outline-none"
+                style={{ borderColor: "rgb(226 232 240)", color: "rgb(71 85 105)" }}
+              >
+                <option value="">Solvabilité : tous</option>
+                <option value="oui">✓ Solvables</option>
+                <option value="non">✗ Non solvables</option>
+              </select>
+              {(filterEtape || filterProperty || filterSolvable) && (
+                <button
+                  onClick={() => { setFilterEtape(""); setFilterProperty(""); setFilterSolvable(""); }}
+                  className="text-xs px-2 py-1 rounded-lg"
+                  style={{ color: "rgb(220 38 38)", background: "rgba(220,38,38,0.08)" }}
+                >
+                  × Effacer
+                </button>
+              )}
+              <span className="text-xs ml-auto" style={{ color: "rgb(148 163 184)" }}>
+                {filteredListLeads.length} résultat{filteredListLeads.length > 1 ? "s" : ""}
+              </span>
+            </div>
+          )}
         </div>
 
-        {/* Kanban */}
-        <div className="flex-1 overflow-x-auto p-6">
+        {/* ── Vue Liste ── */}
+        {viewMode === "list" && (
+          <div className="flex-1 overflow-y-auto p-6">
+            {loading ? (
+              <div className="text-sm" style={{ color: "rgb(148 163 184)" }}>Chargement…</div>
+            ) : filteredListLeads.length === 0 ? (
+              <div className="text-center py-16" style={{ color: "rgb(148 163 184)" }}>
+                <div className="text-3xl mb-2">🔍</div>
+                <div className="text-sm">Aucun prospect trouvé</div>
+              </div>
+            ) : (
+              <div className="bg-white rounded-xl border overflow-hidden" style={{ borderColor: "rgb(226 232 240)" }}>
+                <table className="w-full text-sm">
+                  <thead>
+                    <tr style={{ background: "rgb(248 250 252)", borderBottom: "1px solid rgb(226 232 240)" }}>
+                      {["Prospect", "Bien", "Revenus / Loyer / Ratio", "Étape", "Activité", "Actions"].map(h => (
+                        <th key={h} className="text-left text-xs font-semibold px-4 py-3" style={{ color: "rgb(100 116 139)" }}>
+                          {h}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {filteredListLeads.map((lead, i) => {
+                      const etape = getEtapeFromLead(lead);
+                      const config = ETAPE_CONFIG[etape];
+                      const pd = lead.prospect_data;
+                      const nom = pd?.nom || (lead.sender || "Inconnu").replace(/<.*>/, "").trim();
+                      const revenus = pd?.revenus_mensuels ?? null;
+                      const loyer = pd?.loyer_max ?? null;
+                      const ratio = revenus && loyer ? (revenus / loyer).toFixed(1) : null;
+                      const solvable = ratio ? parseFloat(ratio) >= 3 : null;
+                      const propertyTitle = getPropertyTitle(lead.property_id);
+                      const hours = hoursAgo(lead.received_at);
+                      const spLabels: Record<string, string> = { CDI: "CDI", CDD: "CDD", AUTO_ENTREPRENEUR: "Auto.", ETUDIANT: "Étudiant", RETRAITE: "Retraité" };
+                      return (
+                        <tr
+                          key={lead.id}
+                          style={{
+                            borderBottom: i < filteredListLeads.length - 1 ? "1px solid rgb(241 245 249)" : undefined,
+                            background: "white",
+                          }}
+                        >
+                          {/* Prospect */}
+                          <td className="px-4 py-3">
+                            <div className="font-medium" style={{ color: "rgb(30 41 59)" }}>{nom}</div>
+                            {pd?.situation_pro && (
+                              <div className="text-xs mt-0.5" style={{ color: "rgb(148 163 184)" }}>
+                                {spLabels[pd.situation_pro] ?? pd.situation_pro}
+                              </div>
+                            )}
+                            {pd?.telephone && (
+                              <div className="text-xs mt-0.5" style={{ color: "rgb(148 163 184)" }}>
+                                📞 {pd.telephone}
+                              </div>
+                            )}
+                          </td>
+
+                          {/* Bien */}
+                          <td className="px-4 py-3">
+                            {propertyTitle ? (
+                              <div className="text-xs font-medium" style={{ color: "rgb(79 70 229)" }}>
+                                🏠 {propertyTitle}
+                              </div>
+                            ) : (
+                              <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>—</div>
+                            )}
+                          </td>
+
+                          {/* Revenus / Loyer / Ratio */}
+                          <td className="px-4 py-3">
+                            {revenus || loyer ? (
+                              <div className="space-y-0.5">
+                                {revenus && <div className="text-xs" style={{ color: "rgb(71 85 105)" }}>{revenus.toLocaleString("fr-FR")} €/mois</div>}
+                                {loyer && <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Loyer : {loyer.toLocaleString("fr-FR")} €</div>}
+                                {ratio && (
+                                  <span className="text-xs px-1.5 py-0.5 rounded-full font-medium"
+                                    style={{
+                                      background: solvable ? "rgba(22,163,74,0.1)" : "rgba(220,38,38,0.1)",
+                                      color: solvable ? "rgb(22 163 74)" : "rgb(220 38 38)",
+                                    }}>
+                                    {ratio}x {solvable ? "✓" : "✗"}
+                                  </span>
+                                )}
+                              </div>
+                            ) : (
+                              <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>—</span>
+                            )}
+                          </td>
+
+                          {/* Étape */}
+                          <td className="px-4 py-3">
+                            <span className="text-xs px-2 py-1 rounded-full font-medium"
+                              style={{ background: config.bg, color: config.color, border: `1px solid ${config.border}` }}>
+                              {config.label}
+                            </span>
+                          </td>
+
+                          {/* Activité */}
+                          <td className="px-4 py-3">
+                            {lead.received_at ? (
+                              <div className="text-xs" style={{ color: hours && hours > 48 ? "rgb(220 38 38)" : "rgb(100 116 139)" }}>
+                                {hours !== null && hours > 24
+                                  ? `Il y a ${Math.floor(hours / 24)}j`
+                                  : hours !== null
+                                  ? `Il y a ${hours}h`
+                                  : new Date(lead.received_at).toLocaleDateString("fr-FR")}
+                              </div>
+                            ) : <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>—</span>}
+                          </td>
+
+                          {/* Actions */}
+                          <td className="px-4 py-3">
+                            <div className="flex gap-1.5">
+                              <a
+                                href={`/emails?id=${lead.id}`}
+                                className="text-xs px-2.5 py-1.5 rounded-lg font-medium"
+                                style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}
+                              >
+                                Voir
+                              </a>
+                              {etape === "VISITE_CONFIRMEE" && (
+                                <button
+                                  onClick={() => handleVisiteEffectuee(lead.id)}
+                                  className="text-xs px-2.5 py-1.5 rounded-lg font-medium"
+                                  style={{ background: "rgba(22,163,74,0.1)", color: "rgb(22 163 74)" }}
+                                >
+                                  ✅ Visite
+                                </button>
+                              )}
+                              <button
+                                onClick={() => handleMoveToStage(lead.id, "REFUSE")}
+                                className="text-xs px-2.5 py-1.5 rounded-lg"
+                                style={{ background: "rgba(220,38,38,0.06)", color: "rgb(220 38 38)" }}
+                              >
+                                ✗
+                              </button>
+                            </div>
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        )}
+
+        {/* ── Vue Kanban ── */}
+        <div className={`flex-1 overflow-x-auto p-6 ${viewMode !== "kanban" ? "hidden" : ""}`}>
           {loading ? (
             <div className="flex gap-4">
               {VISIBLE_STAGES.slice(0, 4).map(s => (

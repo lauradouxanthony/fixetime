@@ -19,10 +19,21 @@ import { useToast } from "@/components/ui/Toast";
 
 type DashboardData = {
   metrics: {
+    // Legacy
     leadsActifs: number;
     rdvSemaine: number;
     dossierComplets: number;
     tauxReponseIA: number;
+    // BLOC 6 — ROI KPIs
+    emailsRecusMois: number;
+    leadsQualifies: number;
+    visitesConfirmees: number;
+    tauxEmailVisite: number;
+    // Métriques IA
+    tempsMoyenReponseIA: number;
+    relancesAuto: number;
+    heuresEconomisees: number;
+    emailsTraitesIA: number;
   };
   intentions: { LOCATION: number; INFO: number; HORS_SUJET: number };
   graph30: { label: string; date: string; leads: number; rdv: number }[];
@@ -176,6 +187,9 @@ export default function DashboardClient() {
               </div>
             ))}
           </div>
+          <div className="rounded-xl border bg-white p-4" style={{ borderColor: "rgb(226 232 240)" }}>
+            <div className="h-16 animate-pulse rounded-lg" style={{ background: "rgb(241 245 249)" }} />
+          </div>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2 rounded-xl border bg-white p-4" style={{ borderColor: "rgb(226 232 240)" }}>
               <div className="h-48 animate-pulse rounded-lg" style={{ background: "rgb(241 245 249)" }} />
@@ -232,37 +246,102 @@ export default function DashboardClient() {
           </Link>
         </div>
 
-        {/* ── MÉTRIQUES ── */}
+        {/* ── LIGNE 1 : KPIs ROI ── */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 stagger-children">
           <MetricCard
-            label="Leads actifs"
-            target={metrics.leadsActifs}
-            icon="🏠"
+            label="Emails reçus ce mois"
+            target={metrics.emailsRecusMois}
+            icon="📬"
             accent="rgb(79 70 229)"
-            sub="LOCATION 30j"
+            sub="tous types confondus"
           />
           <MetricCard
-            label="RDV cette semaine"
-            target={metrics.rdvSemaine}
-            icon="📅"
+            label="Leads qualifiés"
+            target={metrics.leadsQualifies}
+            icon="✅"
             accent="rgb(22 163 74)"
-            sub="7 prochains jours"
+            sub="situation + revenus renseignés"
           />
           <MetricCard
-            label="Dossiers complets"
-            target={metrics.dossierComplets}
-            icon="📋"
+            label="Visites confirmées"
+            target={metrics.visitesConfirmees}
+            icon="🏠"
             accent="rgb(2 132 199)"
-            sub="docs détectés"
+            sub="30 derniers jours"
           />
           <MetricCard
-            label="Taux réponse IA"
-            target={metrics.tauxReponseIA}
+            label="Taux email → visite"
+            target={metrics.tauxEmailVisite}
             unit="%"
-            icon="🤖"
+            icon="📈"
             accent="rgb(234 88 12)"
-            sub="emails traités"
+            sub={`sur ${metrics.emailsRecusMois > 0 ? metrics.emailsRecusMois : "—"} emails LOCATION`}
           />
+        </div>
+
+        {/* ── LIGNE 2 : Métriques IA ── */}
+        <div
+          className="rounded-xl border p-4 bg-white animate-fade-in"
+          style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}
+        >
+          <div className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: "rgb(100 116 139)" }}>
+            🤖 Performance IA
+          </div>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+            {/* Temps moyen réponse */}
+            <div className="flex items-center gap-3">
+              <div
+                className="w-10 h-10 rounded-xl flex items-center justify-center text-lg flex-shrink-0"
+                style={{ background: "rgba(79,70,229,0.1)" }}
+              >
+                ⚡
+              </div>
+              <div>
+                <div className="text-xs" style={{ color: "rgb(100 116 139)" }}>Temps moyen réponse IA</div>
+                <div className="text-xl font-bold tabular-nums" style={{ color: "rgb(79 70 229)" }}>
+                  {metrics.tempsMoyenReponseIA}
+                  <span className="text-sm font-medium ml-1" style={{ color: "rgb(100 116 139)" }}>min</span>
+                </div>
+                <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>cron toutes les 5 min</div>
+              </div>
+            </div>
+            {/* Relances auto */}
+            <div className="flex items-center gap-3">
+              <div
+                className="w-10 h-10 rounded-xl flex items-center justify-center text-lg flex-shrink-0"
+                style={{ background: "rgba(22,163,74,0.1)" }}
+              >
+                🔁
+              </div>
+              <div>
+                <div className="text-xs" style={{ color: "rgb(100 116 139)" }}>Relances automatiques</div>
+                <div className="text-xl font-bold tabular-nums" style={{ color: "rgb(22 163 74)" }}>
+                  {metrics.relancesAuto}
+                  <span className="text-sm font-medium ml-1" style={{ color: "rgb(100 116 139)" }}>envoyées</span>
+                </div>
+                <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>30 derniers jours</div>
+              </div>
+            </div>
+            {/* Heures économisées */}
+            <div className="flex items-center gap-3">
+              <div
+                className="w-10 h-10 rounded-xl flex items-center justify-center text-lg flex-shrink-0"
+                style={{ background: "rgba(234,88,12,0.1)" }}
+              >
+                🕐
+              </div>
+              <div>
+                <div className="text-xs" style={{ color: "rgb(100 116 139)" }}>Heures économisées</div>
+                <div className="text-xl font-bold tabular-nums" style={{ color: "rgb(234 88 12)" }}>
+                  {metrics.heuresEconomisees}
+                  <span className="text-sm font-medium ml-1" style={{ color: "rgb(100 116 139)" }}>h</span>
+                </div>
+                <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+                  {metrics.emailsTraitesIA} emails traités × 5 min
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
 
         {/* ── GRAPHIQUE + DONUT ── */}

@@ -36,24 +36,28 @@ export async function GET() {
   const since7d = daysAgo(7);
   const weekEnd = daysFromNow(7);
 
-  // ── MÉTRIQUES PRINCIPALES ──────────────────────────────────────────
+  // ── TOUTES LES DONNÉES EN PARALLÈLE ────────────────────────────────
   const [
-    { count: leadsActifs },
+    { count: totalEmailsMois },
     { count: rdvSemaine },
-    { count: totalReplies },
-    { count: totalNonHorsSupjet },
+    { count: visitesConfirmees },
+    { count: relancesAuto },
+    { data: locationEmails30d },
     { data: allEmails30d },
+    { data: intentions7d },
+    { data: rdvAll30d },
+    { data: actionsRequises },
+    { data: prochainRdv },
+    { data: recentActivity },
   ] = await Promise.all([
-    // Leads actifs : emails LOCATION 30j non ignorés
+    // 1. Emails reçus ce mois (tous)
     supabase
       .from("emails")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
-      .eq("category", "LOCATION")
-      .neq("decision", "ignorer")
       .gte("received_at", since30d),
 
-    // RDV semaine : events dans les 7 prochains jours
+    // 2. RDV semaine : events dans les 7 prochains jours
     supabase
       .from("calendar_events")
       .select("id", { count: "exact", head: true })
@@ -61,32 +65,139 @@ export async function GET() {
       .gte("start_time", todayStart())
       .lte("start_time", weekEnd),
 
-    // Emails avec ai_reply (30j, non HORS_SUJET) — pour taux réponse IA
+    // 3. Visites confirmées ce mois (etape_process = VISITE_CONFIRMEE)
     supabase
       .from("emails")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
-      .not("ai_reply", "is", null)
-      .neq("category", "HORS_SUJET")
-      .gte("received_at", since30d),
+      .eq("category", "LOCATION")
+      .gte("received_at", since30d)
+      .filter("prospect_data->>etape_process", "eq", "VISITE_CONFIRMEE"),
 
-    // Total emails non-HORS_SUJET (30j)
+    // 4. Relances auto envoyées (30j)
     supabase
       .from("emails")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
-      .neq("category", "HORS_SUJET")
-      .gte("received_at", since30d),
+      .gte("received_at", since30d)
+      .gt("relance_count", 0)
+      .not("last_relance_at", "is", null),
 
-    // Tous les emails LOCATION 30j pour heuristique dossiers complets
+    // 5. Emails LOCATION 30j avec prospect_data (pour leads qualifiés + graph)
     supabase
       .from("emails")
-      .select("body, summary, ai_reply")
+      .select("received_at, prospect_data, ai_reply, created_at")
+      .eq("user_id", userId)
+      .eq("category", "LOCATION")
+      .gte("received_at", since30d)
+      .order("received_at", { ascending: true })
+      .limit(300),
+
+    // 6. Emails LOCATION 30j (pour heuristique dossiers + temps réponse + leads qualifiés)
+    supabase
+      .from("emails")
+      .select("id, body, summary, ai_reply, received_at, created_at, prospect_data")
       .eq("user_id", userId)
       .eq("category", "LOCATION")
       .gte("received_at", since30d)
       .limit(200),
+
+    // 7. Répartition intentions 7j
+    supabase
+      .from("emails")
+      .select("category")
+      .eq("user_id", userId)
+      .gte("received_at", since7d)
+      .not("category", "is", null),
+
+    // 8. RDV 30j (graph)
+    supabase
+      .from("calendar_events")
+      .select("created_at")
+      .eq("user_id", userId)
+      .gte("created_at", since30d)
+      .order("created_at", { ascending: true }),
+
+    // 9. Actions requises (emails LOCATION sans réponse IA)
+    supabase
+      .from("emails")
+      .select("id, sender, subject, received_at, is_urgent, summary")
+      .eq("user_id", userId)
+      .eq("category", "LOCATION")
+      .is("ai_reply", null)
+      .neq("decision", "ignorer")
+      .order("is_urgent", { ascending: false })
+      .order("received_at", { ascending: true })
+      .limit(5),
+
+    // 10. Prochains RDV
+    supabase
+      .from("calendar_events")
+      .select("id, title, start_time, end_time")
+      .eq("user_id", userId)
+      .gte("start_time", todayStart())
+      .lte("start_time", weekEnd)
+      .order("start_time", { ascending: true })
+      .limit(5),
+
+    // 11. Activité récente
+    supabase
+      .from("emails")
+      .select("id, sender, subject, decision, category, received_at, is_urgent")
+      .eq("user_id", userId)
+      .not("decision", "is", null)
+      .order("received_at", { ascending: false })
+      .limit(5),
   ]);
+
+  // ── CALCULS MÉTRIQUES ROI ─────────────────────────────────────────
+
+  // Leads qualifiés = emails LOCATION avec situation + revenus renseignés
+  let leadsQualifies = 0;
+  let emailsTraites = 0;
+  let totalReponseMsSum = 0;
+  let reponseMsCount = 0;
+
+  for (const e of allEmails30d ?? []) {
+    const pd = e.prospect_data as Record<string, unknown> | null;
+    if (pd?.situation_pro && pd?.revenus_mensuels) {
+      leadsQualifies++;
+    }
+    if (e.ai_reply) {
+      emailsTraites++;
+      // Temps moyen réponse IA : différence entre received_at et created_at (approximation)
+      // Note : on n'a pas le timestamp exact d'envoi de l'ai_reply
+      // Utiliser received_at comme base, l'analyse se fait généralement dans les 5 min
+    }
+  }
+
+  // Emails LOCATION avec leads actifs
+  const leadsActifs = (locationEmails30d ?? []).filter(e => {
+    const pd = e.prospect_data as Record<string, unknown> | null;
+    const etape = pd?.etape_process as string | null;
+    return etape && etape !== "REFUSE" && etape !== "VALIDE";
+  }).length;
+
+  // Taux email → visite (%)
+  const emailsLocationTotal = (locationEmails30d ?? []).length;
+  const visitesCount = visitesConfirmees ?? 0;
+  const tauxEmailVisite = emailsLocationTotal > 0
+    ? Math.round((visitesCount / emailsLocationTotal) * 100)
+    : 0;
+
+  // Taux réponse IA
+  const totalNonHorsSupjet = (allEmails30d ?? []).length;
+  const totalReplies = (allEmails30d ?? []).filter(e => e.ai_reply).length;
+  const tauxReponseIA = totalNonHorsSupjet > 0
+    ? Math.min(100, Math.round((totalReplies / totalNonHorsSupjet) * 100))
+    : 0;
+
+  // Heures économisées : (emails traités par IA × 5 min) / 60
+  const heuresEconomisees = Math.round((emailsTraites * 5) / 60 * 10) / 10;
+
+  // Temps moyen réponse IA (estimation : dans les 5 min du cron)
+  // Valeur indicative car on n'a pas le timestamp exact d'envoi
+  const tempsMoyenReponse = 5; // minutes (cron toutes les 5 min)
 
   // Dossiers complets (heuristique : body mentionne ≥ 3 types de docs)
   let dossierComplets = 0;
@@ -101,41 +212,14 @@ export async function GET() {
     if (score >= 3) dossierComplets++;
   }
 
-  // Taux réponse IA (%)
-  const total = totalNonHorsSupjet ?? 0;
-  const tauxReponseIA = total > 0 ? Math.min(100, Math.round(((totalReplies ?? 0) / total) * 100)) : 0;
-
-  // Répartition intentions (7j)
-  const { data: intentions7d } = await supabase
-    .from("emails")
-    .select("category")
-    .eq("user_id", userId)
-    .gte("received_at", since7d)
-    .not("category", "is", null);
-
+  // Répartition intentions
   const intentionCounts = { LOCATION: 0, INFO: 0, HORS_SUJET: 0 };
   for (const e of intentions7d ?? []) {
     const cat = (e.category || "").toUpperCase();
     if (cat in intentionCounts) intentionCounts[cat as keyof typeof intentionCounts]++;
   }
 
-  // ── GRAPHIQUE LOCATION 30 JOURS ────────────────────────────────────
-  const { data: locationEmails30d } = await supabase
-    .from("emails")
-    .select("received_at")
-    .eq("user_id", userId)
-    .eq("category", "LOCATION")
-    .gte("received_at", since30d)
-    .order("received_at", { ascending: true });
-
-  const { data: rdvAll30d } = await supabase
-    .from("calendar_events")
-    .select("created_at")
-    .eq("user_id", userId)
-    .gte("created_at", since30d)
-    .order("created_at", { ascending: true });
-
-  // Générer 30 jours (par semaine pour la lisibilité — on prend un point tous les 3 jours)
+  // ── GRAPHIQUE 30 JOURS ─────────────────────────────────────────────
   const graph30: { label: string; date: string; leads: number; rdv: number }[] = [];
   for (let i = 29; i >= 0; i--) {
     const d = new Date();
@@ -163,44 +247,23 @@ export async function GET() {
     if (day) day.rdv++;
   }
 
-  // ── ACTIONS REQUISES ─────────────────────────────────────────────
-  // Emails LOCATION sans réponse IA, par urgence
-  const { data: actionsRequises } = await supabase
-    .from("emails")
-    .select("id, sender, subject, received_at, is_urgent, summary")
-    .eq("user_id", userId)
-    .eq("category", "LOCATION")
-    .is("ai_reply", null)
-    .neq("decision", "ignorer")
-    .order("is_urgent", { ascending: false })
-    .order("received_at", { ascending: true })
-    .limit(5);
-
-  // ── PROCHAINS RDV (7 prochains jours) ────────────────────────────
-  const { data: prochainRdv } = await supabase
-    .from("calendar_events")
-    .select("id, title, start_time, end_time")
-    .eq("user_id", userId)
-    .gte("start_time", todayStart())
-    .lte("start_time", weekEnd)
-    .order("start_time", { ascending: true })
-    .limit(5);
-
-  // ── ACTIVITÉ RÉCENTE (7j) ─────────────────────────────────────────
-  const { data: recentActivity } = await supabase
-    .from("emails")
-    .select("id, sender, subject, decision, category, received_at, is_urgent")
-    .eq("user_id", userId)
-    .not("decision", "is", null)
-    .order("received_at", { ascending: false })
-    .limit(5);
-
   return NextResponse.json({
     metrics: {
-      leadsActifs: leadsActifs ?? 0,
+      // Legacy (compat)
+      leadsActifs,
       rdvSemaine: rdvSemaine ?? 0,
       dossierComplets,
       tauxReponseIA,
+      // BLOC 6 : nouveaux KPIs ROI
+      emailsRecusMois: totalEmailsMois ?? 0,
+      leadsQualifies,
+      visitesConfirmees: visitesCount,
+      tauxEmailVisite,
+      // Métriques IA
+      tempsMoyenReponseIA: tempsMoyenReponse,
+      relancesAuto: relancesAuto ?? 0,
+      heuresEconomisees,
+      emailsTraitesIA: totalReplies,
     },
     intentions: intentionCounts,
     graph30,

@@ -71,7 +71,7 @@ export default function PipelinePage() {
 
     let query = supabase
       .from("emails")
-      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply, prospect_data")
+      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply, prospect_data, property_id")
       .eq("user_id", user.id)
       .eq("is_archived", false)
       .order("received_at", { ascending: false });
@@ -104,7 +104,7 @@ export default function PipelinePage() {
 
     let query = supabase
       .from("emails")
-      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply, prospect_data")
+      .select("id, gmail_message_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply, prospect_data, property_id")
       .eq("user_id", user.id)
       .eq("is_archived", false)
       .order("received_at", { ascending: false });

@@ -28,6 +28,88 @@ function isInternalCron(req: Request) {
   return key === expected;
 }
 
+// ── Correction date RDV : prochain jour de la semaine mentionné ──────────────
+const JOURS_SEMAINE: Record<string, number> = {
+  lundi: 1, mardi: 2, mercredi: 3, jeudi: 4,
+  vendredi: 5, samedi: 6, dimanche: 0,
+};
+
+function extractJourFromBody(body: string): { jour: string | null; heure: string | null } {
+  // Chercher le nom du jour (case insensitive)
+  const jourMatch = body.match(/\b(lundi|mardi|mercredi|jeudi|vendredi|samedi|dimanche)\b/i);
+  // Chercher l'heure au format 14h, 14h30, 14:00
+  const heureMatch = body.match(/\b(\d{1,2}h\d{0,2}|\d{1,2}:\d{2})\b/i);
+  return {
+    jour: jourMatch ? jourMatch[1].toLowerCase() : null,
+    heure: heureMatch ? heureMatch[1] : null,
+  };
+}
+
+/**
+ * Calcule la prochaine occurrence d'un jour de la semaine.
+ * Ex: si aujourd'hui=lundi et on demande "mercredi" → +2 jours
+ * Si aujourd'hui=mercredi et on demande "mercredi" → +7 jours (prochain, pas aujourd'hui)
+ */
+function prochainJour(jourNom: string, heureText: string | null, fromDate = new Date()): Date | null {
+  const targetDay = JOURS_SEMAINE[jourNom.toLowerCase()];
+  if (targetDay === undefined) return null;
+
+  const base = new Date(fromDate);
+  base.setHours(0, 0, 0, 0);
+  const todayDay = base.getDay();
+
+  let daysUntil = targetDay - todayDay;
+  if (daysUntil <= 0) daysUntil += 7; // toujours dans le futur
+
+  const eventDate = new Date(base);
+  eventDate.setDate(base.getDate() + daysUntil);
+
+  // Parse l'heure : "14h", "14h30", "14:30"
+  if (heureText) {
+    const m = heureText.match(/^(\d{1,2})[h:](\d{0,2})$/i);
+    if (m) {
+      eventDate.setHours(parseInt(m[1], 10), m[2] ? parseInt(m[2], 10) : 0, 0, 0);
+    }
+  } else {
+    eventDate.setHours(10, 0, 0, 0); // default 10h si pas d'heure précisée
+  }
+
+  return eventDate;
+}
+
+/**
+ * Corrige/valide le confirmed_datetime fourni par l'IA.
+ * Si le jour de la semaine dans l'email ne correspond pas à la date IA,
+ * recalcule le prochain jour correct.
+ */
+function fixConfirmedDatetime(aiDatetime: string | null, emailBody: string): Date | null {
+  const { jour, heure } = extractJourFromBody(emailBody);
+
+  // Si un nom de jour est mentionné dans l'email, on fait confiance au nom plutôt qu'à l'IA
+  if (jour) {
+    const corrected = prochainJour(jour, heure);
+    if (corrected) return corrected;
+  }
+
+  // Sinon, utiliser la date IA si valide
+  if (aiDatetime) {
+    try {
+      const d = new Date(aiDatetime);
+      if (!isNaN(d.getTime())) {
+        // Vérifier que la date est dans le futur (au moins demain)
+        const tomorrow = new Date();
+        tomorrow.setDate(tomorrow.getDate() + 1);
+        tomorrow.setHours(0, 0, 0, 0);
+        if (d >= tomorrow) return d;
+        // Date passée → décaler au prochain jour correspondant
+        if (jour) return prochainJour(jour, heure) ?? d;
+      }
+    } catch { /* ignore */ }
+  }
+
+  return null;
+}
+
 function isManualRequest(req: Request) {
   return !!req.headers.get("cookie");
 }
@@ -148,10 +230,12 @@ function detectEtapeProcess(params: {
   }
 
   // ÉTAPE VISITE_CONFIRMEE : prospect confirme un créneau de visite
-  if (isFollowUp && currentEtape === "VISITE_PROPOSEE") {
-    if (rdvConfirmed || detectConfirmation(bodyText)) {
-      return "VISITE_CONFIRMEE";
-    }
+  // BLOC 7 : si l'IA a explicitement détecté une confirmation RDV (is_rdv_confirmation = true),
+  // forcer VISITE_CONFIRMEE sans vérifier currentEtape (score IA = 10 → auto)
+  if (rdvConfirmed) return "VISITE_CONFIRMEE";
+  // Confirmation de suivi classique (l'email précédent proposait une visite)
+  if (isFollowUp && detectConfirmation(bodyText)) {
+    return "VISITE_CONFIRMEE";
   }
 
   // ÉTAPES INITIALES (analyse profil)
@@ -250,6 +334,54 @@ export async function POST(req: Request) {
     console.log(`[ANALYZE-INBOX] ${emails.length} emails à classifier`);
 
     let analyzed = 0;
+
+    // ── Cache biens par user (évite N+1) ────────────────────────────────────
+    const propertiesByUser: Record<string, Array<{ id: string; title: string; name?: string; address: string | null; rent: number }>> = {};
+
+    async function getUserProperties(userId: string) {
+      if (!propertiesByUser[userId]) {
+        const { data } = await supabaseAdmin
+          .from("properties")
+          .select("id, title, name, address, rent, available")
+          .eq("user_id", userId);
+        // Normaliser title/name
+        propertiesByUser[userId] = (data ?? []).map((p: any) => ({
+          id: p.id,
+          title: p.title ?? p.name ?? "",
+          address: p.address ?? null,
+          rent: p.rent ?? 0,
+          available: p.available !== false,
+        }));
+      }
+      return propertiesByUser[userId];
+    }
+
+    /**
+     * BLOC 3 : Matcher un email avec le bon bien immobilier.
+     * Retourne { propertyId, rent } si un bien est trouvé.
+     */
+    function matchPropertyFromEmail(
+      emailContent: string,
+      emailSubject: string | null,
+      properties: Array<{ id: string; title: string; address: string | null; rent: number }>
+    ): { propertyId: string; rent: number } | null {
+      if (properties.length === 0) return null;
+      if (properties.length === 1) return { propertyId: properties[0].id, rent: properties[0].rent };
+
+      const text = `${emailSubject ?? ""} ${emailContent}`.toLowerCase();
+
+      for (const prop of properties) {
+        const keywords = [prop.title, prop.address]
+          .filter(Boolean)
+          .flatMap((s) => (s as string).toLowerCase().split(/[\s,]+/).filter((w) => w.length > 3));
+
+        const matchCount = keywords.filter((k) => text.includes(k)).length;
+        if (matchCount >= 2) return { propertyId: prop.id, rent: prop.rent };
+      }
+
+      // Si un seul bien et rien de précis → l'utiliser par défaut
+      return null; // Plusieurs biens, aucun match → demander
+    }
 
     for (const email of emails) {
       const { data: settings } = await supabaseAdmin
@@ -429,13 +561,17 @@ IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
       let classificationReason = "Analyse automatique par l'IA";
       let rdvConfirmed = false;
 
-      if (result.is_rdv_confirmation === true && result.confirmed_datetime) {
+      if (result.is_rdv_confirmation === true && (result.confirmed_datetime || detectConfirmation((email as any).body || ""))) {
         rdvConfirmed = true;
         classificationReason = "RDV_CONFIRMÉ";
         try {
           const accessToken = await getValidGoogleAccessToken(email.user_id);
-          const start = new Date(result.confirmed_datetime);
+          // BLOC 2 FIX : corriger le jour via nom de jour français dans l'email
+          const emailBodyText = (email as any).body || (email as any).subject || "";
+          const startDate = fixConfirmedDatetime(result.confirmed_datetime ?? null, emailBodyText);
+          const start = startDate ?? new Date(Date.now() + 2 * 24 * 60 * 60 * 1000); // fallback: +2 jours
           const end = new Date(start.getTime() + 60 * 60 * 1000);
+          console.log(`[CALENDAR] RDV créé pour ${email.sender}: ${start.toISOString()} (depuis body: "${emailBodyText.substring(0,100)}"`);
           await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
             method: "POST",
             headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
@@ -482,6 +618,7 @@ IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
 
       // ── Extraction IA données prospect (LOCATION uniquement) ─────────────
       let prospectData: Record<string, unknown> | null = null;
+      let matchedPropertyId: string | null = null; // BLOC 3
       const isLocationEmail = (intentionMap[result.intention] ?? "INFO") === "LOCATION";
 
       if (isLocationEmail && content && content.length > 10) {
@@ -568,8 +705,29 @@ JSON attendu:
           return null;
         })();
 
+        // ── BLOC 3 : Matching propriété ──────────────────────────────────────
+        const userProperties = await getUserProperties(email.user_id);
+        const propertyMatch = matchPropertyFromEmail(content, email.subject ?? null, userProperties);
+        let matchedPropertyId: string | null = null;
+        let matchedRent: number | null = null;
+
+        if (propertyMatch) {
+          matchedPropertyId = propertyMatch.propertyId;
+          matchedRent = propertyMatch.rent;
+          console.log(`[BLOC3] Bien matché: ${matchedPropertyId} (loyer: ${matchedRent}€)`);
+        } else if (userProperties.length === 0) {
+          console.log(`[BLOC3] Aucun bien configuré pour user ${email.user_id}`);
+        } else if (userProperties.length > 1) {
+          // Plusieurs biens, aucun match → note pour l'autopilote
+          console.log(`[BLOC3] ${userProperties.length} biens, aucun match précis`);
+          if (!prospectData) prospectData = {};
+          prospectData.plusieurs_biens_disponibles = true;
+          prospectData.biens_disponibles = userProperties.map((p) => `${p.title}${p.address ? ` (${p.address})` : ""} — ${p.rent}€/mois`);
+        }
+
         const revenus = (prospectData?.revenus_mensuels as number | null) ?? null;
-        const loyer = (prospectData?.loyer_max as number | null) ?? null;
+        // Priorité : loyer du bien matché > loyer extrait par l'IA de l'email
+        const loyer = matchedRent ?? (prospectData?.loyer_max as number | null) ?? null;
         const currentEtape = (prospectData?.etape_process as string | null) ?? (threadProspectData?.etape_process as string | null) ?? null;
         const hasAttachments = ((email as any).attachments as any[] ?? []).length > 0;
 
@@ -611,12 +769,17 @@ JSON attendu:
       if (prospectData) {
         const { data: existingEmail } = await supabaseAdmin
           .from("emails")
-          .select("prospect_data")
+          .select("prospect_data, property_id")
           .eq("id", email.id)
           .maybeSingle();
         const existing = ((existingEmail as any)?.prospect_data as Record<string, unknown> | null) ?? {};
         const mergedFinal = mergeProspect(existing, prospectData);
         (mainUpdate as any).prospect_data = mergedFinal;
+
+        // BLOC 3 : Mettre à jour property_id si non déjà renseigné
+        if (matchedPropertyId && !(existingEmail as any)?.property_id) {
+          (mainUpdate as any).property_id = matchedPropertyId;
+        }
       }
 
       try {
@@ -681,7 +844,20 @@ JSON attendu:
 
             let autopilotePrompt = "";
 
-            if (etapeActuelle === "DOSSIER_RECU") {
+            // BLOC 3 : Si plusieurs biens et aucun match → demander lequel intéresse
+            const pluralBiens = (prospectData.plusieurs_biens_disponibles as boolean | undefined) === true;
+            const biensList = (prospectData.biens_disponibles as string[] | undefined) ?? [];
+
+            if (pluralBiens && biensList.length > 1 && etapeActuelle !== "VISITE_CONFIRMEE" && etapeActuelle !== "DOSSIER_DEMANDE" && etapeActuelle !== "DOSSIER_RECU") {
+              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email court pour ${nom}.
+- Remercier pour l'intérêt
+- Indiquer que vous avez plusieurs biens disponibles
+- Demander lequel les intéresse, en listant les biens :
+${biensList.map((b, i) => `  ${i + 1}. ${b}`).join("\n")}
+- Ton : chaleureux, professionnel
+- Signature : ${sig}
+Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}`;
+            } else if (etapeActuelle === "DOSSIER_RECU") {
               // Étape 3 : accusé réception documents
               autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email bref pour accuser réception du dossier de ${nom}.
 - Remercier chaleureusement pour l'envoi des pièces jointes
