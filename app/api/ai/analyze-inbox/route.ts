@@ -5,19 +5,30 @@ import { getValidGoogleAccessToken } from "@/lib/google/getValidAccessToken";
 import OpenAI from "openai";
 
 export const runtime = "nodejs";
-export const maxDuration = 60; // ← À AJOUTER (CRITIQUE)
+export const maxDuration = 60;
+
+// ── Étapes du process immobilier (ordre de progression) ─────────────────────
+export const STEP_ORDER = [
+  "NEW",
+  "QUALIFICATION",
+  "VISITE_PROPOSEE",
+  "VISITE_CONFIRMEE",
+  "DOSSIER_DEMANDE",
+  "DOSSIER_RECU",
+  "VALIDE",
+  "REFUSE",
+] as const;
+export type EtapeProcess = (typeof STEP_ORDER)[number];
 
 function isInternalCron(req: Request) {
   const key = req.headers.get("x-fixetime-cron-key");
   if (!key) return false;
   const expected = process.env.FIXETIME_INTERNAL_CRON_KEY;
-  // Si la clé env n'est pas configurée, tout appel avec le header est accepté (dev local)
   if (!expected) return true;
   return key === expected;
 }
 
 function isManualRequest(req: Request) {
-  // requête venant du frontend (session utilisateur) OU appel server-to-server avec cookie
   return !!req.headers.get("cookie");
 }
 
@@ -25,7 +36,6 @@ const openai = new OpenAI({
   apiKey: process.env.OPENAI_API_KEY!,
 });
 
-/** Heuristique simple pour deviner la catégorie quand l'IA n'a pas répondu */
 function guessCategory(email: { subject?: string | null; sender?: string | null }): string {
   const s = (email.subject || "").toLowerCase();
   const sender = (email.sender || "").toLowerCase();
@@ -45,7 +55,7 @@ function guessCategory(email: { subject?: string | null; sender?: string | null 
     sender.includes("noreply") || sender.includes("linkedin") ||
     sender.includes("donotreply") || sender.includes("notification")
   ) return "HORS_SUJET";
-  return "INFO"; // défaut neutre
+  return "INFO";
 }
 
 function fallbackDecision(email: { subject?: string | null; sender?: string | null }) {
@@ -55,23 +65,19 @@ function fallbackDecision(email: { subject?: string | null; sender?: string | nu
   if (subject.includes("urgent") || subject.includes("asap") || subject.includes("demain")) {
     return { decision: "traiter", is_urgent: true, is_important: false };
   }
-
   if (subject.includes("réunion") || subject.includes("rdv")) {
     return { decision: "traiter", is_urgent: false, is_important: true };
   }
-
   if (sender.includes("newsletter") || sender.includes("linkedin") || sender.includes("no-reply")) {
     return { decision: "ignorer", is_urgent: false, is_important: false };
   }
-
   return { decision: "traiter", is_urgent: false, is_important: false };
 }
 
 /**
  * Fusion cumulative de deux objets prospect_data.
- * Règle absolue : un champ non-null dans `base` n'est JAMAIS écrasé.
- * Un champ null/vide dans `base` peut être enrichi par `incoming`.
- * → "on accumule, on n'efface jamais"
+ * Règle générale : un champ non-null dans `base` n'est JAMAIS écrasé.
+ * Exception : etape_process — le incoming GAGNE TOUJOURS (progression du process).
  */
 function mergeProspect(
   base: Record<string, unknown>,
@@ -80,103 +86,164 @@ function mergeProspect(
   const result: Record<string, unknown> = { ...base };
   if (!incoming) return result;
   for (const [k, v] of Object.entries(incoming)) {
+    if (k === "etape_process") {
+      // etape_process : le incoming gagne SAUF si c'est un retour en arrière
+      // Les étapes manuelles (DOSSIER_DEMANDE, VALIDE, REFUSE) ne peuvent pas être
+      // écrasées par l'IA (seule exception : REFUSE peut être mis par l'IA pour insolvable)
+      const existingEtape = result["etape_process"] as string | null | undefined;
+      const newEtape = v as string | null | undefined;
+      if (!existingEtape || !newEtape) {
+        result[k] = v;
+      } else {
+        const existIdx = STEP_ORDER.indexOf(existingEtape as EtapeProcess);
+        const newIdx = STEP_ORDER.indexOf(newEtape as EtapeProcess);
+        // Autoriser seulement l'avancement (jamais la régression)
+        // DOSSIER_DEMANDE ne peut être effacé que par DOSSIER_RECU (géré ailleurs)
+        if (newIdx >= existIdx) {
+          result[k] = v;
+        }
+        // sinon on garde l'existing (refus de régresser)
+      }
+      continue;
+    }
     const existing = result[k];
     const isEmpty = existing === null || existing === undefined || existing === "";
     const hasValue = v !== null && v !== undefined && v !== "";
     if (isEmpty && hasValue) {
-      result[k] = v; // enrichissement uniquement
+      result[k] = v;
     }
   }
   return result;
+}
+
+/** Détecte si un email contient une confirmation de visite */
+function detectConfirmation(bodyText: string): boolean {
+  const lower = bodyText.toLowerCase();
+  return [
+    "je confirme", "c'est parfait", "d'accord pour", "je serai là",
+    "convient", "oui pour le", "ça me convient", "parfait pour",
+    "ok pour", "ce créneau", "à lundi", "à mardi", "à mercredi",
+    "à jeudi", "à vendredi", "rdv confirmé", "rendez-vous confirmé",
+    "je prends le", "je prends ce",
+  ].some((k) => lower.includes(k));
+}
+
+/** Détermine la nouvelle étape du process */
+function detectEtapeProcess(params: {
+  hasAttachments: boolean;
+  rdvConfirmed: boolean;
+  isFollowUp: boolean;
+  bodyText: string;
+  situation: string | null;
+  revenus: number | null;
+  loyer: number | null;
+  multiplicateur: number;
+  currentEtape: string | null;
+}): EtapeProcess {
+  const { hasAttachments, rdvConfirmed, isFollowUp, bodyText, situation, revenus, loyer, multiplicateur, currentEtape } = params;
+
+  // ÉTAPE DOSSIER_RECU : pièces jointes reçues APRÈS que l'agent a demandé le dossier
+  if (hasAttachments && currentEtape === "DOSSIER_DEMANDE") {
+    return "DOSSIER_RECU";
+  }
+
+  // ÉTAPE VISITE_CONFIRMEE : prospect confirme un créneau de visite
+  if (isFollowUp && currentEtape === "VISITE_PROPOSEE") {
+    if (rdvConfirmed || detectConfirmation(bodyText)) {
+      return "VISITE_CONFIRMEE";
+    }
+  }
+
+  // ÉTAPES INITIALES (analyse profil)
+  // Étudiant : VISITE_PROPOSEE (avec garant obligatoire mentionné dans la réponse)
+  if (situation === "etudiant") return "VISITE_PROPOSEE";
+
+  // Solvable : VISITE_PROPOSEE
+  if (revenus !== null && loyer !== null && loyer > 0 && revenus / loyer >= multiplicateur && situation) {
+    return "VISITE_PROPOSEE";
+  }
+
+  // Insolvable : REFUSE
+  if (revenus !== null && loyer !== null && loyer > 0 && revenus / loyer < multiplicateur) {
+    return "REFUSE";
+  }
+
+  // Infos manquantes : QUALIFICATION
+  if (!revenus || !loyer || !situation) return "QUALIFICATION";
+
+  // Par défaut : QUALIFICATION
+  return "QUALIFICATION";
 }
 
 export async function POST(req: Request) {
   const isCron = isInternalCron(req);
   const isManual = isManualRequest(req);
   let body: any = null;
-  try {
-    body = await req.json();
-  } catch {}
-  
+  try { body = await req.json(); } catch {}
+
   if (!isCron && !isManual) {
     return NextResponse.json({ error: "forbidden" }, { status: 403 });
   }
 
   try {
-    // ✅ Si manuel : on limite aux emails de l'utilisateur connecté
-    // ✅ utilisateur ciblé (manuel OU cron)
-let targetUserId: string | null = null;
+    let targetUserId: string | null = null;
 
-// CAS 1 — CRON / BACKGROUND
-if (isCron && body?.user_id) {
-  targetUserId = body.user_id;
-}
+    if (isCron && body?.user_id) {
+      targetUserId = body.user_id;
+    }
 
-// CAS 2 — MANUEL (frontend avec cookie)
-if (isManual && !targetUserId) {
-  const supabase = await supabaseServer();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+    if (isManual && !targetUserId) {
+      const supabase = await supabaseServer();
+      const { data: { user } } = await supabase.auth.getUser();
+      if (!user) return NextResponse.json({ error: "NO_USER" }, { status: 401 });
+      targetUserId = user.id;
+    }
 
-  if (!user) {
-    return NextResponse.json({ error: "NO_USER" }, { status: 401 });
-  }
+    if (!targetUserId) {
+      return NextResponse.json({ error: "NO_TARGET_USER" }, { status: 400 });
+    }
 
-  targetUserId = user.id;
-}
-
-// 🔒 SÉCURITÉ ABSOLUE
-if (!targetUserId) {
-  return NextResponse.json({ error: "NO_TARGET_USER" }, { status: 400 });
-}
-
-    // 1) Emails à analyser (ceux qui manquent de data)
     const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
-const sinceISO = new Date(Date.now() - THIRTY_DAYS).toISOString();
+    const sinceISO = new Date(Date.now() - THIRTY_DAYS).toISOString();
 
-let q = supabaseAdmin
-.from("emails")
-.select("id, user_id, sender, subject, body, received_at, gmail_message_id, thread_id")
-.gte("received_at", sinceISO)
-.or("category.is.null,decision.is.null,summary.is.null")
-.order("received_at", { ascending: false })
-.limit(200);
+    // ── Sélectionner aussi attachments pour détecter les dossiers envoyés ──
+    let q = supabaseAdmin
+      .from("emails")
+      .select("id, user_id, sender, subject, body, received_at, gmail_message_id, thread_id, attachments")
+      .gte("received_at", sinceISO)
+      .or("category.is.null,decision.is.null,summary.is.null")
+      .order("received_at", { ascending: false })
+      .limit(200);
 
-console.log("[ANALYZE-INBOX] Démarrage analyse pour user:", targetUserId);
+    console.log("[ANALYZE-INBOX] Démarrage analyse pour user:", targetUserId);
 
-// 🔒 utilisateur ciblé (OBLIGATOIRE)
-if (targetUserId) {
-  q = q.eq("user_id", targetUserId);
-}
+    if (targetUserId) {
+      q = q.eq("user_id", targetUserId);
+    }
 
+    const { data: emails, error } = await q;
 
-const { data: emails, error } = await q;
+    if (error) {
+      console.error("FETCH_EMAILS_ERROR", error);
+      return NextResponse.json({ error: "FETCH_EMAILS_FAILED" }, { status: 500 });
+    }
 
-if (error) {
-  console.error("FETCH_EMAILS_ERROR", error);
-  return NextResponse.json({ error: "FETCH_EMAILS_FAILED" }, { status: 500 });
-}
-
-// 🔒 GARANTIE PRODUIT — nettoyage des anciens emails bloqués en "Analyse…"
-// (on exclut ceux qu'on va analyser juste après)
-await supabaseAdmin
-  .from("emails")
-  .update({
-    decision: "ignorer",
-    summary: "Email classé automatiquement.",
-    estimated_time: 0,
-    recommended_action: "archive",
-    classification_reason: "Fallback global FixTime",
-  })
-  .eq("user_id", targetUserId)
-  .lt("received_at", sinceISO)
-  .is("decision", null);
-
-
+    // Fallback : emails bloqués hors période
+    await supabaseAdmin
+      .from("emails")
+      .update({
+        decision: "ignorer",
+        summary: "Email classé automatiquement.",
+        estimated_time: 0,
+        recommended_action: "archive",
+        classification_reason: "Fallback global FixTime",
+      })
+      .eq("user_id", targetUserId)
+      .lt("received_at", sinceISO)
+      .is("decision", null);
 
     if (!emails || emails.length === 0) {
-      console.log("[ANALYZE-INBOX] Aucun email à analyser (déjà tous classifiés)");
+      console.log("[ANALYZE-INBOX] Aucun email à analyser");
       return NextResponse.json({ success: true, analyzed: 0 });
     }
 
@@ -185,15 +252,15 @@ await supabaseAdmin
     let analyzed = 0;
 
     for (const email of emails) {
-      // 2) Règles utilisateur + pipeline_mode
       const { data: settings } = await supabaseAdmin
         .from("settings_v1")
-        .select("email_rules")          // pipeline_mode est dans email_rules.pipeline_mode (pas de colonne dédiée)
+        .select("email_rules")
         .eq("user_id", email.user_id)
         .maybeSingle();
 
       const rules: any = settings?.email_rules ?? {};
 
+      // ── Règles utilisateur ────────────────────────────────────────────────
       let forcedDecision: "traiter" | "ignorer" | "planifier" | null = null;
       let forcedUrgent = false;
       let forcedImportant = false;
@@ -202,21 +269,16 @@ await supabaseAdmin
         forcedDecision = "traiter";
         forcedImportant = true;
       }
-
       if (rules.always_ignore?.some((d: string) => (email.sender || "").includes(d))) {
         forcedDecision = "ignorer";
       }
-
-      if (
-        rules.keywords?.urgent?.some((k: string) =>
-          (email.subject || "").toLowerCase().includes(k.toLowerCase())
-        )
-      ) {
+      if (rules.keywords?.urgent?.some((k: string) =>
+        (email.subject || "").toLowerCase().includes(k.toLowerCase())
+      )) {
         forcedDecision = "traiter";
         forcedUrgent = true;
       }
 
-      // ✅ Si règle utilisateur : on update toujours complet
       if (forcedDecision) {
         await supabaseAdmin
           .from("emails")
@@ -231,30 +293,37 @@ await supabaseAdmin
             category: forcedDecision === "ignorer" ? "HORS_SUJET" : guessCategory(email),
           })
           .eq("id", email.id);
-
         analyzed++;
         continue;
       }
 
+      // ── BLOC 1 DIAGNOSTIC — vérifier que le body arrive bien ─────────────
+      console.log(`[BLOC1 DIAGNOSTIC] emailId=${email.id} BODY_LENGTH=${email.body?.length ?? 0}`);
+      if (email.body) {
+        console.log(`[BLOC1 DIAGNOSTIC] BODY_SAMPLE=${email.body.substring(0, 500)}`);
+      } else {
+        console.warn(`[BLOC1 DIAGNOSTIC] ⚠️ BODY VIDE pour emailId=${email.id} — sync à corriger`);
+      }
+
       const content =
         email.body?.trim() ||
-        "Email sans contenu. Analyse basée sur le sujet et l’expéditeur.";
+        "Email sans contenu. Analyse basée sur le sujet et l'expéditeur.";
 
-      // ── Contexte agence depuis les settings ──────────────────────────
+      // ── Contexte agence ───────────────────────────────────────────────────
       const ftLocatif = rules.ft_locatif ?? {};
       const ftIa = rules.ft_ia ?? {};
       const ftAgence = rules.ft_agence ?? {};
       const ftFaq: { question: string; reponse: string }[] = rules.ft_faq ?? [];
 
       const multiplicateur = ftLocatif.multiplicateur ?? 3;
-      const agenceName = ftAgence.name ?? "l’agence";
+      const agenceName = ftAgence.name ?? "l'agence";
       const zones = ftIa.zones ?? "";
       const loyerMoyen = ftIa.loyer_moyen ?? "";
       const instructions = ftIa.instructions ?? "";
 
       const docsRequired = Object.entries(ftLocatif.docs ?? {})
         .filter(([, v]) => v === true)
-        .map(([k]) => ({ fiches_paie: "fiches de paie", contrat: "contrat de travail", avis_imposition: "avis d’imposition", piece_identite: "pièce d’identité", rib: "RIB" }[k] ?? k));
+        .map(([k]) => ({ fiches_paie: "fiches de paie", contrat: "contrat de travail", avis_imposition: "avis d'imposition", piece_identite: "pièce d'identité", rib: "RIB" }[k] ?? k));
 
       const agencyContext = [
         `Agence : ${agenceName}`,
@@ -266,9 +335,9 @@ await supabaseAdmin
         ftFaq.length > 0 ? `FAQ agence (${ftFaq.length} entrées disponibles)` : "",
       ].filter(Boolean).join("\n");
 
-      const prompt = `Tu es l’IA d’une agence immobilière française. Analyse cet email entrant et retourne UNIQUEMENT un JSON valide (sans markdown, sans texte autour) :
+      const classificationPrompt = `Tu es l'IA d'une agence immobilière française. Analyse cet email entrant et retourne UNIQUEMENT un JSON valide (sans markdown, sans texte autour) :
 
-CONTEXTE DE L’AGENCE :
+CONTEXTE DE L'AGENCE :
 ${agencyContext}
 
 
@@ -284,25 +353,18 @@ ${agencyContext}
 }
 
 RÈGLES STRICTES pour "intention" :
-- "LOCATION" : le message vient d'un PARTICULIER cherchant à LOUER un logement. Cas : demande de visite, candidature locative, question sur un appartement/bien spécifique avec intention claire de louer, envoi de dossier locataire.
-- "INFO" : question générale sur l'agence, les conditions de location, les quartiers, la disponibilité, les prix — SANS intention immédiate de louer ou de visiter.
-- "HORS_SUJET" : newsletter, publicité, email automatique (facture, alerte, notification service), LinkedIn, réseaux sociaux, emails transactionnels (Vercel, Orange, Free, Amazon, AliExpress, banque, etc.), tout ce qui n'est PAS une communication humaine liée à la location immobilière.
+- "LOCATION" : le message vient d'un PARTICULIER cherchant à LOUER un logement.
+- "INFO" : question générale sur l'agence ou les conditions de location.
+- "HORS_SUJET" : newsletter, publicité, email automatique, LinkedIn, réseaux sociaux.
 
 RÈGLES pour "decision" :
-- "TRAITER" si LOCATION ou INFO nécessitant une réponse humaine
-- "IGNORER" si HORS_SUJET ou email automatique sans besoin de réponse
+- "TRAITER" si LOCATION ou INFO nécessitant une réponse
+- "IGNORER" si HORS_SUJET
 - "DELEGUER" si à transférer
 
-RÈGLES pour "priority" (détermine le score de qualification 1-10) :
-- "URGENT" → score 9-10 : email LOCATION où le prospect mentionne SIMULTANÉMENT revenus (ex: 3000€, CDI, salaire...) ET au moins 2 documents (fiches de paie, contrat, pièce d'identité, avis d'imposition) ET une intention claire de visite/candidature. Exemple : "Je suis en CDI, 3500€/mois, je peux vous envoyer mes 3 fiches de paie et ma pièce d'identité, quand puis-je visiter ?"
-- "IMPORTANT" → score 7-8 : email LOCATION avec intention claire de louer/visiter ET quelques infos financières OU mention de documents, mais profil incomplet
-- "NORMAL" → score 3-6 : question générale sur un bien ou l'agence, demande d'information sans dossier, ou email INFO
-- Pour HORS_SUJET : toujours "NORMAL" (score 1-2)
-
 RÈGLES confirmation RDV (is_rdv_confirmation = true) :
-- Sujet commence par "Re:" ET le prospect confirme un créneau de visite
+- Sujet commence par "Re:" ET le prospect confirme un créneau
 - Mots clés : "je confirme", "c'est parfait", "d'accord pour", "je serai là", "convient", "oui pour le"
-- Dans ce cas seulement : extraire la date dans confirmed_datetime (ISO)
 
 Expéditeur: ${email.sender}
 Sujet: ${email.subject}
@@ -310,12 +372,12 @@ Contenu: ${content}
 
 IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
 
-      // 3) Appel IA
+      // ── 1er appel IA : classification ─────────────────────────────────────
       let raw = "";
       try {
         const completion = await openai.chat.completions.create({
           model: "gpt-4o-mini",
-          messages: [{ role: "user", content: prompt }],
+          messages: [{ role: "user", content: classificationPrompt }],
           temperature: 0,
         });
         raw = completion.choices[0]?.message?.content || "";
@@ -324,123 +386,77 @@ IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
       }
 
       const match = raw.match(/\{[\s\S]*\}/);
-
-      // ✅ Si JSON invalide → FALLBACK + on écrit quand même
       if (!match) {
         const fb = fallbackDecision(email);
-
-        await supabaseAdmin
-          .from("emails")
-          .update({
-            summary: "Analyse automatique incomplète — classé par règles de secours.",
-            decision: fb.decision as any,
-            estimated_time: fb.decision === "ignorer" ? 0 : 5,
-            recommended_action: fb.decision === "ignorer" ? "archive" : "reply",
-            is_urgent: fb.is_urgent,
-            is_important: fb.is_important,
-            category: guessCategory(email),
-            classification_reason: "Fallback : réponse IA non exploitable (JSON).",
-          })
-          .eq("id", email.id);
-
+        await supabaseAdmin.from("emails").update({
+          summary: "Analyse automatique incomplète — classé par règles de secours.",
+          decision: fb.decision as any,
+          estimated_time: fb.decision === "ignorer" ? 0 : 5,
+          recommended_action: fb.decision === "ignorer" ? "archive" : "reply",
+          is_urgent: fb.is_urgent,
+          is_important: fb.is_important,
+          category: guessCategory(email),
+          classification_reason: "Fallback : réponse IA non exploitable (JSON).",
+        }).eq("id", email.id);
         analyzed++;
         continue;
       }
 
       let result: any = null;
-      try {
-        result = JSON.parse(match[0]);
-      } catch {
-        result = null;
-      }
+      try { result = JSON.parse(match[0]); } catch { result = null; }
 
       if (!result) {
         const fb = fallbackDecision(email);
-
-        await supabaseAdmin
-          .from("emails")
-          .update({
-            summary: "Analyse automatique incomplète — classé par règles de secours.",
-            decision: fb.decision as any,
-            estimated_time: fb.decision === "ignorer" ? 0 : 5,
-            recommended_action: fb.decision === "ignorer" ? "archive" : "reply",
-            is_urgent: fb.is_urgent,
-            is_important: fb.is_important,
-            category: guessCategory(email),
-            classification_reason: "Fallback : JSON IA non parsable.",
-          })
-          .eq("id", email.id);
-
+        await supabaseAdmin.from("emails").update({
+          summary: "Analyse automatique incomplète — classé par règles de secours.",
+          decision: fb.decision as any,
+          estimated_time: fb.decision === "ignorer" ? 0 : 5,
+          recommended_action: fb.decision === "ignorer" ? "archive" : "reply",
+          is_urgent: fb.is_urgent,
+          is_important: fb.is_important,
+          category: guessCategory(email),
+          classification_reason: "Fallback : JSON IA non parsable.",
+        }).eq("id", email.id);
         analyzed++;
         continue;
       }
 
-      const decisionMap: any = {
-        TRAITER: "traiter",
-        IGNORER: "ignorer",
-        DELEGUER: "planifier",
-      };
+      const decisionMap: any = { TRAITER: "traiter", IGNORER: "ignorer", DELEGUER: "planifier" };
+      const actionMap: any = { reply: "reply", archive: "archive", task: "schedule", schedule: "schedule" };
+      const intentionMap: Record<string, string> = { LOCATION: "LOCATION", INFO: "INFO", HORS_SUJET: "HORS_SUJET" };
 
-      // ✅ Alignement action avec ton UI (task -> schedule)
-      const actionMap: any = {
-        reply: "reply",
-        archive: "archive",
-        task: "schedule",
-        schedule: "schedule",
-      };
-
-      const intentionMap: Record<string, string> = {
-        LOCATION: "LOCATION",
-        INFO: "INFO",
-        HORS_SUJET: "HORS_SUJET",
-      };
-
-      // ── Détection confirmation RDV ──────────────────────────────
-      let classificationReason = "Analyse automatique par l’IA";
+      // ── Détection confirmation RDV + création Calendar ────────────────────
+      let classificationReason = "Analyse automatique par l'IA";
       let rdvConfirmed = false;
 
       if (result.is_rdv_confirmation === true && result.confirmed_datetime) {
         rdvConfirmed = true;
         classificationReason = "RDV_CONFIRMÉ";
-
-        // Créer l’event Google Calendar directement
         try {
           const accessToken = await getValidGoogleAccessToken(email.user_id);
           const start = new Date(result.confirmed_datetime);
-          const end = new Date(start.getTime() + 60 * 60 * 1000); // +1h
-
-          await fetch(
-            "https://www.googleapis.com/calendar/v3/calendars/primary/events",
-            {
-              method: "POST",
-              headers: {
-                Authorization: `Bearer ${accessToken}`,
-                "Content-Type": "application/json",
-              },
-              body: JSON.stringify({
-                summary: `Visite confirmée — ${email.sender?.split("@")[0] || "Prospect"}`,
-                description: `Confirmation automatique FixTime.\nEmail: ${email.subject}\nExpéditeur: ${email.sender}`,
-                start: { dateTime: start.toISOString(), timeZone: "Europe/Paris" },
-                end: { dateTime: end.toISOString(), timeZone: "Europe/Paris" },
-              }),
-            }
-          );
+          const end = new Date(start.getTime() + 60 * 60 * 1000);
+          await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
+            method: "POST",
+            headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
+            body: JSON.stringify({
+              summary: `Visite confirmée — ${email.sender?.split("@")[0] || "Prospect"}`,
+              description: `Confirmation automatique FixTime.\nEmail: ${email.subject}\nExpéditeur: ${email.sender}`,
+              start: { dateTime: start.toISOString(), timeZone: "Europe/Paris" },
+              end: { dateTime: end.toISOString(), timeZone: "Europe/Paris" },
+            }),
+          });
         } catch (calErr) {
           console.error("RDV_CALENDAR_CREATE_ERROR", calErr);
-          // On continue même si le Calendar échoue
         }
       }
 
-      // ── PROBLÈME 1 : Détection fil de conversation (thread multi-tours) ──
-      // Si un email du même thread_id existe déjà, c'est une réponse du prospect
-      // → merger le prospect_data accumulé pour ne demander que ce qui manque encore
+      // ── Thread multi-tours ────────────────────────────────────────────────
       let threadProspectData: Record<string, unknown> | null = null;
       let isFollowUp = false;
 
       if ((email as any).thread_id) {
         try {
-          // Récupérer TOUS les emails du thread (ordre chronologique) pour un merge complet
-          // → si le thread contient 3 emails, on fusionne les 3 fiches pour rien perdre
           const { data: threadEmails } = await supabaseAdmin
             .from("emails")
             .select("id, prospect_data, received_at")
@@ -448,91 +464,134 @@ IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
             .eq("thread_id", (email as any).thread_id)
             .neq("id", email.id)
             .not("prospect_data", "is", null)
-            .order("received_at", { ascending: true }); // plus ancien en premier → fold correct
+            .order("received_at", { ascending: true });
 
           if (threadEmails && threadEmails.length > 0) {
             isFollowUp = true;
-            // Fold cumulatif : chaque email enrichit le précédent sans jamais écraser
             let accumulated: Record<string, unknown> = {};
             for (const t of threadEmails) {
               accumulated = mergeProspect(accumulated, t.prospect_data as Record<string, unknown>);
             }
             threadProspectData = accumulated;
-            console.log(`[ANALYZE-INBOX] ↩️ Thread ${(email as any).thread_id} — ${threadEmails.length} email(s) précédent(s) fusionnés`);
+            console.log(`[ANALYZE-INBOX] ↩️ Thread ${(email as any).thread_id} — ${threadEmails.length} email(s) précédent(s) fusionnés, etape_courante=${accumulated.etape_process ?? "NEW"}`);
           }
         } catch (e) {
           console.warn("[ANALYZE-INBOX] Thread check échoué:", e);
         }
       }
 
-      // ── Extraction IA données prospect (LOCATION uniquement) ──────────
+      // ── Extraction IA données prospect (LOCATION uniquement) ─────────────
       let prospectData: Record<string, unknown> | null = null;
       const isLocationEmail = (intentionMap[result.intention] ?? "INFO") === "LOCATION";
 
       if (isLocationEmail && content && content.length > 10) {
         try {
-          // BUG FIX #1+3+4 : prompt amélioré
-          // - nom extrait du CORPS de l'email (pas de l'expéditeur Gmail)
-          // - revenus_mensuels = ce que GAGNE le candidat (≠ loyer)
-          // - loyer_max = loyer du BIEN visité (≠ revenus)
-          // - garant remplace date_emmenagement
-          const prospectPrompt = `Tu es un assistant immobilier. Extrais TOUTES les informations suivantes depuis le corps de cet email de candidature locative. Si une info est absente, retourne null.
-Retourne UNIQUEMENT ce JSON valide sans aucun texte autour :
-{
-  "nom": string | null,
-  "telephone": string | null,
-  "situation_pro": "CDI" | "CDD" | "AUTO_ENTREPRENEUR" | "ETUDIANT" | "RETRAITE" | null,
-  "revenus_mensuels": number | null,
-  "loyer_max": number | null,
-  "animaux": "OUI" | "NON" | null,
-  "nb_personnes": number | null,
-  "garant": "OUI" | "NON" | null
-}
-
-RÈGLES IMPORTANTES :
-- nom : extraire le NOM DU CANDIDAT depuis le corps de l'email (signature, "je suis X", "je m'appelle X", "cordialement X"). NE PAS utiliser l'adresse email ni le nom de l'expéditeur Gmail. Si plusieurs noms, prendre le signataire.
-- revenus_mensuels : salaire NET MENSUEL que GAGNE le candidat en € (ex: "je gagne 3200€/mois" → 3200, "CDI 2800€" → 2800). C'est ce que gagne la personne.
-- loyer_max : montant du LOYER DU BIEN que le candidat souhaite louer, mentionné dans l'email en € (ex: "l'appartement à 850€/mois" → 850, "loyer de 950€" → 950). C'est le prix du logement.
-- ATTENTION : ne pas inverser revenus_mensuels et loyer_max. Les revenus sont toujours > loyer dans un dossier solvable.
-- animaux : "OUI" si animaux mentionnés, "NON" si dit explicitement ne pas en avoir, null si non mentionné.
-- garant : "OUI" si le candidat mentionne avoir un garant, "NON" si dit explicitement ne pas avoir de garant, null si non mentionné.
-- situation_pro : déduire depuis le contexte (étudiant/école → ETUDIANT, freelance/indépendant → AUTO_ENTREPRENEUR, retraité → RETRAITE).
-- Retourne null pour tout champ non trouvé dans l'email.
-
-Sujet: ${email.subject}
-Email à analyser (corps complet) :
-${content.slice(0, 2000)}`;
-
-          const prospectCompletion = await openai.chat.completions.create({
+          // BLOC 1 FIX : response_format json_object + system/user split
+          const extractionCompletion = await openai.chat.completions.create({
             model: "gpt-4o-mini",
-            messages: [{ role: "user", content: prospectPrompt }],
             temperature: 0,
+            response_format: { type: "json_object" },
+            messages: [
+              {
+                role: "system",
+                content: `Tu es un assistant immobilier français. Extrais les infos du candidat.
+Réponds UNIQUEMENT en JSON valide. Si absent → null. Jamais d'explication.`,
+              },
+              {
+                role: "user",
+                content: `Email:
+"${content.slice(0, 3000)}"
+
+RÈGLES :
+- nom_prenom : nom complet du candidat dans le corps (signature, "je m'appelle", "je suis"). PAS l'email.
+- situation_pro : "CDI"|"CDD"|"AUTO_ENTREPRENEUR"|"ETUDIANT"|"RETRAITE"|null
+- revenus_mensuels : salaire NET mensuel en € que GAGNE le candidat. Ex: "3000€/mois" → 3000
+- loyer_max : loyer du BIEN à louer en €. Ex: "loyer de 850€" → 850
+- ATTENTION : revenus_mensuels >> loyer_max dans un dossier solvable
+- animaux : true si oui, false si non, null si non mentionné
+- garant : "OUI"|"NON"|"A_CONFIRMER"|null
+
+JSON attendu:
+{
+  "nom_prenom": string|null,
+  "telephone": string|null,
+  "situation_pro": "CDI"|"CDD"|"AUTO_ENTREPRENEUR"|"ETUDIANT"|"RETRAITE"|null,
+  "revenus_mensuels": number|null,
+  "loyer_max": number|null,
+  "animaux": boolean|null,
+  "nb_personnes": number|null,
+  "garant": "OUI"|"NON"|"A_CONFIRMER"|null
+}`,
+              },
+            ],
           });
-          const prospectRaw = prospectCompletion.choices[0]?.message?.content || "";
-          const prospectMatch = prospectRaw.match(/\{[\s\S]*\}/);
-          if (prospectMatch) {
-            const parsed = JSON.parse(prospectMatch[0]);
-            // Normaliser le champ "nom" → peut venir de "nom" ou "nom_prenom"
+
+          const extractionRaw = extractionCompletion.choices[0]?.message?.content || "";
+          console.log(`[BLOC1 EXTRACTION] emailId=${email.id} raw=${extractionRaw.slice(0, 200)}`);
+
+          const extractionMatch = extractionRaw.match(/\{[\s\S]*\}/);
+          if (extractionMatch) {
+            const parsed = JSON.parse(extractionMatch[0]);
+            // Normaliser nom_prenom → nom
             if (!parsed.nom && parsed.nom_prenom) parsed.nom = parsed.nom_prenom;
             delete parsed.nom_prenom;
-            // Supprimer date_emmenagement si présent (ancien prompt)
+            // Normaliser animaux boolean → "OUI"/"NON"
+            if (typeof parsed.animaux === "boolean") {
+              parsed.animaux = parsed.animaux ? "OUI" : "NON";
+            }
             delete parsed.date_emmenagement;
             prospectData = parsed;
+            console.log(`[BLOC1 EXTRACTION] Résultat OK: nom=${parsed.nom} situation=${parsed.situation_pro} revenus=${parsed.revenus_mensuels} loyer=${parsed.loyer_max}`);
           }
         } catch (e) {
           console.warn("[ANALYZE-INBOX] Extraction prospect échouée:", e);
         }
 
-        // Merge cumulatif thread : base = données accumulées du thread, incoming = email courant
-        // Règle mergeProspect : on n'écrase JAMAIS un champ non-null (le thread gagne sur null)
-        // mais on enrichit les champs vides du thread avec les nouvelles infos de cet email
+        // Merge thread cumulatif
         if (isFollowUp && threadProspectData) {
           prospectData = mergeProspect(threadProspectData, prospectData);
-          console.log(`[ANALYZE-INBOX] ↩️ Merge thread OK:`, JSON.stringify(prospectData));
+          console.log(`[ANALYZE-INBOX] ↩️ Merge thread OK: ${JSON.stringify(prospectData)}`);
         }
+
+        // ── DÉTECTION ÉTAPE PROCESS ────────────────────────────────────────
+        const situation = (() => {
+          if (prospectData?.situation_pro) {
+            const spMap: Record<string, string> = { CDI: "cdi", CDD: "cdd", AUTO_ENTREPRENEUR: "auto", ETUDIANT: "etudiant", RETRAITE: "retraite" };
+            return spMap[String(prospectData.situation_pro)] ?? null;
+          }
+          const bl = content.toLowerCase();
+          if (bl.includes("étudiant") || bl.includes("université")) return "etudiant";
+          if (bl.includes("cdi")) return "cdi";
+          if (bl.includes("cdd")) return "cdd";
+          if (bl.includes("auto-entrepreneur") || bl.includes("freelance")) return "auto";
+          if (bl.includes("retraité")) return "retraite";
+          return null;
+        })();
+
+        const revenus = (prospectData?.revenus_mensuels as number | null) ?? null;
+        const loyer = (prospectData?.loyer_max as number | null) ?? null;
+        const currentEtape = (prospectData?.etape_process as string | null) ?? (threadProspectData?.etape_process as string | null) ?? null;
+        const hasAttachments = ((email as any).attachments as any[] ?? []).length > 0;
+
+        const newEtape = detectEtapeProcess({
+          hasAttachments,
+          rdvConfirmed,
+          isFollowUp,
+          bodyText: content,
+          situation,
+          revenus,
+          loyer,
+          multiplicateur,
+          currentEtape,
+        });
+
+        console.log(`[ANALYZE-INBOX] etape_process: ${currentEtape ?? "null"} → ${newEtape} | situation=${situation} revenus=${revenus} loyer=${loyer}`);
+
+        if (!prospectData) prospectData = {};
+        prospectData.etape_process = newEtape;
       }
 
-      // ── Mise à jour DB principale ─────────────────────────────────────
+      // ── Mise à jour DB principale ─────────────────────────────────────────
       const mainUpdate: Record<string, unknown> = {
         summary: rdvConfirmed
           ? `✅ RDV de visite confirmé par ${email.sender?.split("@")[0] || "le prospect"}`
@@ -548,7 +607,7 @@ ${content.slice(0, 2000)}`;
         classification_reason: classificationReason,
       };
 
-      // Merge DB non-destructif : ne jamais écraser un champ déjà renseigné en base
+      // Merge DB non-destructif pour les champs normaux + avancement pour etape_process
       if (prospectData) {
         const { data: existingEmail } = await supabaseAdmin
           .from("emails")
@@ -556,20 +615,18 @@ ${content.slice(0, 2000)}`;
           .eq("id", email.id)
           .maybeSingle();
         const existing = ((existingEmail as any)?.prospect_data as Record<string, unknown> | null) ?? {};
-        // mergeProspect(base=existant, incoming=nouvel extrait) : existant non-null gagne toujours
-        (mainUpdate as any).prospect_data = mergeProspect(existing, prospectData);
+        const mergedFinal = mergeProspect(existing, prospectData);
+        (mainUpdate as any).prospect_data = mergedFinal;
       }
 
-      // Tenter la mise à jour (prospect_data peut ne pas exister encore en DB)
       try {
         await supabaseAdmin.from("emails").update(mainUpdate).eq("id", email.id);
       } catch {
-        // Fallback sans prospect_data si la colonne n'existe pas
         delete (mainUpdate as any).prospect_data;
         await supabaseAdmin.from("emails").update(mainUpdate).eq("id", email.id);
       }
 
-      // ── AUTOPILOTE : envoi automatique ──────────────────────────
+      // ── AUTOPILOTE ────────────────────────────────────────────────────────
       const pipelineMode = (settings?.email_rules as any)?.pipeline_mode ?? "DRAFT";
       const emailRules = (settings as any)?.email_rules ?? {};
       const intention = intentionMap[result.intention] ?? "INFO";
@@ -577,35 +634,28 @@ ${content.slice(0, 2000)}`;
       if (pipelineMode === "AUTOPILOTE" && !rdvConfirmed && email.gmail_message_id) {
         try {
           const accessToken = await getValidGoogleAccessToken(email.user_id);
-
           let autoReply: string | null = null;
 
           if (intention === "HORS_SUJET") {
-            // Archive silencieusement
             await supabaseAdmin.from("emails").update({ is_archived: true }).eq("id", email.id);
           } else if (intention === "INFO") {
-            // Répondre via FAQ
             const faq: { question: string; reponse: string }[] = emailRules.ft_faq ?? [];
             const faqText = faq.length > 0
               ? faq.map((f) => `Q: ${f.question}\nR: ${f.reponse}`).join("\n\n")
               : "Contactez-nous directement pour plus d'informations.";
-
             const faqCompletion = await openai.chat.completions.create({
               model: "gpt-4o-mini",
-              messages: [{
-                role: "user",
-                content: `Tu es l'assistant d'une agence immobilière. Réponds à cet email en te basant sur la FAQ ci-dessous. Sois courtois et professionnel. Réponds en français.\n\nFAQ:\n${faqText}\n\nEmail de: ${email.sender}\nSujet: ${email.subject}\nContenu: ${email.body ?? ""}`,
-              }],
+              messages: [{ role: "user", content: `Tu es l'assistant d'une agence immobilière. Réponds à cet email en te basant sur la FAQ ci-dessous.\n\nFAQ:\n${faqText}\n\nEmail de: ${email.sender}\nSujet: ${email.subject}\nContenu: ${email.body ?? ""}` }],
               temperature: 0.3,
             });
             autoReply = faqCompletion.choices[0]?.message?.content ?? null;
-          } else if (intention === "LOCATION") {
-            // ── Logique 4 cas (même que generate-reply) ──────────────────────
+          } else if (intention === "LOCATION" && prospectData) {
+            // ── Logique par étape (BLOC 2) ────────────────────────────────
             const locatif = emailRules.ft_locatif ?? {};
             const docsSection = emailRules.ft_documents ?? {};
             const calSection = emailRules.ft_calendrier ?? {};
             const nomAgence = locatif.nomAgence ?? "l'agence";
-            const multiplicateur = locatif.multiplicateur ?? 3;
+            const mult = locatif.multiplicateur ?? 3;
             const garantObligatoire = locatif.garantObligatoire ?? { cdd: true, auto: true, etudiant: true, retraite: false };
             const heureDebut = calSection.heureDebut ?? 9;
             const heureFin = calSection.heureFin ?? 18;
@@ -618,76 +668,80 @@ ${content.slice(0, 2000)}`;
               retraite:(docsSection.retraite as string[]) ?? ["Relevés de pension (3 derniers mois)", "Avis d'imposition", "Pièce d'identité"],
             };
 
-            const body = email.body ?? "";
-            const bodyLower = body.toLowerCase();
+            const etapeActuelle = (prospectData.etape_process as string) ?? "NEW";
+            const nom = (prospectData.nom as string | null) ?? "Madame, Monsieur";
+            const situationPro = prospectData.situation_pro as string | null;
+            const revenus = (prospectData.revenus_mensuels as number | null) ?? null;
+            const loyer = (prospectData.loyer_max as number | null) ?? null;
 
-            // Situation
-            let situation: string | null = null;
-            if (bodyLower.includes("étudiant") || bodyLower.includes("université") || bodyLower.includes("école")) situation = "etudiant";
-            else if (bodyLower.includes("cdi")) situation = "cdi";
-            else if (bodyLower.includes("cdd")) situation = "cdd";
-            else if (bodyLower.includes("auto-entrepreneur") || bodyLower.includes("freelance")) situation = "auto";
-            else if (bodyLower.includes("retraité")) situation = "retraite";
-            // Utiliser aussi les données IA extraites si disponibles
-            if (prospectData?.situation_pro) {
-              const spMap: Record<string, string> = {
-                CDI: "cdi", CDD: "cdd", AUTO_ENTREPRENEUR: "auto", ETUDIANT: "etudiant", RETRAITE: "retraite"
-              };
-              situation = spMap[prospectData.situation_pro as string] ?? situation;
-            }
-
-            // Revenus/loyer (priorité aux données IA)
-            let revenus: number | null = (prospectData?.revenus_mensuels as number | null) ?? null;
-            let loyer: number | null = (prospectData?.loyer_max as number | null) ?? null;
-            if (!revenus || !loyer) {
-              for (const line of body.split(/\r?\n/)) {
-                const l = line.toLowerCase();
-                const m = line.match(/(\d[\d\s]*)\s*(?:€|euros?)/i);
-                if (!m) continue;
-                const val = parseFloat(m[1].replace(/\s/g, ""));
-                if (!val || val < 100) continue;
-                if (l.includes("salaire") || l.includes("revenu") || l.includes("gagne")) { if (!revenus) revenus = val; }
-                else if (l.includes("loyer") || l.includes("budget")) { if (!loyer) loyer = val; }
-              }
-            }
-
-            // Nom (priorité aux données IA)
-            let nom = prospectData?.nom ?? "Madame, Monsieur";
-            if (!prospectData?.nom) {
-              const nomMatch = body.match(/(?:je m['']appelle|je suis|prénom\s*:?\s*)([A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+(?:\s+[A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+)*)/);
-              if (nomMatch?.[1]) nom = nomMatch[1].trim();
-            }
-
-            // Cas
-            let cas: "etudiant" | "insolvable" | "incomplet" | "complet";
-            if (situation === "etudiant") cas = "etudiant";
-            else if (revenus !== null && loyer !== null && revenus / loyer < multiplicateur) cas = "insolvable";
-            else if (!revenus || !loyer || !situation) cas = "incomplet";
-            else cas = "complet";
-
-            console.log(`[AUTOPILOTE] emailId=${email.id} cas=${cas} situation=${situation} revenus=${revenus} loyer=${loyer}`);
+            const spMap: Record<string, string> = { CDI: "cdi", CDD: "cdd", AUTO_ENTREPRENEUR: "auto", ETUDIANT: "etudiant", RETRAITE: "retraite" };
+            const situation = situationPro ? (spMap[situationPro] ?? null) : null;
+            const ratio = revenus && loyer ? (revenus / loyer).toFixed(1) : null;
+            const sig = `Cordialement, L'équipe ${nomAgence}`;
 
             let autopilotePrompt = "";
-            const agenceLine = `agence ${nomAgence}`;
 
-            if (cas === "etudiant") {
-              const docsList = docsProfiles.etudiant.map(d => `• ${d}`).join("\n");
+            if (etapeActuelle === "DOSSIER_RECU") {
+              // Étape 3 : accusé réception documents
+              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email bref pour accuser réception du dossier de ${nom}.
+- Remercier chaleureusement pour l'envoi des pièces jointes
+- Confirmer la bonne réception du dossier complet
+- Indiquer qu'un retour sera communiqué rapidement
+- Signature : ${sig}
+Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}`;
+
+            } else if (etapeActuelle === "VISITE_CONFIRMEE") {
+              // Étape 2 : confirmation reçue, on confirme + préparer pour visite
+              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email de confirmation de visite pour ${nom}.
+- Confirmer chaleureusement la visite (date/heure depuis l'email reçu)
+- Mentionner qu'un retour sera communiqué après la visite
+- Signature : ${sig}
+Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}, Contenu: ${email.body ?? ""}`;
+
+            } else if (etapeActuelle === "VISITE_PROPOSEE" && situation === "etudiant") {
+              // Étudiant : proposer visite + garant obligatoire, PAS de docs
               const needsGarant = garantObligatoire["etudiant"] !== false;
-              autopilotePrompt = `Tu es l'assistant de l'${agenceLine}. Rédige un email professionnel et chaleureux pour un candidat étudiant.\nRemercier ${nom} pour sa candidature.\nExpliquer que pour les étudiants, un garant est ${needsGarant ? "obligatoire" : "recommandé"}.\nDemander les documents suivants:\n${docsList}\nSignature: Cordialement, L'équipe ${nomAgence}\n\nEmail reçu:\nExpéditeur: ${email.sender}\nSujet: ${email.subject}\nContenu: ${body}`;
-            } else if (cas === "insolvable") {
-              const ratio = revenus && loyer ? (revenus / loyer).toFixed(1) : "insuffisant";
-              autopilotePrompt = `Tu es l'assistant de l'${agenceLine}. Rédige un email poli et respectueux pour décliner cette candidature.\nRemercier ${nom}.\nExpliquer poliment que les revenus sont insuffisants (critère: ${multiplicateur}x le loyer, ratio actuel: ${ratio}x).\nSuggérer la possibilité d'un garant solide.\nSignature: Cordialement, L'équipe ${nomAgence}\n\nEmail reçu:\nExpéditeur: ${email.sender}\nSujet: ${email.subject}\nContenu: ${body}`;
-            } else if (cas === "incomplet") {
-              const missing: string[] = [];
-              if (!situation) missing.push("votre situation professionnelle (CDI, CDD, étudiant, indépendant…)");
-              if (!revenus) missing.push("vos revenus nets mensuels (€)");
-              if (!loyer) missing.push("le loyer du bien qui vous intéresse");
-              autopilotePrompt = `Tu es l'assistant de l'${agenceLine}. Rédige un email pour demander les informations manquantes.\nRemercier ${nom} pour sa candidature.\nDemander:\n${missing.map((m, i) => `${i + 1}. ${m}`).join("\n")}\nSignature: Cordialement, L'équipe ${nomAgence}\n\nEmail reçu:\nExpéditeur: ${email.sender}\nSujet: ${email.subject}\nContenu: ${body}`;
+              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email pour ${nom} (étudiant).
+- Remercier pour l'intérêt
+- Expliquer qu'un garant est ${needsGarant ? "obligatoire" : "recommandé"} (revenus ≥ ${mult}x le loyer)
+- Si l'email mentionne un garant : proposer 3 créneaux de visite (jours ouvrés ${heureDebut}h-${heureFin}h, durée ${dureeVisite}min)
+- Si pas de garant mentionné : demander si un garant est disponible
+- NE PAS demander de documents à ce stade
+- Signature : ${sig}
+Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}, Contenu: ${email.body ?? ""}`;
+
+            } else if (etapeActuelle === "VISITE_PROPOSEE") {
+              // Solvable : proposer visite, PAS de docs
+              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email enthousiaste pour ${nom} (profil solvable, ratio ${ratio ?? "bon"}x).
+- Confirmer que le profil correspond aux critères
+- Proposer 3 créneaux de visite concrets (jours ouvrés à court terme, entre ${heureDebut}h et ${heureFin}h, durée ${dureeVisite}min)
+- Demander de confirmer un créneau
+- NE PAS demander de documents — ils seront demandés après la visite
+- Signature : ${sig}
+Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}, Contenu: ${email.body ?? ""}`;
+
+            } else if (etapeActuelle === "REFUSE") {
+              // Insolvable
+              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email poli pour décliner la candidature de ${nom}.
+- Remercier pour sa candidature
+- Expliquer poliment que les revenus sont insuffisants (critère: ${mult}x le loyer, ratio actuel: ${ratio ?? "insuffisant"}x)
+- Suggérer la possibilité d'un garant solide (revenus ≥ ${mult}x le loyer)
+- Signature : ${sig}
+Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}, Contenu: ${email.body ?? ""}`;
+
             } else {
-              const sitKeyMap: Record<string, string> = { cdi: "cdi", cdd: "cdd", auto: "auto", retraite: "retraite", etudiant: "etudiant" };
-              const sitKey = (situation ? (sitKeyMap[situation] ?? "cdi") : "cdi");
-              const docsList = (docsProfiles[sitKey] ?? docsProfiles.cdi).map(d => `• ${d}`).join("\n");
-              autopilotePrompt = `Tu es l'assistant de l'${agenceLine}. Accueille favorablement ce candidat solvable.\nRemercier ${nom}.\nDemander les documents suivants:\n${docsList}\nProposer des créneaux de visite (entre ${heureDebut}h et ${heureFin}h en semaine, durée ${dureeVisite}min).\nSignature: Cordialement, L'équipe ${nomAgence}\n\nEmail reçu:\nExpéditeur: ${email.sender}\nSujet: ${email.subject}\nContenu: ${body}`;
+              // QUALIFICATION (infos manquantes) : demander SEULEMENT situation + revenus
+              const missing: string[] = [];
+              if (!situationPro) missing.push("votre situation professionnelle (CDI, CDD, étudiant, indépendant…)");
+              if (!revenus) missing.push("vos revenus nets mensuels (€)");
+              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email pour demander les informations manquantes à ${nom}.
+- Remercier pour l'intérêt
+- Demander uniquement :
+${missing.map((m, i) => `${i + 1}. ${m}`).join("\n")}
+- NE PAS demander de documents à ce stade
+- Rester encourageant
+- Signature : ${sig}
+Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}, Contenu: ${email.body ?? ""}`;
             }
 
             const locationCompletion = await openai.chat.completions.create({
@@ -699,7 +753,6 @@ ${content.slice(0, 2000)}`;
           }
 
           if (autoReply && email.gmail_message_id) {
-            // Construire le message RFC 2822
             const subjectEncoded = `=?UTF-8?B?${Buffer.from(`Re: ${email.subject ?? ""}`, "utf-8").toString("base64")}?=`;
             const mime = [
               `MIME-Version: 1.0`,
@@ -710,13 +763,12 @@ ${content.slice(0, 2000)}`;
               ``,
               Buffer.from(autoReply, "utf-8").toString("base64"),
             ].join("\r\n");
-            const raw = Buffer.from(mime, "utf-8")
+            const rawMsg = Buffer.from(mime, "utf-8")
               .toString("base64")
               .replace(/\+/g, "-")
               .replace(/\//g, "_")
               .replace(/=+$/, "");
 
-            // Récupérer threadId
             let threadId: string | undefined;
             try {
               const msgRes = await fetch(
@@ -726,7 +778,7 @@ ${content.slice(0, 2000)}`;
               if (msgRes.ok) threadId = (await msgRes.json()).threadId;
             } catch { /* optional */ }
 
-            const payload: any = { raw };
+            const payload: any = { raw: rawMsg };
             if (threadId) payload.threadId = threadId;
 
             await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
@@ -735,7 +787,6 @@ ${content.slice(0, 2000)}`;
               body: JSON.stringify(payload),
             });
 
-            // Marquer comme traité
             await supabaseAdmin.from("emails").update({
               ai_reply: autoReply,
               is_archived: true,
@@ -743,7 +794,6 @@ ${content.slice(0, 2000)}`;
           }
         } catch (autoErr) {
           console.error("AUTOPILOTE_SEND_ERROR", autoErr);
-          // On ne bloque pas l'analyse si l'envoi auto échoue
         }
       }
 

@@ -1,14 +1,13 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useState, useCallback } from "react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import AppShell from "@/components/layout/AppShell";
 import { SkeletonCard } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
+import type { EtapeProcess } from "@/types/email";
 
 const supabase = supabaseBrowser();
-
-type LeadStage = "nouveau" | "qualification" | "rdv_propose" | "confirme";
 
 type Lead = {
   id: string;
@@ -21,74 +20,39 @@ type Lead = {
   is_urgent: boolean | null;
   is_important: boolean | null;
   classification_reason: string | null;
-  stage: LeadStage;
+  prospect_data: {
+    nom?: string | null;
+    situation_pro?: string | null;
+    revenus_mensuels?: number | null;
+    loyer_max?: number | null;
+    telephone?: string | null;
+    garant?: string | null;
+    etape_process?: EtapeProcess | null;
+  } | null;
 };
 
-const STAGES: { key: LeadStage; label: string; color: string; bg: string; border: string }[] = [
-  { key: "nouveau",       label: "Nouveau",      color: "rgb(79 70 229)",  bg: "rgb(238 242 255)", border: "rgb(199 210 254)" },
-  { key: "qualification", label: "Qualification", color: "rgb(234 88 12)", bg: "rgb(255 247 237)", border: "rgb(254 215 170)" },
-  { key: "rdv_propose",   label: "RDV proposé",  color: "rgb(2 132 199)",  bg: "rgb(240 249 255)", border: "rgb(186 230 253)" },
-  { key: "confirme",      label: "Confirmé",     color: "rgb(22 163 74)",  bg: "rgb(240 253 244)", border: "rgb(187 247 208)" },
+const ETAPE_CONFIG: Record<EtapeProcess, { label: string; color: string; bg: string; border: string }> = {
+  NEW:              { label: "Nouveau",          color: "rgb(100 116 139)", bg: "rgb(248 250 252)",  border: "rgb(226 232 240)" },
+  QUALIFICATION:    { label: "Qualification",    color: "rgb(234 88 12)",   bg: "rgb(255 247 237)",  border: "rgb(254 215 170)" },
+  VISITE_PROPOSEE:  { label: "Visite proposée",  color: "rgb(2 132 199)",   bg: "rgb(240 249 255)",  border: "rgb(186 230 253)" },
+  VISITE_CONFIRMEE: { label: "Visite confirmée", color: "rgb(22 163 74)",   bg: "rgb(240 253 244)",  border: "rgb(187 247 208)" },
+  DOSSIER_DEMANDE:  { label: "Dossier demandé",  color: "rgb(234 179 8)",   bg: "rgb(254 252 232)",  border: "rgb(253 224 71)"  },
+  DOSSIER_RECU:     { label: "Dossier reçu",     color: "rgb(147 51 234)",  bg: "rgb(250 245 255)",  border: "rgb(233 213 255)" },
+  VALIDE:           { label: "Validé",           color: "rgb(22 163 74)",   bg: "rgb(240 253 244)",  border: "rgb(134 239 172)" },
+  REFUSE:           { label: "Refusé",           color: "rgb(220 38 38)",   bg: "rgb(254 242 242)",  border: "rgb(252 165 165)" },
+};
+
+// Colonnes affichées dans le Kanban (on masque VALIDE/REFUSE par défaut)
+const VISIBLE_STAGES: EtapeProcess[] = [
+  "NEW", "QUALIFICATION", "VISITE_PROPOSEE", "VISITE_CONFIRMEE", "DOSSIER_DEMANDE", "DOSSIER_RECU",
 ];
 
-function getStageFromEmail(email: {
-  classification_reason?: string | null;
-  category?: string | null;
-  is_important?: boolean | null;
-}): LeadStage {
-  if (email.classification_reason === "RDV_CONFIRMÉ") return "confirme";
-  if (email.classification_reason?.includes("créneau") || email.classification_reason?.includes("rdv")) return "rdv_propose";
-  if (email.category === "LOCATION" && email.is_important) return "qualification";
-  return "nouveau";
-}
-
-/* ── EXTRACTION HEURISTIQUE ── */
-
-function detectSituation(body: string | null): string | null {
-  const l = (body || "").toLowerCase();
-  if (l.includes("étudiant") || l.includes("etudiante") || l.includes("école") || l.includes("université")) return "Étudiant";
-  if (l.includes("cdi")) return "CDI";
-  if (l.includes("cdd")) return "CDD";
-  if (l.includes("auto-entrepreneur") || l.includes("autoentrepreneur") || l.includes("freelance")) return "Auto-entrepreneur";
-  if (l.includes("retraité") || l.includes("retraitée")) return "Retraité";
-  return null;
-}
-
-function extractRevenus(body: string | null): number | null {
-  const text = body || "";
-  for (const line of text.split(/\r?\n/)) {
-    const l = line.toLowerCase();
-    const m = line.match(/(\d[\d\s]*)\s*(?:€|euros?)/i);
-    if (!m) continue;
-    const val = parseFloat(m[1].replace(/\s/g, ""));
-    if (!val || val < 200) continue;
-    if (l.includes("salaire") || l.includes("revenu") || l.includes("gagne") || l.includes("touche")) return val;
-  }
-  return null;
-}
-
-function extractLoyer(body: string | null): number | null {
-  const text = body || "";
-  for (const line of text.split(/\r?\n/)) {
-    const l = line.toLowerCase();
-    const m = line.match(/(\d[\d\s]*)\s*(?:€|euros?)/i);
-    if (!m) continue;
-    const val = parseFloat(m[1].replace(/\s/g, ""));
-    if (!val || val < 100) continue;
-    if (l.includes("loyer") || l.includes("budget") || l.includes("mensuel")) return val;
-  }
-  return null;
-}
-
-function guessDocsCount(summary: string | null, body: string | null): number {
-  const t = ((summary || "") + " " + (body || "")).toLowerCase();
-  let score = 0;
-  if (t.includes("fiche de paie") || t.includes("bulletin") || t.includes("salaire")) score++;
-  if (t.includes("contrat") || t.includes("cdi") || t.includes("cdd")) score++;
-  if (t.includes("avis d'imposition") || t.includes("impôt") || t.includes("fiscal")) score++;
-  if (t.includes("identit") || t.includes("passeport") || t.includes("carte")) score++;
-  if (t.includes("rib") || t.includes("relevé bancaire")) score++;
-  return score;
+function getEtapeFromLead(lead: Lead): EtapeProcess {
+  const etape = lead.prospect_data?.etape_process;
+  if (etape && etape in ETAPE_CONFIG) return etape;
+  if (lead.classification_reason === "RDV_CONFIRMÉ") return "VISITE_CONFIRMEE";
+  if (lead.category === "LOCATION" && lead.is_urgent) return "QUALIFICATION";
+  return "NEW";
 }
 
 function hoursAgo(dateStr: string | null): number | null {
@@ -96,198 +60,129 @@ function hoursAgo(dateStr: string | null): number | null {
   return Math.round((Date.now() - new Date(dateStr).getTime()) / 3_600_000);
 }
 
-/* ── SCORE CIRCLE ── */
-function ScoreCircle({ score, max = 100 }: { score: number; max?: number }) {
-  const pct = Math.min(score / max, 1);
-  const color = pct >= 0.75 ? "rgb(22 163 74)" : pct >= 0.4 ? "rgb(234 88 12)" : "rgb(220 38 38)";
-  const r = 16;
-  const circumference = 2 * Math.PI * r;
-  const dash = pct * circumference;
-
+function SolvabilityBadge({ revenus, loyer, multiplicateur = 3 }: { revenus: number | null; loyer: number | null; multiplicateur?: number }) {
+  if (!revenus || !loyer) return null;
+  const ratio = revenus / loyer;
+  const ok = ratio >= multiplicateur;
   return (
-    <div className="relative flex-shrink-0" style={{ width: 40, height: 40 }}>
-      <svg width="40" height="40" viewBox="0 0 40 40">
-        <circle cx="20" cy="20" r={r} fill="none" stroke="rgb(226 232 240)" strokeWidth="3" />
-        <circle
-          cx="20" cy="20" r={r} fill="none"
-          stroke={color} strokeWidth="3"
-          strokeDasharray={`${dash} ${circumference - dash}`}
-          strokeLinecap="round"
-          transform="rotate(-90 20 20)"
-        />
-      </svg>
-      <div className="absolute inset-0 flex items-center justify-center">
-        <span className="text-[9px] font-bold" style={{ color }}>{score}</span>
-      </div>
-    </div>
+    <span
+      className="text-xs px-2 py-0.5 rounded-full font-medium"
+      style={{
+        background: ok ? "rgba(22,163,74,0.1)" : "rgba(220,38,38,0.1)",
+        color: ok ? "rgb(22 163 74)" : "rgb(220 38 38)",
+      }}
+    >
+      {ratio.toFixed(1)}x {ok ? "✓" : "✗"}
+    </span>
   );
 }
 
-function computeScore(lead: Lead): number {
-  let score = 0;
-  if (lead.is_urgent) score += 30;
-  else if (lead.is_important) score += 15;
-  if (detectSituation(lead.body)) score += 15;
-  const rev = extractRevenus(lead.body);
-  const loy = extractLoyer(lead.body);
-  if (rev && loy && rev / loy >= 3) score += 25;
-  else if (rev || loy) score += 10;
-  const docs = guessDocsCount(lead.summary, lead.body);
-  score += Math.min(docs * 6, 30);
-  return Math.min(score, 100);
-}
-
-/* ── DOSSIER BAR ── */
-function DossierBar({ count, max = 5 }: { count: number; max?: number }) {
-  const pct = Math.round((count / max) * 100);
-  const color = pct >= 60 ? "rgb(22 163 74)" : pct >= 30 ? "rgb(234 88 12)" : "rgb(220 38 38)";
-  return (
-    <div>
-      <div className="flex items-center justify-between mb-1">
-        <span className="text-xs" style={{ color: "rgb(100 116 139)" }}>Dossier</span>
-        <span className="text-xs font-medium" style={{ color }}>{count}/{max} docs</span>
-      </div>
-      <div className="relative h-1.5 rounded-full overflow-hidden" style={{ background: "rgb(226 232 240)" }}>
-        <div
-          className="h-full rounded-full transition-all duration-500"
-          style={{ width: `${pct}%`, background: color }}
-        />
-      </div>
-    </div>
-  );
-}
-
-/* ── LEAD CARD ── */
 function LeadCard({
   lead,
-  onMove,
-  onAction,
+  onVisiteEffectuee,
+  onVisiteAnnulee,
+  onMoveToStage,
 }: {
   lead: Lead;
-  onMove: (id: string, stage: LeadStage) => void;
-  onAction: (id: string, action: "relancer" | "rdv" | "valider") => void;
+  onVisiteEffectuee: (id: string) => void;
+  onVisiteAnnulee: (id: string) => void;
+  onMoveToStage: (id: string, etape: EtapeProcess) => void;
 }) {
-  const score = computeScore(lead);
-  const situation = detectSituation(lead.body);
-  const revenus = extractRevenus(lead.body);
-  const loyer = extractLoyer(lead.body);
-  const docsCount = guessDocsCount(lead.summary, lead.body);
+  const etape = getEtapeFromLead(lead);
+  const config = ETAPE_CONFIG[etape];
+  const pd = lead.prospect_data;
+  const nom = pd?.nom || (lead.sender || "Inconnu").replace(/<.*>/, "").trim();
   const hours = hoursAgo(lead.received_at);
-  const tooOld = hours !== null && hours > 24;
-  const ratio = revenus && loyer ? revenus / loyer : null;
-  const solvable = ratio !== null && ratio >= 3;
+  const tooOld = hours !== null && hours > 48;
+  const spMap: Record<string, string> = { CDI: "CDI", CDD: "CDD", AUTO_ENTREPRENEUR: "Auto.", ETUDIANT: "Étudiant", RETRAITE: "Retraité" };
+  const situationLabel = pd?.situation_pro ? (spMap[pd.situation_pro] ?? pd.situation_pro) : null;
 
   return (
     <div
-      className="rounded-xl border p-3 space-y-2.5 cursor-default transition-all hover-lift animate-fade-in"
+      className="rounded-xl border p-3 space-y-2 bg-white transition-shadow hover:shadow-sm"
       style={{
-        background: "white",
         borderColor: tooOld ? "rgba(220,38,38,0.3)" : "rgb(226 232 240)",
-        boxShadow: tooOld ? "0 0 0 1px rgba(220,38,38,0.15)" : undefined,
       }}
     >
-      {/* Row 1 : score + sender + badge >24h */}
-      <div className="flex items-center gap-2">
-        <ScoreCircle score={score} />
-        <div className="flex-1 min-w-0">
-          <div className="text-xs font-medium truncate" style={{ color: "rgb(71 85 105)" }}>
-            {(lead.sender || "Inconnu").replace(/<.*>/, "").trim()}
-          </div>
-          <div className="flex items-center gap-1.5 mt-0.5">
-            {tooOld ? (
-              <span className="text-xs font-semibold" style={{ color: "rgb(220 38 38)" }}>
-                ⏰ {Math.floor(hours! / 24)}j sans réponse
-              </span>
-            ) : hours !== null ? (
-              <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>Il y a {hours}h</span>
-            ) : null}
-          </div>
+      {/* Nom + badge étape */}
+      <div className="flex items-center justify-between gap-2">
+        <div className="font-medium text-sm truncate" style={{ color: "rgb(30 41 59)" }}>
+          {nom}
         </div>
-        {lead.classification_reason === "RDV_CONFIRMÉ" ? (
-          <span className="text-xs px-1.5 py-0.5 rounded-full font-medium flex-shrink-0"
-            style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22,163,74)" }}>✅ Confirmé</span>
-        ) : lead.is_urgent ? (
-          <span className="text-xs px-1.5 py-0.5 rounded-full font-medium flex-shrink-0"
-            style={{ background: "rgba(220,38,38,0.1)", color: "rgb(220 38 38)" }}>🔥 Urgent</span>
-        ) : null}
+        <span
+          className="text-xs px-1.5 py-0.5 rounded-full font-medium flex-shrink-0"
+          style={{ background: config.bg, color: config.color, border: `1px solid ${config.border}` }}
+        >
+          {config.label}
+        </span>
       </div>
 
       {/* Sujet */}
-      <div className="text-sm font-semibold truncate" style={{ color: "rgb(30 41 59)" }}>
+      <div className="text-xs truncate" style={{ color: "rgb(100 116 139)" }}>
         {lead.subject || "(Sans objet)"}
       </div>
 
-      {/* Situation pro + ratio */}
+      {/* Situation + solvabilité */}
       <div className="flex items-center gap-2 flex-wrap">
-        {situation && (
-          <span
-            className="text-xs px-2 py-0.5 rounded-full font-medium"
-            style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}
-          >
-            {situation}
+        {situationLabel && (
+          <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}>
+            {situationLabel}
           </span>
         )}
-        {ratio !== null && (
-          <span
-            className="text-xs px-2 py-0.5 rounded-full font-medium"
-            style={{
-              background: solvable ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.08)",
-              color: solvable ? "rgb(22 163 74)" : "rgb(220 38 38)",
-            }}
-          >
-            {ratio.toFixed(1)}x revenus/loyer
+        <SolvabilityBadge revenus={pd?.revenus_mensuels ?? null} loyer={pd?.loyer_max ?? null} />
+        {tooOld && hours !== null && (
+          <span className="text-xs font-semibold" style={{ color: "rgb(220 38 38)" }}>
+            ⏰ {Math.floor(hours / 24)}j
           </span>
         )}
       </div>
 
       {/* Résumé */}
       {lead.summary && (
-        <div className="text-xs line-clamp-2" style={{ color: "rgb(100 116 139)" }}>
+        <div className="text-xs line-clamp-2" style={{ color: "rgb(148 163 184)" }}>
           {lead.summary}
         </div>
       )}
 
-      {/* Dossier bar */}
-      <DossierBar count={docsCount} max={5} />
-
-      {/* Actions primaires */}
-      <div className="grid grid-cols-3 gap-1 pt-0.5">
-        <button
-          onClick={(e) => { e.stopPropagation(); onAction(lead.id, "relancer"); }}
-          className="text-xs py-1.5 rounded-lg font-medium transition-colors text-center"
-          style={{ background: "rgb(238 242 255)", color: "rgb(79 70 229)" }}
-        >
-          ↩ Relancer
-        </button>
-        <button
-          onClick={(e) => { e.stopPropagation(); onAction(lead.id, "rdv"); }}
-          className="text-xs py-1.5 rounded-lg font-medium transition-colors text-center"
-          style={{ background: "rgb(240 249 255)", color: "rgb(2 132 199)" }}
-        >
-          📅 RDV
-        </button>
-        <button
-          onClick={(e) => { e.stopPropagation(); onAction(lead.id, "valider"); }}
-          className="text-xs py-1.5 rounded-lg font-medium transition-colors text-center"
-          style={{ background: "rgb(240 253 244)", color: "rgb(22 163 74)" }}
-        >
-          ✓ Valider
-        </button>
-      </div>
+      {/* ── BLOC 5 : Boutons visite effectuée / annulée ─────────────── */}
+      {etape === "VISITE_CONFIRMEE" && (
+        <div className="grid grid-cols-2 gap-1.5 pt-1">
+          <button
+            onClick={() => onVisiteEffectuee(lead.id)}
+            className="text-xs py-1.5 rounded-lg font-medium text-center"
+            style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22 163 74)" }}
+          >
+            ✅ Visite effectuée
+          </button>
+          <button
+            onClick={() => onVisiteAnnulee(lead.id)}
+            className="text-xs py-1.5 rounded-lg font-medium text-center"
+            style={{ background: "rgba(220,38,38,0.08)", color: "rgb(220 38 38)" }}
+          >
+            ❌ Annulée
+          </button>
+        </div>
+      )}
 
       {/* Déplacer vers */}
       <div className="flex gap-1 flex-wrap pt-0.5 border-t" style={{ borderColor: "rgb(241 245 249)" }}>
         <span className="text-xs self-center" style={{ color: "rgb(148 163 184)" }}>→</span>
-        {STAGES.filter((s) => s.key !== lead.stage).map((s) => (
-          <button
-            key={s.key}
-            onClick={(e) => { e.stopPropagation(); onMove(lead.id, s.key); }}
-            className="text-xs px-2 py-0.5 rounded-md transition-colors"
-            style={{ background: s.bg, color: s.color, border: `1px solid ${s.border}` }}
-          >
-            {s.label}
-          </button>
-        ))}
+        {(["QUALIFICATION", "VISITE_PROPOSEE", "VALIDE", "REFUSE"] as EtapeProcess[])
+          .filter(s => s !== etape)
+          .map(s => (
+            <button
+              key={s}
+              onClick={() => onMoveToStage(lead.id, s)}
+              className="text-xs px-1.5 py-0.5 rounded-md"
+              style={{
+                background: ETAPE_CONFIG[s].bg,
+                color: ETAPE_CONFIG[s].color,
+                border: `1px solid ${ETAPE_CONFIG[s].border}`,
+              }}
+            >
+              {ETAPE_CONFIG[s].label}
+            </button>
+          ))}
       </div>
     </div>
   );
@@ -296,72 +191,77 @@ function LeadCard({
 export default function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
-  const [stageOverrides, setStageOverrides] = useState<Record<string, LeadStage>>({});
+  const [showRefused, setShowRefused] = useState(false);
   const { toast } = useToast();
 
-  useEffect(() => {
-    try {
-      const stored = localStorage.getItem("fixetime_lead_stages");
-      if (stored) setStageOverrides(JSON.parse(stored));
-    } catch { /* silent */ }
+  const fetchLeads = useCallback(async () => {
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) { window.location.href = "/auth/login"; return; }
+
+    const since = new Date();
+    since.setDate(since.getDate() - 30);
+
+    const { data } = await supabase
+      .from("emails")
+      .select("id, sender, subject, summary, body, received_at, category, is_urgent, is_important, classification_reason, prospect_data")
+      .eq("user_id", user.id)
+      .eq("category", "LOCATION")
+      .gte("received_at", since.toISOString())
+      .order("received_at", { ascending: false })
+      .limit(200);
+
+    if (data) setLeads(data as Lead[]);
+    setLoading(false);
   }, []);
 
-  useEffect(() => {
-    const fetchLeads = async () => {
-      const { data: { user } } = await supabase.auth.getUser();
-      if (!user) { window.location.href = "/auth/login"; return; }
+  useEffect(() => { fetchLeads(); }, [fetchLeads]);
 
-      const since = new Date();
-      since.setDate(since.getDate() - 30);
-
-      const { data } = await supabase
-        .from("emails")
-        .select("id, sender, subject, summary, body, received_at, category, is_urgent, is_important, classification_reason")
-        .eq("user_id", user.id)
-        .eq("category", "LOCATION")
-        .gte("received_at", since.toISOString())
-        .order("received_at", { ascending: false })
-        .limit(100);
-
-      if (data) {
-        setLeads(data.map((e: Omit<Lead, "stage">) => ({
-          ...e,
-          stage: stageOverrides[e.id] ?? getStageFromEmail(e),
-        })));
-      }
-      setLoading(false);
-    };
-
-    fetchLeads();
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [stageOverrides]);
-
-  const moveToStage = (id: string, stage: LeadStage) => {
-    const newOverrides = { ...stageOverrides, [id]: stage };
-    setStageOverrides(newOverrides);
-    try { localStorage.setItem("fixetime_lead_stages", JSON.stringify(newOverrides)); } catch { /* silent */ }
-    setLeads((prev) => prev.map((l) => l.id === id ? { ...l, stage } : l));
-  };
-
-  const handleAction = (id: string, action: "relancer" | "rdv" | "valider") => {
-    if (action === "valider") {
-      moveToStage(id, "confirme");
-      toast("Lead validé ✅", "success");
-    } else if (action === "rdv") {
-      moveToStage(id, "rdv_propose");
-      toast("Déplacé vers RDV proposé 📅", "success");
-    } else if (action === "relancer") {
-      toast("Brouillon de relance à envoyer depuis le pipeline →", "success");
+  const handleVisiteEffectuee = async (id: string) => {
+    const res = await fetch(`/api/leads/${id}/visite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "effectuee" }),
+    });
+    if (res.ok) {
+      toast("✅ Visite marquée comme effectuée — Dossier demandé par IA", "success");
+      await fetchLeads();
+    } else {
+      toast("Erreur lors de la mise à jour", "error");
     }
   };
 
-  const stageLeads = (stage: LeadStage) => leads.filter((l) => l.stage === stage);
+  const handleVisiteAnnulee = async (id: string) => {
+    const res = await fetch(`/api/leads/${id}/visite`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "annulee" }),
+    });
+    if (res.ok) {
+      toast("❌ Visite annulée — Prospect remis en Qualification", "success");
+      await fetchLeads();
+    } else {
+      toast("Erreur lors de la mise à jour", "error");
+    }
+  };
 
-  const urgentCount = leads.filter((l) => l.is_urgent).length;
-  const staleCount = leads.filter((l) => {
-    const h = hoursAgo(l.received_at);
-    return h !== null && h > 24;
-  }).length;
+  const handleMoveToStage = async (id: string, etape: EtapeProcess) => {
+    const { data: email } = await supabase.from("emails").select("prospect_data").eq("id", id).single();
+    const pd = ((email as any)?.prospect_data as Record<string, unknown> | null) ?? {};
+    const updated = { ...pd, etape_process: etape };
+    await supabase.from("emails").update({ prospect_data: updated }).eq("id", id);
+    setLeads(prev => prev.map(l => l.id === id ? { ...l, prospect_data: { ...l.prospect_data, etape_process: etape } } : l));
+    toast(`Déplacé → ${ETAPE_CONFIG[etape].label}`, "success");
+  };
+
+  const activeLeads = leads.filter(l => getEtapeFromLead(l) !== "REFUSE" && getEtapeFromLead(l) !== "VALIDE");
+  const refusedLeads = leads.filter(l => getEtapeFromLead(l) === "REFUSE" || getEtapeFromLead(l) === "VALIDE");
+
+  const stageLeads = (stage: EtapeProcess) => activeLeads.filter(l => getEtapeFromLead(l) === stage);
+
+  const urgentCount = leads.filter(l => l.is_urgent).length;
+  const staleCount = leads.filter(l => { const h = hoursAgo(l.received_at); return h !== null && h > 48; }).length;
+  const visiteProposeCount = stageLeads("VISITE_PROPOSEE").length + stageLeads("VISITE_CONFIRMEE").length;
+  const dossierCount = stageLeads("DOSSIER_DEMANDE").length + stageLeads("DOSSIER_RECU").length;
 
   return (
     <AppShell>
@@ -373,28 +273,31 @@ export default function LeadsPage() {
             <div>
               <h1 className="text-lg font-semibold" style={{ color: "rgb(30 41 59)" }}>Prospects</h1>
               <p className="text-xs mt-0.5" style={{ color: "rgb(148 163 184)" }}>
-                {leads.length} leads · 30 jours
-                {urgentCount > 0 && (
-                  <span className="ml-2 font-medium" style={{ color: "rgb(220 38 38)" }}>
-                    🔥 {urgentCount} urgent{urgentCount > 1 ? "s" : ""}
-                  </span>
-                )}
-                {staleCount > 0 && (
-                  <span className="ml-2 font-medium" style={{ color: "rgb(220 38 38)" }}>
-                    · ⏰ {staleCount} sans réponse &gt;24h
-                  </span>
-                )}
+                {activeLeads.length} actifs · 30 jours
+                {urgentCount > 0 && <span className="ml-2 font-medium" style={{ color: "rgb(220 38 38)" }}>🔥 {urgentCount} urgent{urgentCount > 1 ? "s" : ""}</span>}
+                {staleCount > 0 && <span className="ml-2 font-medium" style={{ color: "rgb(220 38 38)" }}>⏰ {staleCount} sans réponse &gt;48h</span>}
               </p>
             </div>
             <div className="flex gap-4">
-              {STAGES.map((s) => (
-                <div key={s.key} className="text-center">
-                  <div className="text-lg font-bold" style={{ color: s.color }}>
-                    {stageLeads(s.key).length}
-                  </div>
-                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>{s.label}</div>
+              {visiteProposeCount > 0 && (
+                <div className="text-center">
+                  <div className="text-lg font-bold" style={{ color: "rgb(2 132 199)" }}>{visiteProposeCount}</div>
+                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Visites</div>
                 </div>
-              ))}
+              )}
+              {dossierCount > 0 && (
+                <div className="text-center">
+                  <div className="text-lg font-bold" style={{ color: "rgb(147 51 234)" }}>{dossierCount}</div>
+                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Dossiers</div>
+                </div>
+              )}
+              <button
+                onClick={() => setShowRefused(v => !v)}
+                className="text-xs px-3 py-1.5 rounded-lg"
+                style={{ background: "rgb(241 245 249)", color: "rgb(100 116 139)" }}
+              >
+                {showRefused ? "Masquer refusés" : `Refusés/Validés (${refusedLeads.length})`}
+              </button>
             </div>
           </div>
         </div>
@@ -403,52 +306,43 @@ export default function LeadsPage() {
         <div className="flex-1 overflow-x-auto p-6">
           {loading ? (
             <div className="flex gap-4">
-              {STAGES.map((s) => (
-                <div key={s.key} className="w-72 flex-shrink-0 space-y-3">
-                  <SkeletonCard />
-                  <SkeletonCard />
+              {VISIBLE_STAGES.slice(0, 4).map(s => (
+                <div key={s} className="w-64 flex-shrink-0 space-y-3">
+                  <SkeletonCard /><SkeletonCard />
                 </div>
               ))}
             </div>
           ) : (
             <div className="flex gap-4 h-full">
-              {STAGES.map((stage) => {
-                const stageItems = stageLeads(stage.key);
+              {VISIBLE_STAGES.map((stage) => {
+                const config = ETAPE_CONFIG[stage];
+                const items = stageLeads(stage);
                 return (
-                  <div key={stage.key} className="w-72 flex-shrink-0 flex flex-col gap-3">
-                    {/* Column header */}
+                  <div key={stage} className="w-64 flex-shrink-0 flex flex-col gap-3">
                     <div
                       className="flex items-center justify-between px-3 py-2 rounded-lg"
-                      style={{ background: stage.bg, border: `1px solid ${stage.border}` }}
+                      style={{ background: config.bg, border: `1px solid ${config.border}` }}
                     >
-                      <span className="text-sm font-semibold" style={{ color: stage.color }}>
-                        {stage.label}
+                      <span className="text-sm font-semibold" style={{ color: config.color }}>
+                        {config.label}
                       </span>
-                      <span
-                        className="text-xs font-semibold px-2 py-0.5 rounded-full"
-                        style={{ background: "white", color: stage.color }}
-                      >
-                        {stageItems.length}
+                      <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-white" style={{ color: config.color }}>
+                        {items.length}
                       </span>
                     </div>
-
-                    {/* Cards */}
                     <div className="flex-1 overflow-y-auto space-y-2 pr-1">
-                      {stageItems.length === 0 ? (
-                        <div
-                          className="flex flex-col items-center justify-center py-10 rounded-xl border border-dashed"
-                          style={{ borderColor: stage.border }}
-                        >
-                          <div className="text-xl mb-1">👤</div>
+                      {items.length === 0 ? (
+                        <div className="flex flex-col items-center justify-center py-8 rounded-xl border border-dashed" style={{ borderColor: config.border }}>
                           <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Aucun prospect</div>
                         </div>
                       ) : (
-                        stageItems.map((lead) => (
+                        items.map(lead => (
                           <LeadCard
                             key={lead.id}
                             lead={lead}
-                            onMove={moveToStage}
-                            onAction={handleAction}
+                            onVisiteEffectuee={handleVisiteEffectuee}
+                            onVisiteAnnulee={handleVisiteAnnulee}
+                            onMoveToStage={handleMoveToStage}
                           />
                         ))
                       )}
@@ -456,6 +350,28 @@ export default function LeadsPage() {
                   </div>
                 );
               })}
+
+              {/* Colonne Refusés/Validés (toggleable) */}
+              {showRefused && (
+                <div className="w-64 flex-shrink-0 flex flex-col gap-3">
+                  <div className="flex items-center justify-between px-3 py-2 rounded-lg"
+                    style={{ background: "rgb(248 250 252)", border: "1px solid rgb(226 232 240)" }}>
+                    <span className="text-sm font-semibold" style={{ color: "rgb(100 116 139)" }}>Refusés / Validés</span>
+                    <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-white" style={{ color: "rgb(100 116 139)" }}>{refusedLeads.length}</span>
+                  </div>
+                  <div className="flex-1 overflow-y-auto space-y-2 pr-1">
+                    {refusedLeads.map(lead => (
+                      <LeadCard
+                        key={lead.id}
+                        lead={lead}
+                        onVisiteEffectuee={handleVisiteEffectuee}
+                        onVisiteAnnulee={handleVisiteAnnulee}
+                        onMoveToStage={handleMoveToStage}
+                      />
+                    ))}
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

@@ -126,6 +126,37 @@ export async function POST(req: NextRequest) {
         const date = headers.find((h) => h.name === "Date")?.value;
         const receivedAt = date ? new Date(date).toISOString() : new Date().toISOString();
 
+        // BLOC 1 FIX : extraire le corps de l'email (base64url → utf-8)
+        // Priorité : text/plain > html (cherche récursivement dans payload.parts)
+        function getBody(payload: any): string {
+          if (!payload) return "";
+          if (payload.body?.data) {
+            return Buffer.from(payload.body.data, "base64url").toString("utf-8");
+          }
+          if (payload.parts) {
+            for (const part of payload.parts) {
+              if (part.mimeType === "text/plain" && part.body?.data) {
+                return Buffer.from(part.body.data, "base64url").toString("utf-8");
+              }
+            }
+            for (const part of payload.parts) {
+              if (part.parts) {
+                const nested = getBody(part);
+                if (nested) return nested;
+              }
+            }
+            // fallback html si pas de text/plain
+            for (const part of payload.parts) {
+              if (part.mimeType === "text/html" && part.body?.data) {
+                const html = Buffer.from(part.body.data, "base64url").toString("utf-8");
+                return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+              }
+            }
+          }
+          return "";
+        }
+        const emailBody = getBody(detail.payload);
+
         // BLOC 3 : extraire les pièces jointes depuis payload.parts (récursif)
         function extractAttachments(parts: any[]): { filename: string; mimeType: string; attachmentId: string; size: number }[] {
           const result: { filename: string; mimeType: string; attachmentId: string; size: number }[] = [];
@@ -152,12 +183,15 @@ export async function POST(req: NextRequest) {
         // ✅ FIX BUG 1 : is_archived:false explicite + ignoreDuplicates
         // → les nouveaux emails ont is_archived=false (visible dans fetchEmails)
         // → on n'écrase pas les emails déjà archivés manuellement
+        console.log(`[GMAIL SYNC] msg=${msg.id} body_length=${emailBody.length} body_sample=${emailBody.substring(0, 100)}`);
+
         const { error } = await supabaseAdmin.from("emails").upsert(
           {
             user_id: userId,
             gmail_message_id: msg.id,
             sender: from,
             subject,
+            body: emailBody || null,
             received_at: receivedAt,
             is_archived: false,  // ← CRITIQUE : évite is_archived=NULL
             attachments: attachments.length > 0 ? attachments : [],

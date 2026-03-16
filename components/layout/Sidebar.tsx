@@ -11,6 +11,7 @@ import {
   LogOut,
   Users,
   MessageSquare,
+  Building2,
 } from "lucide-react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useRouter } from "next/navigation";
@@ -19,6 +20,7 @@ const navItems = [
   { label: "Tableau de bord", href: "/home", icon: LayoutDashboard },
   { label: "Pipeline emails", href: "/emails", icon: Mail, badge: true },
   { label: "Prospects", href: "/leads", icon: Users },
+  { label: "Mes biens", href: "/properties", icon: Building2 },
   { label: "Calendrier", href: "/calendar", icon: CalendarDays },
   { label: "Chat IA", href: "/chat", icon: MessageSquare },
   { label: "Paramètres", href: "/settings", icon: Settings },

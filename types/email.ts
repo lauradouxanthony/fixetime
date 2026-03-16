@@ -5,6 +5,17 @@ export type EmailAction = "reply" | "schedule" | "archive" | null;
 // Intention immobilière — stockée dans la colonne `category`
 export type EmailIntention = "LOCATION" | "INFO" | "HORS_SUJET" | null;
 
+/** Étapes du process immobilier (ordre de progression) */
+export type EtapeProcess =
+  | "NEW"
+  | "QUALIFICATION"
+  | "VISITE_PROPOSEE"
+  | "VISITE_CONFIRMEE"
+  | "DOSSIER_DEMANDE"
+  | "DOSSIER_RECU"
+  | "VALIDE"
+  | "REFUSE";
+
 export type ProspectData = {
   nom?: string | null;
   telephone?: string | null;
@@ -13,8 +24,12 @@ export type ProspectData = {
   loyer_max?: number | null;
   animaux?: "OUI" | "NON" | null;
   nb_personnes?: number | null;
-  /** Garant disponible — remplace date_emmenagement */
+  /** Garant disponible */
   garant?: "OUI" | "NON" | "A_CONFIRMER" | null;
+  /** Étape courante du process immobilier */
+  etape_process?: EtapeProcess | null;
+  /** property_id lié (optionnel) */
+  property_id?: string | null;
 };
 
 export type Email = {
