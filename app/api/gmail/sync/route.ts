@@ -87,15 +87,48 @@ export async function POST(req: NextRequest) {
       }
     }
 
-    // ── Récupérer les gmail_message_id déjà en DB pour éviter les appels inutiles ──
+    // ── Récupérer les gmail_message_id déjà en DB ──
+    // On charge aussi le champ `attachments` pour distinguer :
+    //   - emails déjà traités avec PJ → skip complet
+    //   - emails en DB sans PJ → on re-traite les attachments uniquement
     const { data: existingRows } = await supabaseAdmin
       .from("emails")
-      .select("gmail_message_id")
+      .select("id, gmail_message_id, attachments")
       .eq("user_id", userId)
       .not("gmail_message_id", "is", null);
 
+    // Tous les IDs connus
+    // Fonction helper : extraire les pièces jointes (récursif) — définie ici pour être accessible partout
+    function extractAttachments(parts: any[]): { filename: string; mimeType: string; attachmentId: string; size: number }[] {
+      const result: { filename: string; mimeType: string; attachmentId: string; size: number }[] = [];
+      for (const part of parts ?? []) {
+        if (part.filename && part.filename.length > 0 && part.body?.attachmentId) {
+          result.push({
+            filename: part.filename,
+            mimeType: part.mimeType ?? "application/octet-stream",
+            attachmentId: part.body.attachmentId,
+            size: part.body.size ?? 0,
+          });
+        }
+        if (part.parts) {
+          result.push(...extractAttachments(part.parts));
+        }
+      }
+      return result;
+    }
+
     const knownIds = new Set((existingRows || []).map((r: any) => r.gmail_message_id));
-    console.log(`[GMAIL SYNC] ${knownIds.size} emails déjà en DB`);
+    // IDs avec PJ déjà traitées (array non vide)
+    const knownWithAttachments = new Set(
+      (existingRows || [])
+        .filter((r: any) => Array.isArray(r.attachments) && r.attachments.length > 0)
+        .map((r: any) => r.gmail_message_id)
+    );
+    // Map gmail_message_id → DB uuid (pour UPDATE ciblé)
+    const gmailIdToDbId = new Map<string, string>(
+      (existingRows || []).map((r: any) => [r.gmail_message_id, r.id])
+    );
+    console.log(`[GMAIL SYNC] ${knownIds.size} emails en DB, ${knownWithAttachments.size} avec PJ déjà traitées`);
 
     let pageToken: string | undefined = undefined;
     let fetched = 0;
@@ -126,8 +159,47 @@ export async function POST(req: NextRequest) {
       for (const msg of messages) {
         fetched++;
 
-        // ✅ Skip si déjà en DB — évite l'appel metadata inutile
+        // Skip si déjà en DB avec PJ traitées → évite l'appel inutile
+        if (knownWithAttachments.has(msg.id)) {
+          skipped++;
+          if (fetched >= MAX_MESSAGES) break outer;
+          continue;
+        }
+
+        // Email en DB sans PJ : re-traiter uniquement les attachments
         if (knownIds.has(msg.id)) {
+          const dbId = gmailIdToDbId.get(msg.id);
+          if (dbId) {
+            try {
+              const detailResAtt = await fetch(
+                `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
+                { headers: { Authorization: `Bearer ${accessToken}` } }
+              );
+              if (detailResAtt.ok) {
+                const detailAtt = await detailResAtt.json();
+                const attsRaw = extractAttachments(detailAtt.payload?.parts ?? []);
+                console.log(`[GMAIL SYNC][PJ] Re-scan msg=${msg.id} → ${attsRaw.length} PJ détectée(s)`);
+                if (attsRaw.length > 0) {
+                  const enriched: typeof attsRaw & { storage_url?: string }[] = [];
+                  for (const att of attsRaw) {
+                    if (att.size < 20 * 1024 * 1024) {
+                      const url = await downloadAndUploadAttachment(msg.id, att, accessToken);
+                      enriched.push({ ...att, storage_url: url ?? undefined });
+                    } else {
+                      enriched.push(att);
+                    }
+                  }
+                  await supabaseAdmin
+                    .from("emails")
+                    .update({ attachments: enriched })
+                    .eq("id", dbId);
+                  console.log(`[GMAIL SYNC][PJ] ✅ Mis à jour: ${enriched.length} PJ sur email ${dbId}`);
+                }
+              }
+            } catch (e: any) {
+              console.warn(`[GMAIL SYNC][PJ] Re-scan failed msg=${msg.id}:`, e?.message);
+            }
+          }
           skipped++;
           if (fetched >= MAX_MESSAGES) break outer;
           continue;
@@ -191,24 +263,7 @@ export async function POST(req: NextRequest) {
         }
         const emailBody = getBody(detail.payload);
 
-        // BLOC 3 : extraire les pièces jointes depuis payload.parts (récursif)
-        function extractAttachments(parts: any[]): { filename: string; mimeType: string; attachmentId: string; size: number }[] {
-          const result: { filename: string; mimeType: string; attachmentId: string; size: number }[] = [];
-          for (const part of parts ?? []) {
-            if (part.filename && part.filename.length > 0 && part.body?.attachmentId) {
-              result.push({
-                filename: part.filename,
-                mimeType: part.mimeType ?? "application/octet-stream",
-                attachmentId: part.body.attachmentId,
-                size: part.body.size ?? 0,
-              });
-            }
-            if (part.parts) {
-              result.push(...extractAttachments(part.parts));
-            }
-          }
-          return result;
-        }
+        // Extraire les pièces jointes (extractAttachments définie au-dessus de la boucle)
         const attachments = extractAttachments(detail.payload?.parts ?? []);
         console.log(`[GMAIL SYNC][PJ] msg=${msg.id} → ${attachments.length} pièce(s) jointe(s) détectée(s)${attachments.length > 0 ? ": " + attachments.map(a => a.filename).join(", ") : ""}`);
 

@@ -35,11 +35,15 @@ export default function SignupPage() {
         className="hidden lg:flex lg:w-1/2 flex-col justify-between p-12"
         style={{ background: "linear-gradient(135deg, rgb(79 70 229) 0%, rgb(55 48 163) 100%)" }}
       >
-        {/* Logo dans conteneur blanc */}
+        {/* Logo texte */}
         <div className="flex items-center gap-3">
-          <div className="h-20 flex items-center rounded-2xl overflow-hidden" style={{ background: "rgba(255,255,255,0.96)", padding: "12px 20px" }}>
-            <img src="/logo-fixtime.png" alt="FixTime" className="h-full w-auto object-contain" />
+          <div
+            className="w-11 h-11 flex items-center justify-center rounded-xl"
+            style={{ background: "rgba(255,255,255,0.18)", border: "1.5px solid rgba(255,255,255,0.3)" }}
+          >
+            <span className="text-white font-bold text-xl">F</span>
           </div>
+          <span className="text-white font-bold text-2xl tracking-tight">FixTime</span>
         </div>
 
         {/* Tagline + bullets */}
@@ -85,12 +89,23 @@ export default function SignupPage() {
       {/* ── Colonne droite — formulaire ── */}
       <div className="flex-1 flex flex-col items-center justify-center px-8 bg-white">
         <div className="w-full max-w-sm space-y-7">
-          {/* Titre */}
-          <div className="text-center">
-            <h2 className="text-2xl font-bold" style={{ color: "rgb(30 41 59)" }}>Créer votre compte</h2>
-            <p className="text-sm mt-1" style={{ color: "rgb(100 116 139)" }}>
-              Configurez votre agence en moins de 2 minutes.
-            </p>
+          {/* Logo + Titre */}
+          <div className="flex flex-col items-center gap-3">
+            <div className="flex items-center gap-2.5">
+              <div
+                className="w-9 h-9 flex items-center justify-center rounded-xl"
+                style={{ background: "rgb(79 70 229)" }}
+              >
+                <span className="text-white font-bold text-base">F</span>
+              </div>
+              <span className="font-bold text-xl tracking-tight" style={{ color: "rgb(30 41 59)" }}>FixTime</span>
+            </div>
+            <div className="text-center">
+              <h2 className="text-2xl font-bold" style={{ color: "rgb(30 41 59)" }}>Créer votre compte</h2>
+              <p className="text-sm mt-1" style={{ color: "rgb(100 116 139)" }}>
+                Configurez votre agence en moins de 2 minutes.
+              </p>
+            </div>
           </div>
 
           {/* Formulaire */}

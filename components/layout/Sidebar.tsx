@@ -59,9 +59,17 @@ export function Sidebar() {
   return (
     <aside className="flex h-screen w-60 flex-col border-r bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
       {/* Logo / Brand */}
-      <div className="flex flex-col px-5 py-4 border-b" style={{ borderColor: "rgb(226 232 240)" }}>
-        <img src="/logo-fixtime.png" alt="FixTime" className="h-14 w-auto object-contain self-start" />
-        <span className="text-xs font-medium mt-0.5" style={{ color: "rgb(79 70 229)" }}>Assistant IA</span>
+      <div className="flex items-center gap-2.5 px-5 py-4 border-b" style={{ borderColor: "rgb(226 232 240)" }}>
+        <div
+          className="w-8 h-8 flex items-center justify-center rounded-lg flex-shrink-0"
+          style={{ background: "rgb(79 70 229)" }}
+        >
+          <span className="text-white font-bold text-sm">F</span>
+        </div>
+        <div>
+          <div className="font-bold text-base tracking-tight" style={{ color: "rgb(30 41 59)" }}>FixTime</div>
+          <div className="text-xs" style={{ color: "rgb(79 70 229)" }}>Assistant IA</div>
+        </div>
       </div>
 
       {/* Search trigger */}

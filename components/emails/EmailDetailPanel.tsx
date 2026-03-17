@@ -584,9 +584,15 @@ function NotesWidget({ emailId }: { emailId: string }) {
   const fetchNotes = useCallback(async () => {
     try {
       const res = await fetch(`/api/leads/${emailId}/timeline`);
+      if (!res.ok) {
+        console.warn("[NotesWidget] GET timeline failed:", res.status);
+        return;
+      }
       const data = await res.json();
       setNotes((data.timeline ?? []).filter((e: any) => e.action_type === "NOTE_INTERNE"));
-    } catch {}
+    } catch (e) {
+      console.warn("[NotesWidget] Fetch error:", e);
+    }
   }, [emailId]);
 
   useEffect(() => { fetchNotes(); }, [fetchNotes]);
@@ -594,6 +600,7 @@ function NotesWidget({ emailId }: { emailId: string }) {
   const saveNote = async () => {
     if (!newNote.trim() || saving) return;
     setSaving(true);
+    console.log("[NotesWidget] Saving note — emailId:", emailId, "text:", newNote.trim().substring(0, 50));
     try {
       const res = await fetch(`/api/leads/${emailId}/timeline`, {
         method: "POST",
@@ -607,8 +614,21 @@ function NotesWidget({ emailId }: { emailId: string }) {
       if (res.ok) {
         setNewNote("");
         showToast("Note sauvegardée ✅", "success");
+        console.log("[NotesWidget] ✅ Note saved");
         fetchNotes();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        console.error("[NotesWidget] ❌ Save failed:", res.status, errData);
+        const msg = (errData as any)?.error ?? "";
+        if (msg.includes("does not exist") || res.status === 500) {
+          showToast("Table prospect_timeline introuvable — lancez /api/admin/migrate", "error");
+        } else {
+          showToast("Erreur lors de la sauvegarde de la note", "error");
+        }
       }
+    } catch (e) {
+      console.error("[NotesWidget] ❌ Network error:", e);
+      showToast("Erreur réseau — note non sauvegardée", "error");
     } finally {
       setSaving(false);
     }
