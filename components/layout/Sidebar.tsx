@@ -11,14 +11,17 @@ import {
   LogOut,
   Users,
   MessageSquare,
+  Building2,
 } from "lucide-react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useRouter } from "next/navigation";
+import { FixTimeLogo } from "@/components/ui/FixTimeLogo";
 
 const navItems = [
   { label: "Tableau de bord", href: "/home", icon: LayoutDashboard },
   { label: "Pipeline emails", href: "/emails", icon: Mail, badge: true },
   { label: "Prospects", href: "/leads", icon: Users },
+  { label: "Mes biens", href: "/properties", icon: Building2 },
   { label: "Calendrier", href: "/calendar", icon: CalendarDays },
   { label: "Chat IA", href: "/chat", icon: MessageSquare },
   { label: "Paramètres", href: "/settings", icon: Settings },
@@ -58,8 +61,23 @@ export function Sidebar() {
     <aside className="flex h-screen w-60 flex-col border-r bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
       {/* Logo / Brand */}
       <div className="flex flex-col px-5 py-4 border-b" style={{ borderColor: "rgb(226 232 240)" }}>
-        <img src="/logo-fixtime.png" alt="FixTime" className="h-14 w-auto object-contain self-start" />
-        <span className="text-xs font-medium mt-0.5" style={{ color: "rgb(79 70 229)" }}>Assistant IA</span>
+        <FixTimeLogo size="sm" variant="dark" />
+        <span className="text-xs font-medium mt-1" style={{ color: "rgb(79 70 229)" }}>Assistant IA</span>
+      </div>
+
+      {/* Search trigger */}
+      <div className="px-3 pt-3">
+        <button
+          onClick={() => window.dispatchEvent(new KeyboardEvent("keydown", { key: "k", metaKey: true, bubbles: true }))}
+          className="flex items-center gap-2 w-full px-3 py-2 rounded-lg text-xs transition-colors mb-2"
+          style={{ background: "rgb(241 245 249)", color: "rgb(100 116 139)" }}
+          onMouseEnter={(e) => (e.currentTarget as HTMLElement).style.background = "rgb(226 232 240)"}
+          onMouseLeave={(e) => (e.currentTarget as HTMLElement).style.background = "rgb(241 245 249)"}
+        >
+          <span>🔍</span>
+          <span className="flex-1 text-left">Recherche…</span>
+          <span className="text-xs px-1 py-0.5 rounded" style={{ background: "rgb(226 232 240)" }}>⌘K</span>
+        </button>
       </div>
 
       {/* Navigation */}

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 export const dynamic = "force-dynamic";
 
@@ -23,6 +24,19 @@ function todayStart(): string {
   return d.toISOString();
 }
 
+function sinceDaysISO(days: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString();
+}
+
+function safeString(v: any) {
+  if (typeof v === "string") return v;
+  return "";
+}
+
+/* ===================== ROUTE ===================== */
+
 export async function GET() {
   const supabase = await supabaseServer();
   const { data: authData } = await supabase.auth.getUser();
@@ -36,24 +50,28 @@ export async function GET() {
   const since7d = daysAgo(7);
   const weekEnd = daysFromNow(7);
 
-  // ── MÉTRIQUES PRINCIPALES ──────────────────────────────────────────
+  // ── TOUTES LES DONNÉES EN PARALLÈLE ────────────────────────────────
   const [
-    { count: leadsActifs },
+    { count: totalEmailsMois },
     { count: rdvSemaine },
-    { count: totalReplies },
-    { count: totalNonHorsSupjet },
+    { count: visitesConfirmees },
+    { count: relancesAuto },
+    { data: locationEmails30d },
     { data: allEmails30d },
+    { data: intentions7d },
+    { data: rdvAll30d },
+    { data: actionsRequises },
+    { data: prochainRdv },
+    { data: recentActivity },
   ] = await Promise.all([
-    // Leads actifs : emails LOCATION 30j non ignorés
+    // 1. Emails reçus ce mois (tous)
     supabase
       .from("emails")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
-      .eq("category", "LOCATION")
-      .neq("decision", "ignorer")
       .gte("received_at", since30d),
 
-    // RDV semaine : events dans les 7 prochains jours
+    // 2. RDV semaine : events dans les 7 prochains jours
     supabase
       .from("calendar_events")
       .select("id", { count: "exact", head: true })
@@ -61,32 +79,139 @@ export async function GET() {
       .gte("start_time", todayStart())
       .lte("start_time", weekEnd),
 
-    // Emails avec ai_reply (30j, non HORS_SUJET) — pour taux réponse IA
+    // 3. Visites confirmées ce mois (etape_process = VISITE_CONFIRMEE)
     supabase
       .from("emails")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
-      .not("ai_reply", "is", null)
-      .neq("category", "HORS_SUJET")
-      .gte("received_at", since30d),
+      .eq("category", "LOCATION")
+      .gte("received_at", since30d)
+      .filter("prospect_data->>etape_process", "eq", "VISITE_CONFIRMEE"),
 
-    // Total emails non-HORS_SUJET (30j)
+    // 4. Relances auto envoyées (30j)
     supabase
       .from("emails")
       .select("id", { count: "exact", head: true })
       .eq("user_id", userId)
-      .neq("category", "HORS_SUJET")
-      .gte("received_at", since30d),
+      .gte("received_at", since30d)
+      .gt("relance_count", 0)
+      .not("last_relance_at", "is", null),
 
-    // Tous les emails LOCATION 30j pour heuristique dossiers complets
+    // 5. Emails LOCATION 30j avec prospect_data (pour leads qualifiés + graph)
     supabase
       .from("emails")
-      .select("body, summary, ai_reply")
+      .select("received_at, prospect_data, ai_reply, created_at")
+      .eq("user_id", userId)
+      .eq("category", "LOCATION")
+      .gte("received_at", since30d)
+      .order("received_at", { ascending: true })
+      .limit(300),
+
+    // 6. Emails LOCATION 30j (pour heuristique dossiers + temps réponse + leads qualifiés)
+    supabase
+      .from("emails")
+      .select("id, body, summary, ai_reply, received_at, created_at, prospect_data")
       .eq("user_id", userId)
       .eq("category", "LOCATION")
       .gte("received_at", since30d)
       .limit(200),
+
+    // 7. Répartition intentions 7j
+    supabase
+      .from("emails")
+      .select("category")
+      .eq("user_id", userId)
+      .gte("received_at", since7d)
+      .not("category", "is", null),
+
+    // 8. RDV 30j (graph)
+    supabase
+      .from("calendar_events")
+      .select("created_at")
+      .eq("user_id", userId)
+      .gte("created_at", since30d)
+      .order("created_at", { ascending: true }),
+
+    // 9. Actions requises (emails LOCATION sans réponse IA)
+    supabase
+      .from("emails")
+      .select("id, sender, subject, received_at, is_urgent, summary")
+      .eq("user_id", userId)
+      .eq("category", "LOCATION")
+      .is("ai_reply", null)
+      .neq("decision", "ignorer")
+      .order("is_urgent", { ascending: false })
+      .order("received_at", { ascending: true })
+      .limit(5),
+
+    // 10. Prochains RDV
+    supabase
+      .from("calendar_events")
+      .select("id, title, start_time, end_time")
+      .eq("user_id", userId)
+      .gte("start_time", todayStart())
+      .lte("start_time", weekEnd)
+      .order("start_time", { ascending: true })
+      .limit(5),
+
+    // 11. Activité récente
+    supabase
+      .from("emails")
+      .select("id, sender, subject, decision, category, received_at, is_urgent")
+      .eq("user_id", userId)
+      .not("decision", "is", null)
+      .order("received_at", { ascending: false })
+      .limit(5),
   ]);
+
+  // ── CALCULS MÉTRIQUES ROI ─────────────────────────────────────────
+
+  // Leads qualifiés = emails LOCATION avec situation + revenus renseignés
+  let leadsQualifies = 0;
+  let emailsTraites = 0;
+  let totalReponseMsSum = 0;
+  let reponseMsCount = 0;
+
+  for (const e of allEmails30d ?? []) {
+    const pd = e.prospect_data as Record<string, unknown> | null;
+    if (pd?.situation_pro && pd?.revenus_mensuels) {
+      leadsQualifies++;
+    }
+    if (e.ai_reply) {
+      emailsTraites++;
+      // Temps moyen réponse IA : différence entre received_at et created_at (approximation)
+      // Note : on n'a pas le timestamp exact d'envoi de l'ai_reply
+      // Utiliser received_at comme base, l'analyse se fait généralement dans les 5 min
+    }
+  }
+
+  // Emails LOCATION avec leads actifs
+  const leadsActifs = (locationEmails30d ?? []).filter(e => {
+    const pd = e.prospect_data as Record<string, unknown> | null;
+    const etape = pd?.etape_process as string | null;
+    return etape && etape !== "REFUSE" && etape !== "VALIDE";
+  }).length;
+
+  // Taux email → visite (%)
+  const emailsLocationTotal = (locationEmails30d ?? []).length;
+  const visitesCount = visitesConfirmees ?? 0;
+  const tauxEmailVisite = emailsLocationTotal > 0
+    ? Math.round((visitesCount / emailsLocationTotal) * 100)
+    : 0;
+
+  // Taux réponse IA
+  const totalNonHorsSupjet = (allEmails30d ?? []).length;
+  const totalReplies = (allEmails30d ?? []).filter(e => e.ai_reply).length;
+  const tauxReponseIA = totalNonHorsSupjet > 0
+    ? Math.min(100, Math.round((totalReplies / totalNonHorsSupjet) * 100))
+    : 0;
+
+  // Heures économisées : (emails traités par IA × 5 min) / 60
+  const heuresEconomisees = Math.round((emailsTraites * 5) / 60 * 10) / 10;
+
+  // Temps moyen réponse IA (estimation : dans les 5 min du cron)
+  // Valeur indicative car on n'a pas le timestamp exact d'envoi
+  const tempsMoyenReponse = 5; // minutes (cron toutes les 5 min)
 
   // Dossiers complets (heuristique : body mentionne ≥ 3 types de docs)
   let dossierComplets = 0;
@@ -101,41 +226,14 @@ export async function GET() {
     if (score >= 3) dossierComplets++;
   }
 
-  // Taux réponse IA (%)
-  const total = totalNonHorsSupjet ?? 0;
-  const tauxReponseIA = total > 0 ? Math.min(100, Math.round(((totalReplies ?? 0) / total) * 100)) : 0;
-
-  // Répartition intentions (7j)
-  const { data: intentions7d } = await supabase
-    .from("emails")
-    .select("category")
-    .eq("user_id", userId)
-    .gte("received_at", since7d)
-    .not("category", "is", null);
-
+  // Répartition intentions
   const intentionCounts = { LOCATION: 0, INFO: 0, HORS_SUJET: 0 };
   for (const e of intentions7d ?? []) {
     const cat = (e.category || "").toUpperCase();
     if (cat in intentionCounts) intentionCounts[cat as keyof typeof intentionCounts]++;
   }
 
-  // ── GRAPHIQUE LOCATION 30 JOURS ────────────────────────────────────
-  const { data: locationEmails30d } = await supabase
-    .from("emails")
-    .select("received_at")
-    .eq("user_id", userId)
-    .eq("category", "LOCATION")
-    .gte("received_at", since30d)
-    .order("received_at", { ascending: true });
-
-  const { data: rdvAll30d } = await supabase
-    .from("calendar_events")
-    .select("created_at")
-    .eq("user_id", userId)
-    .gte("created_at", since30d)
-    .order("created_at", { ascending: true });
-
-  // Générer 30 jours (par semaine pour la lisibilité — on prend un point tous les 3 jours)
+  // ── GRAPHIQUE 30 JOURS ─────────────────────────────────────────────
   const graph30: { label: string; date: string; leads: number; rdv: number }[] = [];
   for (let i = 29; i >= 0; i--) {
     const d = new Date();
@@ -163,44 +261,211 @@ export async function GET() {
     if (day) day.rdv++;
   }
 
-  // ── ACTIONS REQUISES ─────────────────────────────────────────────
-  // Emails LOCATION sans réponse IA, par urgence
-  const { data: actionsRequises } = await supabase
-    .from("emails")
-    .select("id, sender, subject, received_at, is_urgent, summary")
-    .eq("user_id", userId)
-    .eq("category", "LOCATION")
-    .is("ai_reply", null)
-    .neq("decision", "ignorer")
-    .order("is_urgent", { ascending: false })
-    .order("received_at", { ascending: true })
-    .limit(5);
+  /* ===================== KPIs LEGACY 7 JOURS (ON GARDE) ===================== */
+  /* ===================== KPIs LEGACY 7 JOURS (ON GARDE) ===================== */
 
-  // ── PROCHAINS RDV (7 prochains jours) ────────────────────────────
-  const { data: prochainRdv } = await supabase
-    .from("calendar_events")
-    .select("id, title, start_time, end_time")
-    .eq("user_id", userId)
-    .gte("start_time", todayStart())
-    .lte("start_time", weekEnd)
-    .order("start_time", { ascending: true })
-    .limit(5);
+  // On réutilise la même fenêtre de temps que l'IMMO (7 jours)
+  const since7dISO = sinceDaysISO(7);
 
-  // ── ACTIVITÉ RÉCENTE (7j) ─────────────────────────────────────────
-  const { data: recentActivity } = await supabase
+  // Emails "analysés" = ceux qui ont une décision IA (ton modèle FixTime)
+  const { count: emailsAnalyzed7d } = await supabaseAdmin
     .from("emails")
-    .select("id, sender, subject, decision, category, received_at, is_urgent")
+    .select("id", { count: "exact", head: true })
     .eq("user_id", userId)
+    .gte("received_at", since7dISO)
+    .not("decision", "is", null);
+
+  // "Décisions IA" = même base (si tu n'as pas un champ plus précis)
+  const decisions7d = emailsAnalyzed7d ?? 0;
+
+  // Minutes déléguées = somme de estimated_time (si la colonne existe)
+  const { data: delegatedRows } = await supabaseAdmin
+    .from("emails")
+    .select("estimated_time")
+    .eq("user_id", userId)
+    .gte("received_at", since7dISO)
     .not("decision", "is", null)
-    .order("received_at", { ascending: false })
-    .limit(5);
+    .limit(1000);
+
+  const delegatedMinutes7d =
+    (delegatedRows ?? []).reduce((sum: number, r: any) => {
+      const v = Number(r?.estimated_time ?? 0);
+      return sum + (Number.isFinite(v) ? v : 0);
+    }, 0) ?? 0;
+
+  // ====== ROI / FUNNEL (30 jours) ======
+  const since30dISO = since30d;
+
+// Prospects "in scope" : tout ce qui n'est pas other/raw
+const { count: prospects30d } = await supabaseAdmin
+  .from("emails")
+  .select("id", { count: "exact", head: true })
+  .eq("user_id", userId)
+  .gte("received_at", since30dISO)
+  .not("lead_status", "in", '("other")');
+
+// Qualifiés : lead_is_qualified true OU slots_proposed/booked
+const { count: qualified30d } = await supabaseAdmin
+  .from("emails")
+  .select("id", { count: "exact", head: true })
+  .eq("user_id", userId)
+  .gte("received_at", since30dISO)
+  .or("lead_is_qualified.eq.true,lead_status.eq.slots_proposed,lead_status.eq.booked");
+
+// Booked
+const { count: booked30d } = await supabaseAdmin
+  .from("emails")
+  .select("id", { count: "exact", head: true })
+  .eq("user_id", userId)
+  .gte("received_at", since30dISO)
+  .eq("lead_status", "booked");
+
+// ====== COST MODEL ======
+const hourlyRate = 25; // default, configurable plus tard
+const humanMinutes = (prospects30d ?? 0) * 5;
+const humanCost = (humanMinutes / 60) * hourlyRate;
+
+// IA cost = 0 ici (tu pourras brancher token usage plus tard)
+const aiCost = 0;
+
+
+  /* ===================== NOUVEAU : ROI IMMO 7 JOURS ===================== */
+
+  // On se base sur le pipeline lead_status (c’est ton produit)
+  const { data: leadRows, error: leadErr } = await supabaseAdmin
+    .from("emails")
+    .select(
+      "id, received_at, lead_status, lead_is_qualified, lead_last_action, lead_last_action_at, candidate_name, lead_profile, lead_property_address, subject"
+    )
+    .eq("user_id", userId)
+    .gte("received_at", since7dISO)
+    .not("lead_status", "is", null);
+
+  if (leadErr) {
+    // On n’échoue pas le dashboard : on renvoie quand même l’existant.
+    return NextResponse.json({
+      importantEmails: [],
+      nextMeetings: [],
+      roi: {
+        leads_received_7d: 0,
+        qualified_7d: 0,
+        slots_proposed_7d: 0,
+        booked_7d: 0,
+        avg_first_action_minutes_7d: null,
+        human_minutes_est_7d: 0,
+        human_hours_est_7d: 0,
+        hours_saved_est_7d: 0,
+      },
+      activity_feed: [],
+    });
+  }
+
+  const rows = Array.isArray(leadRows) ? leadRows : [];
+
+  // Funnel
+  const isLead = (st: any) =>
+    ["new_lead", "qualifying", "slots_proposed", "booked", "unqualified"].includes(String(st || ""));
+
+  const leads = rows.filter((r: any) => isLead(r.lead_status));
+  const leads_received_7d = leads.length;
+
+  const slots_proposed_7d = leads.filter((r: any) => r.lead_status === "slots_proposed").length;
+  const booked_7d = leads.filter((r: any) => r.lead_status === "booked").length;
+
+  const qualified_7d = leads.filter((r: any) => {
+    if (r.lead_is_qualified === true) return true;
+    return r.lead_status === "slots_proposed" || r.lead_status === "booked";
+  }).length;
+// % AUTOPILOT (30 jours)
+const { data: triggerRows } = await supabaseAdmin
+  .from("emails")
+  .select("lead_json")
+  .eq("user_id", userId)
+  .gte("received_at", since30dISO)
+  .not("lead_json", "is", null)
+  .limit(1000);
+
+const autopilotCount =
+  (triggerRows ?? []).filter(
+    (r: any) => r?.lead_json?.first_action_trigger === "autopilot"
+  ).length;
+
+const manualCount =
+  (triggerRows ?? []).filter(
+    (r: any) => r?.lead_json?.first_action_trigger === "manual"
+  ).length;
+
+const autopilotRate =
+  autopilotCount + manualCount > 0
+    ? Math.round((autopilotCount / (autopilotCount + manualCount)) * 100)
+    : 0;
+
+  // Réactivité (received_at -> lead_last_action_at)
+  const responseDelaysMin: number[] = [];
+  for (const r of leads) {
+    const ra = r?.received_at ? new Date(r.received_at) : null;
+    const la = r?.lead_last_action_at ? new Date(r.lead_last_action_at) : null;
+    if (!ra || !la) continue;
+    const diff = (la.getTime() - ra.getTime()) / 60000;
+    if (Number.isFinite(diff) && diff >= 0 && diff <= 60 * 24 * 7) responseDelaysMin.push(diff);
+  }
+
+  const avg_first_action_minutes_7d =
+    responseDelaysMin.length > 0
+      ? Math.round(
+          (responseDelaysMin.reduce((a, b) => a + b, 0) / responseDelaysMin.length) * 10
+        ) / 10
+      : null;
+
+  // Coût humain vs IA (estimation vendable)
+  const human_minutes_est_7d = leads_received_7d * 5; // 5 min / demande
+  const human_hours_est_7d = Math.round((human_minutes_est_7d / 60) * 10) / 10;
+  const hours_saved_est_7d = human_hours_est_7d;
+
+  // Live feed (15 dernières actions)
+  const activity_feed = leads
+    .filter((r: any) => r.lead_last_action_at)
+    .sort((a: any, b: any) => {
+      const ta = new Date(a.lead_last_action_at).getTime();
+      const tb = new Date(b.lead_last_action_at).getTime();
+      return tb - ta;
+    })
+    .slice(0, 15)
+    .map((r: any) => {
+      const candidate =
+        safeString(r.candidate_name) ||
+        safeString(r?.lead_profile?.prospect_name) ||
+        "Candidat";
+      const property =
+        safeString(r.lead_property_address) || safeString(r.subject) || "Bien";
+      return {
+        at: r.lead_last_action_at,
+        label: safeString(r.lead_last_action) || "Action IA",
+        status: r.lead_status || "raw",
+        candidate,
+        property,
+      };
+    });
+
+  /* ===================== RESPONSE ===================== */
 
   return NextResponse.json({
     metrics: {
-      leadsActifs: leadsActifs ?? 0,
+      // Legacy (compat)
+      leadsActifs,
       rdvSemaine: rdvSemaine ?? 0,
       dossierComplets,
       tauxReponseIA,
+      // BLOC 6 : nouveaux KPIs ROI
+      emailsRecusMois: totalEmailsMois ?? 0,
+      leadsQualifies,
+      visitesConfirmees: visitesCount,
+      tauxEmailVisite,
+      // Métriques IA
+      tempsMoyenReponseIA: tempsMoyenReponse,
+      relancesAuto: relancesAuto ?? 0,
+      heuresEconomisees,
+      emailsTraitesIA: totalReplies,
     },
     intentions: intentionCounts,
     graph30,

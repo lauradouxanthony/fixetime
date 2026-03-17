@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useRouter } from "next/navigation";
+import { FixTimeLogo } from "@/components/ui/FixTimeLogo";
 
 export default function SignupPage() {
   const router = useRouter();
@@ -35,44 +36,42 @@ export default function SignupPage() {
         className="hidden lg:flex lg:w-1/2 flex-col justify-between p-12"
         style={{ background: "linear-gradient(135deg, rgb(79 70 229) 0%, rgb(55 48 163) 100%)" }}
       >
-        {/* Logo dans conteneur blanc */}
-        <div className="flex items-center">
-          <div className="rounded-2xl overflow-hidden" style={{ background: "rgba(255,255,255,0.96)", padding: "10px 18px" }}>
-            <img src="/logo-fixtime.png" alt="FixTime" className="h-12 w-auto object-contain" />
-          </div>
-        </div>
+        {/* Logo */}
+        <FixTimeLogo size="lg" variant="light" />
 
-        {/* Tagline B2B pro */}
+        {/* Tagline + bullets */}
         <div className="space-y-8">
           <div>
             <h1 className="text-4xl font-bold text-white leading-tight">
-              L'IA qui gère vos<br />demandes locatives<br />à votre place
+              L&apos;IA qui gère vos<br />demandes locatives<br />à votre place
             </h1>
-            <p className="text-indigo-200 mt-3 text-lg">
-              Opérationnel en moins de 5 minutes.
-            </p>
           </div>
 
-          {/* Steps */}
+          {/* Bullet points */}
           <div className="space-y-4">
             {[
-              { step: "1", title: "Créez votre espace", desc: "Informations de votre agence" },
-              { step: "2", title: "Connectez votre messagerie", desc: "Gmail ou Outlook, OAuth sécurisé" },
-              { step: "3", title: "L'IA prend le relais", desc: "Triage, réponses et planification automatiques" },
-            ].map((s) => (
-              <div key={s.step} className="flex items-start gap-3">
-                <div
-                  className="flex-shrink-0 w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold text-indigo-700"
-                  style={{ background: "rgba(255,255,255,0.9)" }}
-                >
-                  {s.step}
-                </div>
-                <div>
-                  <div className="text-white font-medium text-sm">{s.title}</div>
-                  <div className="text-indigo-300 text-xs mt-0.5">{s.desc}</div>
-                </div>
+              "Répondez à tous vos prospects en 2min",
+              "Zéro email manqué, zéro visite ratée",
+              "Remplacez 10h de travail par semaine",
+            ].map((text) => (
+              <div key={text} className="flex items-start gap-3">
+                <span className="text-green-300 font-bold text-lg leading-none mt-0.5">✓</span>
+                <span className="text-white text-base leading-snug">{text}</span>
               </div>
             ))}
+          </div>
+
+          {/* Testimonial */}
+          <div
+            className="rounded-xl p-4"
+            style={{ background: "rgba(255,255,255,0.1)", borderLeft: "4px solid rgb(79 70 229)", backdropFilter: "blur(4px)" }}
+          >
+            <p className="text-white italic text-sm leading-relaxed">
+              &ldquo;FixTime nous a fait gagner 2 jours par semaine sur la gestion locative.&rdquo;
+            </p>
+            <p className="text-indigo-200 text-xs mt-2 font-medium">
+              — Marie L., Agence Immo Lyon
+            </p>
           </div>
         </div>
 
@@ -83,24 +82,22 @@ export default function SignupPage() {
       {/* ── Colonne droite — formulaire ── */}
       <div className="flex-1 flex flex-col items-center justify-center px-8 bg-white">
         <div className="w-full max-w-sm space-y-7">
-          {/* Logo couleur */}
-          <div className="flex flex-col items-center gap-2">
-            <img src="/logo-fixtime.png" alt="FixTime" className="h-20 w-auto object-contain" />
-          </div>
-
-          {/* Titre */}
-          <div className="text-center">
-            <h2 className="text-2xl font-bold" style={{ color: "rgb(30 41 59)" }}>Créer votre espace</h2>
-            <p className="text-sm mt-1" style={{ color: "rgb(100 116 139)" }}>
-              Configurez votre agence en moins de 2 minutes.
-            </p>
+          {/* Logo + Titre */}
+          <div className="flex flex-col items-center gap-3">
+            <FixTimeLogo size="md" variant="dark" />
+            <div className="text-center">
+              <h2 className="text-2xl font-bold" style={{ color: "rgb(30 41 59)" }}>Créer votre compte</h2>
+              <p className="text-sm mt-1" style={{ color: "rgb(100 116 139)" }}>
+                Configurez votre agence en moins de 2 minutes.
+              </p>
+            </div>
           </div>
 
           {/* Formulaire */}
           <div className="space-y-4">
             <div>
               <label className="text-xs font-medium block mb-1.5" style={{ color: "rgb(71 85 105)" }}>
-                Nom de l'agence
+                Nom agence
               </label>
               <input
                 type="text"
@@ -114,7 +111,7 @@ export default function SignupPage() {
             </div>
             <div>
               <label className="text-xs font-medium block mb-1.5" style={{ color: "rgb(71 85 105)" }}>
-                Adresse email professionnelle
+                Email
               </label>
               <input
                 type="email"
@@ -128,7 +125,7 @@ export default function SignupPage() {
             </div>
             <div>
               <label className="text-xs font-medium block mb-1.5" style={{ color: "rgb(71 85 105)" }}>
-                Mot de passe
+                Password
               </label>
               <input
                 type="password"

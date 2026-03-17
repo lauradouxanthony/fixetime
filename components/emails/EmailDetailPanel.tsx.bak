@@ -1,0 +1,970 @@
+"use client";
+
+import { useEffect, useMemo, useState, useRef } from "react";
+import { Send, Check, Ban } from "lucide-react";
+import type { Email } from "@/types/email";
+import { decodeUtf8Mojibake } from "@/lib/decode";
+import { stripHtmlToText } from "@/components/emails/utils";
+import { useSettings } from "@/hooks/useSettings";
+import { isReplyAlreadySent, isProposalAlreadySent, type LastOutbound } from "@/lib/email/alreadySent";
+
+const ACTION_TIMEOUT_MS = 12000;
+
+function fetchWithTimeout(
+  url: string,
+  options: RequestInit & { timeoutMs?: number } = {}
+): Promise<Response> {
+  const { timeoutMs = ACTION_TIMEOUT_MS, ...rest } = options;
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, { ...rest, signal: controller.signal }).finally(() => clearTimeout(t));
+}
+
+function isAbortError(e: unknown): boolean {
+  return e instanceof Error && e.name === "AbortError";
+}
+
+/* ===================== HELPERS ===================== */
+
+function scoreColor(score: number | null | undefined) {
+  const s = typeof score === "number" ? score : 0;
+  if (s >= 8) return "bg-green-600 text-white";
+  if (s >= 4) return "bg-orange-500 text-black";
+  return "bg-red-600 text-white";
+}
+
+function statusLabel(status: Email["lead_status"]) {
+  if (status === "new_lead") return "Nouveau lead";
+  if (status === "qualifying") return "En qualification";
+  if (status === "slots_proposed") return "Créneaux proposés";
+  if (status === "booked") return "Visite confirmée";
+  if (status === "unqualified") return "Rejeté";
+  if (status === "other") return "Autre";
+  if (status === "raw") return "À analyser";
+  return "—";
+}
+
+function statusPill(status: Email["lead_status"]) {
+  if (status === "booked") return "bg-green-900/40 text-green-300 border border-green-800/60";
+  if (status === "slots_proposed") return "bg-blue-900/40 text-blue-300 border border-blue-800/60";
+  if (status === "qualifying") return "bg-orange-900/40 text-orange-300 border border-orange-800/60";
+  if (status === "unqualified") return "bg-red-900/40 text-red-300 border border-red-800/60";
+  if (status === "new_lead") return "bg-gray-800 text-gray-200 border border-gray-700";
+  if (status === "other") return "bg-gray-800 text-gray-400 border border-gray-700";
+  if (status === "raw") return "bg-gray-800 text-gray-400 border border-gray-700";
+  return "bg-gray-800 text-gray-400 border border-gray-700";
+}
+
+function candidateName(email: Email) {
+  const n = email.lead_profile?.prospect_name?.trim();
+  if (n) return n;
+  const s = (email.sender || "").split("<")[0].trim();
+  return s || "Candidat inconnu";
+}
+
+function propertyLabel(email: Email) {
+  const addr = email.lead_profile?.property_address || email.lead_property_address;
+  if (addr && addr.trim().length > 0) return addr;
+  const subj = decodeUtf8Mojibake(email.subject).trim();
+  return subj ? subj : "Bien non identifié";
+}
+
+/** Détecte si le contenu ressemble à du HTML */
+function looksLikeHtml(s: string): boolean {
+  return /<[a-z][^>]*>/i.test(s);
+}
+
+function prettyMoney(v?: number | null) {
+  if (typeof v !== "number") return "—";
+  try {
+    return new Intl.NumberFormat("fr-FR", { style: "currency", currency: "EUR" }).format(v);
+  } catch {
+    return `${v} €`;
+  }
+}
+
+function missingList(email: Email) {
+  const missing = email.lead_missing_fields ?? [];
+  if (!missing.length) return [];
+
+  const map: Record<string, string> = {
+    monthly_income: "Revenus nets mensuels",
+    employment_status: "Statut professionnel",
+    has_guarantor: "Garant",
+    phone: "Téléphone",
+    property_address: "Bien / adresse mentionnée",
+    documents: "Documents",
+  };
+
+  return missing.map((m) => map[m] || m);
+}
+
+/* ===================== COMPONENT ===================== */
+
+type EmailDetailPanelProps = {
+  email: Email | null;
+  onSetView?: (view: "list" | "kanban") => void;
+  onRefresh?: () => void;
+};
+
+export function EmailDetailPanel({ email, onSetView, onRefresh }: EmailDetailPanelProps) {
+  const [toast, setToast] = useState<string | null>(null);
+  const [body, setBody] = useState<string | null>(null);
+  const [bodyLoading, setBodyLoading] = useState(false);
+  const [autopilotOverrideByLead, setAutopilotOverrideByLead] = useState<Record<string, boolean>>({});
+
+  // IA reply accordion
+  const [aiReply, setAiReply] = useState<string | null>(null);
+  const [replyOpen, setReplyOpen] = useState(false);
+  const [replyLoading, setReplyLoading] = useState(false);
+
+  // Autopilot (UI-only pour l’instant)
+  const [showRawHtml, setShowRawHtml] = useState(false);
+  const [showRendered, setShowRendered] = useState(false);
+  const [autopilot, setAutopilot] = useState(false);
+  const [slots, setSlots] = useState<string[]>([]);
+  const [slotsDurationMin, setSlotsDurationMin] = useState<number>(30);
+  const [slotsLoading, setSlotsLoading] = useState(false);
+  const [confirmLoadingStart, setConfirmLoadingStart] = useState<string | null>(null);
+  const [quickAction, setQuickAction] = useState<null | "generate_slots" | "confirm" | "reject" | "send_draft">(null);
+  const [analyzeSingleLoading, setAnalyzeSingleLoading] = useState(false);
+
+  const { settings } = useSettings();
+  const [resendProposalLoading, setResendProposalLoading] = useState(false);
+
+  const isMountedRef = useRef(true);
+  const toastTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  useEffect(() => {
+    isMountedRef.current = true;
+    return () => {
+      isMountedRef.current = false;
+      if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    };
+  }, []);
+
+  const notify = (msg: string) => {
+    if (toastTimeoutRef.current) clearTimeout(toastTimeoutRef.current);
+    setToast(msg);
+    toastTimeoutRef.current = setTimeout(() => {
+      toastTimeoutRef.current = null;
+      if (isMountedRef.current) setToast(null);
+    }, 2500);
+  };
+
+  useEffect(() => {
+    setToast(null);
+    setShowRawHtml(false);
+    setShowRendered(false);
+    setBody(email?.body ?? null);
+    setAiReply(email?.ai_reply ?? null);
+    setReplyOpen(false);
+
+    const lj: any = (email as any)?.lead_json ?? {};
+    const s = Array.isArray(lj?.slots_proposed) ? lj.slots_proposed : [];
+    setSlots(s);
+    setSlotsDurationMin(Number(lj?.slots_duration_min ?? 30));
+  }, [email?.id]);
+
+
+  // Récupérer le body automatiquement s'il est vide ou trop court (évite "Aucun contenu")
+  useEffect(() => {
+    if (!email) return;
+    const hasBody = (email.body ?? "").trim().length >= 50;
+    if (hasBody) {
+      setBody(email.body ?? null);
+      setBodyLoading(false);
+      return;
+    }
+    setBody(email.body ?? null);
+
+    const isMicrosoft = email.provider === "microsoft";
+    if (isMicrosoft && !email.provider_message_id) return;
+    if (!isMicrosoft && !email.gmail_message_id) return;
+
+    const ac = new AbortController();
+    setBodyLoading(true);
+    const fetchBody = async () => {
+      try {
+        const url = isMicrosoft ? "/api/outlook/fetch-body" : "/api/gmail/fetch-body";
+        const payload = isMicrosoft
+          ? { emailId: email.id, providerMessageId: email.provider_message_id }
+          : { emailId: email.id, gmailMessageId: email.gmail_message_id };
+
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(payload),
+          signal: ac.signal,
+        });
+
+        const json = await res.json().catch(() => null);
+        if (isMountedRef.current) {
+          if (json?.body != null) setBody(json.body);
+          setBodyLoading(false);
+        }
+      } catch (e) {
+        if (isMountedRef.current) setBodyLoading(false);
+        if (e instanceof Error && e.name !== "AbortError") console.error("FETCH_BODY_ERROR", e);
+      }
+    };
+
+    fetchBody();
+    return () => ac.abort();
+  }, [email?.id, email?.body, email?.provider, email?.provider_message_id, email?.gmail_message_id]);
+
+  const openExternal = () => {
+    if (!email) return;
+
+    // Outlook priority
+    if (email.open_url) {
+      window.open(email.open_url, "_blank");
+      return;
+    }
+
+    // Gmail fallback
+    if (email.gmail_message_id) {
+      window.open(`https://mail.google.com/mail/u/0/#inbox/${email.gmail_message_id}`, "_blank");
+      return;
+    }
+
+    notify("Impossible d’ouvrir : lien externe manquant.");
+  };
+
+  const generateReply = async () => {
+    if (!email || replyLoading) return;
+    setReplyLoading(true);
+    console.log("[action] start", "generateReply");
+    try {
+      const mode = settings?.assistant_enabled !== false
+        ? (settings?.automation_level ?? "draft")
+        : "draft";
+
+      const res = await fetchWithTimeout("/api/ai/generate-reply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailId: email.id, mode }),
+        cache: "no-store",
+      });
+
+      const json = await res.json().catch(() => null);
+
+      if (res.ok && json?.reply) {
+        setAiReply(json.reply);
+        setReplyOpen(true);
+        notify(mode === "autopilot" ? "Réponse IA prête (Autopilot)." : "Brouillon IA prêt.");
+        console.log("[action] end", "generateReply");
+        onRefresh?.();
+        window.dispatchEvent(new Event("fix:emails-refresh"));
+      } else {
+        const errMsg = json?.error ?? json?.message ?? (res.ok ? "Réponse IA indisponible." : `Erreur ${res.status}`);
+        notify(errMsg);
+        console.log("[action] error", "generateReply", errMsg);
+      }
+    } catch (e) {
+      console.log("[action] error", "generateReply", e);
+      if (isAbortError(e)) {
+        notify("Timeout — Réessayer");
+      } else {
+        notify("Erreur lors de la génération IA.");
+      }
+    } finally {
+      setReplyLoading(false);
+    }
+  };
+
+  const archive = async () => {
+    if (!email) return;
+
+    const isMicrosoft = email.provider === "microsoft";
+    if (isMicrosoft && !email.provider_message_id) {
+      notify("Impossible d’archiver : provider_message_id manquant.");
+      return;
+    }
+    if (!isMicrosoft && !email.gmail_message_id) {
+      notify("Impossible d’archiver : gmail_message_id manquant.");
+      return;
+    }
+
+    try {
+      const url = isMicrosoft ? "/api/outlook/archive" : "/api/gmail/archive";
+      const payload = isMicrosoft
+        ? { providerMessageId: email.provider_message_id, emailId: email.id }
+        : { gmailMessageId: email.gmail_message_id, emailId: email.id };
+
+      const res = await fetchWithTimeout(url, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+        cache: "no-store",
+      });
+
+      if (!res.ok) {
+        notify(`Erreur archivage (${res.status}).`);
+        return;
+      }
+
+      window.dispatchEvent(new Event("fix:emails-refresh"));
+      notify("Archivé ✅");
+    } catch (e) {
+      if (isAbortError(e)) notify("Timeout — Réessayer");
+      else notify("Erreur archivage.");
+    }
+  };
+
+  const generateSlots = async () => {
+    if (!email || slotsLoading) return;
+    setSlotsLoading(true);
+    console.log("[action] start", "generateSlots");
+    try {
+      const res = await fetchWithTimeout("/api/leads/generate-slots", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailId: email.id, duration_min: 30 }),
+        cache: "no-store",
+      });
+
+      const json = await res.json().catch(() => null);
+
+      if (!res.ok) {
+        const raw = json?.error ?? json?.message ?? json?.details;
+        const errMsg = typeof raw === "string" ? raw : "Erreur génération créneaux.";
+        notify(errMsg);
+        console.log("[action] error", "generateSlots", json);
+        return;
+      }
+
+      const listRaw = Array.isArray(json?.slots) ? json.slots : [];
+      const list = listRaw
+        .map((s: any) => (typeof s === "string" ? s : s?.start))
+        .filter((x: any) => typeof x === "string");
+
+      setSlots(list);
+      setSlotsDurationMin(Number(json?.duration_min ?? 30));
+      if (json?.reply_text && typeof json.reply_text === "string") setAiReply(json.reply_text);
+      window.dispatchEvent(new Event("fix:emails-refresh"));
+      notify(list.length ? "Créneaux générés ✅" : "Aucun créneau trouvé.");
+      console.log("[action] end", "generateSlots");
+    } catch (e) {
+      console.log("[action] error", "generateSlots", e);
+      if (isAbortError(e)) notify("Timeout — Réessayer");
+      else notify("Erreur génération créneaux.");
+    } finally {
+      setSlotsLoading(false);
+    }
+  };
+  
+  const forceBooking = async () => {
+    // Pour l’instant, “Forcer RDV” ne doit PAS régénérer des slots.
+    // Il fera la création event + confirmation plus tard.
+    notify("Forcer RDV : étape suivante (création événement + email de confirmation).");
+  };
+
+  const actionSendProposal = async () => {
+    if (!email || quickAction) return;
+    setQuickAction("generate_slots");
+    console.log("[action] start", "actionSendProposal");
+    try {
+      const res = await fetchWithTimeout("/api/leads/generate-slots", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailId: email.id, duration_min: 30 }),
+        cache: "no-store",
+      });
+      const json = await res.json().catch(() => null);
+      if (!res.ok) {
+        notify("Erreur génération créneaux.");
+        return;
+      }
+      const listRaw = Array.isArray(json?.slots) ? json.slots : [];
+      const list = listRaw.map((s: any) => (typeof s === "string" ? s : s?.start)).filter((x: any) => typeof x === "string");
+      setSlots(list);
+      setSlotsDurationMin(Number(json?.duration_min ?? 30));
+      window.dispatchEvent(new Event("fix:emails-refresh"));
+      notify("Proposition de créneaux envoyée ✅");
+      console.log("[action] end", "actionSendProposal");
+    } catch (e) {
+      console.log("[action] error", "actionSendProposal", e);
+      if (isAbortError(e)) notify("Timeout — Réessayer");
+      else notify("Erreur génération créneaux.");
+    } finally {
+      setQuickAction(null);
+    }
+  };
+
+  const actionConfirmManual = async () => {
+    if (!email || quickAction) return;
+    setQuickAction("confirm");
+    console.log("[action] start", "actionConfirmManual");
+    try {
+      const res = await fetchWithTimeout("/api/leads/confirm-slot", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailId: email.id }),
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        const json = await res.json().catch(() => null);
+        notify(json?.error === "MISSING_SLOT" ? "Aucun créneau proposé pour ce lead." : "Erreur confirmation.");
+        return;
+      }
+      window.dispatchEvent(new Event("fix:emails-refresh"));
+      notify("Visite confirmée ✅");
+      console.log("[action] end", "actionConfirmManual");
+    } catch (e) {
+      console.log("[action] error", "actionConfirmManual", e);
+      if (isAbortError(e)) notify("Timeout — Réessayer");
+      else notify("Erreur confirmation.");
+    } finally {
+      setQuickAction(null);
+    }
+  };
+
+  const hasDraft = (() => {
+    const lj = email?.lead_json as { draft_reply?: unknown; draft_proposal?: unknown } | null;
+    const hasAiReply = (email?.ai_reply ?? "").trim().length > 0;
+    return !!(lj?.draft_reply || lj?.draft_proposal || hasAiReply);
+  })();
+
+  const leadJsonForSent = (email?.lead_json ?? null) as { last_outbound?: LastOutbound } | null;
+  const alreadySentReply = isReplyAlreadySent(leadJsonForSent, email?.lead_last_action ?? null);
+  const alreadySentProposal = isProposalAlreadySent(leadJsonForSent, email?.lead_last_action ?? null);
+  const cannotSendDraft = hasDraft && (alreadySentReply || alreadySentProposal);
+
+  const statusStr = email?.lead_status != null ? String(email.lead_status) : "";
+  const needsAnalysis =
+    !statusStr ||
+    statusStr === "raw" ||
+    statusStr === "unclassified" ||
+    statusStr === "retry_later";
+
+  const actionAnalyzeSingle = async () => {
+    if (!email || analyzeSingleLoading) return;
+    setAnalyzeSingleLoading(true);
+    console.log("[action] start", "actionAnalyzeSingle");
+    try {
+      const res = await fetchWithTimeout("/api/ai/analyze-email", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ email_id: email.id }),
+        cache: "no-store",
+      });
+      const j = await res.json().catch(() => null);
+      if (res.ok) {
+        notify("Analyse terminée ✅");
+        onRefresh?.();
+        window.dispatchEvent(new Event("fix:emails-refresh"));
+        console.log("[action] end", "actionAnalyzeSingle");
+      } else {
+        notify(j?.error ?? "Erreur");
+        console.log("[action] error", "actionAnalyzeSingle", j?.error);
+      }
+    } catch (e) {
+      console.log("[action] error", "actionAnalyzeSingle", e);
+      if (isAbortError(e)) notify("Timeout — Réessayer");
+      else notify("Timeout ou erreur");
+    } finally {
+      setAnalyzeSingleLoading(false);
+    }
+  };
+
+  const actionSendDraft = async () => {
+    if (!email || quickAction || !hasDraft) return;
+    setQuickAction("send_draft");
+    console.log("[action] start", "actionSendDraft");
+    try {
+      const res = await fetchWithTimeout("/api/emails/send-draft", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailId: email.id }),
+        cache: "no-store",
+      });
+      const j = await res.json().catch(() => null);
+      if (j?.skipped && j?.reason === "ALREADY_SENT") {
+        notify("Déjà envoyé.");
+        window.dispatchEvent(new Event("fix:emails-refresh"));
+        return;
+      }
+      if (!res.ok) {
+        const errMsg = j?.error === "NO_DRAFT" ? "Aucun brouillon" : (j?.error ?? j?.message ?? `Erreur ${res.status}`);
+        notify(errMsg);
+        return;
+      }
+      window.dispatchEvent(new Event("fix:emails-refresh"));
+      notify("Brouillon envoyé ✅");
+      console.log("[action] end", "actionSendDraft");
+    } catch (e) {
+      console.log("[action] error", "actionSendDraft", e);
+      if (isAbortError(e)) notify("Timeout — Réessayer");
+      else notify("Erreur envoi.");
+    } finally {
+      setQuickAction(null);
+    }
+  };
+
+  const actionMarkUnqualified = async () => {
+    if (!email || quickAction) return;
+    setQuickAction("reject");
+    console.log("[action] start", "actionMarkUnqualified");
+    try {
+      const res = await fetchWithTimeout("/api/leads/send-reply", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailId: email.id, action: "reject" }),
+        cache: "no-store",
+      });
+      if (!res.ok) {
+        notify("Erreur.");
+        return;
+      }
+      window.dispatchEvent(new Event("fix:emails-refresh"));
+      notify("Marqué non qualifié.");
+      console.log("[action] end", "actionMarkUnqualified");
+    } catch (e) {
+      console.log("[action] error", "actionMarkUnqualified", e);
+      if (isAbortError(e)) notify("Timeout — Réessayer");
+      else notify("Erreur.");
+    } finally {
+      setQuickAction(null);
+    }
+  };
+
+  // ✅ useMemo DOIT être avant tout return conditionnel (sinon bug React hooks)
+  const bodyHtml = (email as { body_html?: string | null })?.body_html;
+  const bodyText = (email as { body_text?: string | null })?.body_text;
+  const rawContent = body ?? bodyHtml ?? email?.body ?? "";
+  const isHtml = looksLikeHtml(rawContent);
+  const previewText = useMemo(() => {
+    if (rawContent && isHtml) return stripHtmlToText(rawContent, 1200);
+    if (bodyText) return bodyText.length > 1200 ? bodyText.slice(0, 1200).trim() + "…" : bodyText;
+    if (rawContent && !isHtml) return rawContent.length > 1200 ? rawContent.slice(0, 1200).trim() + "…" : rawContent.trim();
+    return null;
+  }, [rawContent, isHtml, bodyText]);
+
+  // Prochaine action déterministe (mode Draft) — DOIT être appelé à chaque rendu (Rules of Hooks)
+  const isDraftMode = settings?.assistant_enabled !== false && (settings?.automation_level ?? "draft") === "draft";
+  const nextActionCta = useMemo(() => {
+    if (!email || !isDraftMode) return null;
+    const missing = missingList(email);
+    const lj = (email.lead_json ?? {}) as { slots_proposed?: string[]; draft_reply?: unknown; draft_proposal?: unknown };
+    const slotsStored = Array.isArray(lj.slots_proposed) ? lj.slots_proposed : [];
+    const status = email.lead_status ?? "raw";
+    const hasMissing = missing.length > 0;
+    const qualified = !!(email as { lead_is_qualified?: boolean }).lead_is_qualified;
+    const hasSlots = slotsStored.length > 0;
+    const hasDraftReply = !!(email.ai_reply ?? "").trim() || !!lj.draft_reply;
+    const hasDraftProposal = !!lj.draft_proposal;
+    const sentReply = alreadySentReply;
+    const sentProposal = alreadySentProposal;
+
+    if (["new_lead", "qualifying"].includes(status) && hasMissing)
+      return { label: "Générer brouillon (infos manquantes)", action: "generate_draft" as const };
+    if (qualified && status !== "slots_proposed" && !hasSlots)
+      return { label: "Générer des créneaux", action: "generate_slots" as const };
+    if (hasSlots && (hasDraftProposal || (email.ai_reply ?? "").trim().length > 0) && !sentProposal)
+      return { label: "Envoyer proposition", action: "send_proposal" as const };
+    if (hasDraftReply && !sentReply)
+      return { label: "Envoyer brouillon", action: "send_draft" as const };
+    return null;
+  }, [email, isDraftMode, alreadySentReply, alreadySentProposal]);
+
+  if (!email) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center p-6">
+        <div className="w-full max-w-md rounded-2xl border border-slate-700 bg-slate-900/60 p-8 text-center">
+          <div className="text-lg font-semibold text-white">Sélectionnez un prospect</div>
+          <p className="mt-2 text-sm text-slate-400">
+            Cliquez à gauche pour ouvrir le dossier. Astuce: utilisez Kanban pour traiter par étape.
+          </p>
+          <button
+            type="button"
+            onClick={() => {
+              if (onSetView) onSetView("kanban");
+              else window.dispatchEvent(new CustomEvent("fix:emails-set-view", { detail: { view: "kanban" } }));
+            }}
+            className="mt-4 rounded-xl bg-sky-600 px-4 py-2.5 text-sm font-medium text-white hover:bg-sky-500"
+          >
+            Aller au Kanban
+          </button>
+        </div>
+      </div>
+    );
+  }
+
+  const name = candidateName(email);
+  const prop = propertyLabel(email);
+  const status = email.lead_status ?? "raw";
+  const score = email.lead_score ?? null;
+
+  const profile = email.lead_profile ?? null;
+  const missing = missingList(email);
+  const lj = (email.lead_json ?? {}) as { slots_proposed?: string[]; draft_reply?: unknown; draft_proposal?: unknown };
+  const slotsStored = Array.isArray(lj.slots_proposed) ? lj.slots_proposed : [];
+
+  const runNextAction = () => {
+    if (!nextActionCta) return;
+    if (nextActionCta.action === "generate_draft") generateReply();
+    else if (nextActionCta.action === "generate_slots") generateSlots();
+    else if (nextActionCta.action === "send_proposal" || nextActionCta.action === "send_draft") actionSendDraft();
+  };
+
+  const globalAutopilot = settings?.assistant_enabled !== false && settings?.automation_level === "autopilot";
+  const override = autopilotOverrideByLead[email.id];
+  const effectiveAutopilot = override !== undefined ? override : globalAutopilot;
+
+  return (
+    <div className="space-y-6">
+      {toast && (
+        <div className="p-3 rounded-xl bg-gray-900 border border-gray-800 text-sm text-gray-200">
+          {toast}
+        </div>
+      )}
+
+      {/* 1. Header Lead: nom, score, badges, dernière action */}
+      <div className="p-4 rounded-xl bg-gray-900 border border-gray-800 space-y-2">
+        <div className="flex flex-wrap items-start justify-between gap-2">
+          <div className="min-w-0">
+            <h2 className="text-xl font-bold text-white truncate">{name}</h2>
+            <p className="text-sm text-gray-400 truncate mt-0.5">{prop}</p>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <span className={`text-xs font-medium px-2 py-0.5 rounded-full ${scoreColor(score)}`}>
+              {typeof score === "number" ? `${score}/10` : "—"}
+            </span>
+            <span className={`text-[11px] px-2 py-0.5 rounded-full ${statusPill(status)}`}>
+              {statusLabel(status)}
+            </span>
+            <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-800 text-slate-400 border border-slate-700">
+              Assistant: {effectiveAutopilot ? "Autopilot" : "Draft"}
+            </span>
+          </div>
+        </div>
+        {email.lead_last_action != null && String(email.lead_last_action).trim() !== "" && (
+          <p className="text-xs text-gray-500">Dernière action: {String(email.lead_last_action).trim()}</p>
+        )}
+      </div>
+
+      {/* 2. Prochaine action — 1 CTA principal */}
+      <div className="p-4 rounded-xl bg-gray-900 border border-gray-800 space-y-3">
+        <div className="text-xs font-medium text-gray-500 uppercase tracking-wide">Prochaine action</div>
+        {nextActionCta ? (
+          <button
+            type="button"
+            onClick={runNextAction}
+            disabled={
+              (nextActionCta.action === "generate_draft" && replyLoading) ||
+              (nextActionCta.action === "generate_slots" && slotsLoading) ||
+              (nextActionCta.action === "send_proposal" && (!!quickAction || cannotSendDraft)) ||
+              (nextActionCta.action === "send_draft" && (!!quickAction || cannotSendDraft))
+            }
+            className="w-full rounded-xl bg-sky-600 px-4 py-3 text-sm font-medium text-white hover:bg-sky-500 disabled:opacity-50 disabled:cursor-not-allowed"
+          >
+            {nextActionCta.action === "generate_draft" && replyLoading
+              ? "Génération…"
+              : nextActionCta.action === "generate_slots" && slotsLoading
+                ? "Génération créneaux…"
+                : (nextActionCta.action === "send_proposal" || nextActionCta.action === "send_draft") && quickAction === "send_draft"
+                  ? "Envoi…"
+                  : nextActionCta.label}
+          </button>
+        ) : (
+          <p className="text-sm text-gray-500">Aucune action requise pour l’instant.</p>
+        )}
+      </div>
+
+      {/* 3. Fiche prospect */}
+      <div className="p-5 rounded-xl bg-gray-900 border border-gray-800 space-y-4">
+        <div className="text-sm font-semibold text-white">Fiche prospect</div>
+        <div className="grid grid-cols-2 gap-x-4 gap-y-4">
+          <div className="space-y-0.5"><span className="text-sm text-gray-500/60 uppercase tracking-wide">Tél</span><div className="text-base text-gray-200">{profile?.phone ?? "—"}</div></div>
+          <div className="space-y-0.5"><span className="text-sm text-gray-500/60 uppercase tracking-wide">Revenus</span><div className="text-base text-gray-200">{prettyMoney(profile?.monthly_income ?? null)}</div></div>
+          <div className="space-y-0.5"><span className="text-sm text-gray-500/60 uppercase tracking-wide">Statut pro</span><div className="text-base text-gray-200">{profile?.employment_status ?? "—"}</div></div>
+          <div className="space-y-0.5"><span className="text-sm text-gray-500/60 uppercase tracking-wide">Garant</span><div className="text-base text-gray-200">{typeof profile?.has_guarantor === "boolean" ? (profile.has_guarantor ? "Oui" : "Non") : "—"}</div></div>
+        </div>
+        {missing.length > 0 && (
+          <div className="p-3 rounded-lg bg-orange-900/20 border border-orange-800/40">
+            <div className="text-xs text-orange-300 font-medium">Manque :</div>
+            <p className="text-sm text-orange-200 mt-1">{missing.join(", ")}</p>
+          </div>
+        )}
+      </div>
+
+      {/* 4. Bien */}
+      <div className="p-5 rounded-xl bg-gray-900 border border-gray-800 space-y-2">
+        <div className="text-sm font-semibold text-white">Bien</div>
+        <p className="text-sm text-gray-300 truncate" title={prop}>{prop}</p>
+        {(email as { property_id?: string | null }).property_id != null && String((email as { property_id?: string | null }).property_id).trim() !== "" && (
+          <p className="text-xs text-gray-500">ID bien: {(email as { property_id?: string | null }).property_id}</p>
+        )}
+      </div>
+
+      {/* 5. Réponse IA — textarea éditable + Copier / Envoyer (Draft) / Marquer non qualifié */}
+      <div className="p-5 rounded-xl bg-gray-900 border border-gray-800 space-y-3">
+        <div className="text-sm font-semibold text-white">Réponse IA</div>
+        {!aiReply && !hasDraft && (
+          <p className="text-sm text-gray-500">Aucun brouillon. Utilisez « Générer brouillon » dans Prochaine action.</p>
+        )}
+        {(aiReply != null || hasDraft) && (
+          <>
+            <textarea
+              value={aiReply ?? ""}
+              onChange={(e) => setAiReply(e.target.value)}
+              className="w-full min-h-[120px] rounded-lg border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-200 placeholder-gray-500 focus:border-sky-500 focus:outline-none"
+              placeholder="Brouillon de réponse…"
+            />
+            <div className="flex flex-wrap items-center gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  const text = String(aiReply ?? "").trim();
+                  if (typeof navigator?.clipboard?.writeText === "function") {
+                    navigator.clipboard.writeText(text).then(() => notify("Copié ✅")).catch(() => notify("Erreur copie"));
+                  } else notify("Copie non disponible");
+                }}
+                className="rounded-lg border border-gray-600 bg-gray-700 px-3 py-1.5 text-xs font-medium text-gray-200 hover:bg-gray-600"
+              >
+                Copier
+              </button>
+              <button
+                type="button"
+                onClick={actionSendDraft}
+                disabled={!!quickAction || cannotSendDraft}
+                className="rounded-lg bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+              >
+                {quickAction === "send_draft" ? "Envoi…" : "Envoyer (Draft)"}
+              </button>
+              {cannotSendDraft && <span className="text-xs text-slate-400">Déjà envoyé</span>}
+              <button
+                type="button"
+                onClick={actionMarkUnqualified}
+                disabled={!!quickAction}
+                className="rounded-lg border border-red-800/60 bg-red-900/40 px-3 py-1.5 text-xs font-medium text-red-200 hover:bg-red-900/60 disabled:opacity-50"
+              >
+                {quickAction === "reject" ? "…" : "Marquer non qualifié"}
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* 6. Créneaux proposés */}
+      <div id="creneaux-slots" className="p-5 rounded-xl bg-gray-900 border border-gray-800 space-y-3">
+        <div className="text-sm font-semibold text-white">Créneaux de visite</div>
+        <div className="flex flex-wrap gap-2 items-center">
+          <button
+            type="button"
+            onClick={generateSlots}
+            disabled={slotsLoading}
+            className="rounded-lg bg-sky-600 px-3 py-2 text-xs font-medium text-white hover:bg-sky-500 disabled:opacity-50"
+          >
+            {slotsLoading ? "Génération…" : "Générer des créneaux"}
+          </button>
+          <button
+            type="button"
+            onClick={actionSendDraft}
+            disabled={slots.length === 0 || !!quickAction || cannotSendDraft}
+            className="rounded-lg bg-emerald-600 px-3 py-2 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50"
+          >
+            {quickAction === "send_draft" ? "Envoi…" : "Envoyer proposition"}
+          </button>
+        </div>
+        {slots.length === 0 ? (
+          <div className="text-sm text-gray-400">
+            Aucun créneau enregistré. Clique sur “Générer des créneaux”.
+          </div>
+        ) : (
+          <div className="space-y-2">
+            <div className="text-xs text-gray-400">
+              Durée estimée : {slotsDurationMin} min — clique pour confirmer.
+            </div>
+
+            <div className="flex flex-col gap-2">
+              {slots.map((iso) => {
+                const d = new Date(iso);
+                const end = new Date(d.getTime() + slotsDurationMin * 60_000);
+
+                const label =
+                  `${d.toLocaleDateString("fr-FR", {
+                    weekday: "short",
+                    day: "2-digit",
+                    month: "short",
+                  })} — ${d.toLocaleTimeString("fr-FR", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })} → ${end.toLocaleTimeString("fr-FR", {
+                    hour: "2-digit",
+                    minute: "2-digit",
+                  })}`;
+
+                return (
+                  <button
+                    key={iso}
+                    onClick={async () => {
+                      if (!email) return;
+                      setConfirmLoadingStart(iso);
+                      try {
+                        const res = await fetchWithTimeout("/api/leads/confirm-slot", {
+                          method: "POST",
+                          headers: { "Content-Type": "application/json" },
+                          body: JSON.stringify({ emailId: email.id, slotStart: iso, trigger: "manual" }),
+                          cache: "no-store",
+                        });
+                        const json = await res.json().catch(() => null);
+                        if (!res.ok) {
+                          notify(json?.error ?? "Erreur confirmation du créneau.");
+                          return;
+                        }
+                        window.dispatchEvent(new Event("fix:emails-refresh"));
+                        notify("Visite confirmée ✅ (événement créé)");
+                      } catch (e) {
+                        if (isAbortError(e)) notify("Timeout — Réessayer");
+                        else notify("Erreur confirmation.");
+                      } finally {
+                        setConfirmLoadingStart(null);
+                      }
+                    }}
+                    disabled={confirmLoadingStart === iso}
+                    className="text-left px-3 py-2 rounded-md bg-gray-800 hover:bg-gray-700 text-sm disabled:opacity-60"
+                  >
+                    <div className="flex items-center justify-between gap-2">
+                      <div>🕒 {label}</div>
+                      <div className="text-xs text-gray-400">
+                        {confirmLoadingStart === iso ? "Confirmation…" : "Confirmer"}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            <div className="text-[11px] text-gray-500">
+              Après confirmation : statut = “Visite confirmée” + relance automatique planifiée (tâche à J-0, H-2).
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* 7. Email source */}
+      <div className="p-5 rounded-xl bg-gray-900 border border-gray-800 space-y-3">
+        <div className="text-sm font-semibold text-white">Email source</div>
+
+        <div className="text-sm text-gray-200 font-medium">
+          {decodeUtf8Mojibake(email.subject ?? "") || "(Sans objet)"}
+        </div>
+
+        {previewText ? (
+          <div>
+            <div className="text-xs text-slate-500 mb-1">Aperçu du message</div>
+            <div className="text-sm text-gray-300 bg-gray-950/40 border border-gray-800 rounded-lg p-3 max-h-72 overflow-y-auto">
+              <div className="whitespace-pre-line">{previewText}</div>
+            </div>
+          </div>
+        ) : bodyLoading ? (
+          <div className="text-sm text-slate-400">Chargement du contenu…</div>
+        ) : (
+          <div className="text-sm text-slate-500 italic">Aucun contenu</div>
+        )}
+
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            type="button"
+            onClick={() => setShowRawHtml((v) => !v)}
+            className="rounded-lg border border-slate-600 bg-slate-800 px-2.5 py-1.5 text-xs text-slate-400 hover:text-slate-300 hover:bg-slate-700"
+          >
+            {showRawHtml ? "Masquer brut" : "Voir brut"}
+          </button>
+          {rawContent && isHtml && (
+            <button
+              type="button"
+              onClick={() => setShowRendered((v) => !v)}
+              className="rounded-lg border border-slate-600 bg-slate-800 px-2.5 py-1.5 text-xs text-slate-400 hover:text-slate-300 hover:bg-slate-700"
+            >
+              {showRendered ? "Masquer rendu" : "Voir rendu"}
+            </button>
+          )}
+        </div>
+
+        {showRawHtml && rawContent && (
+          <pre className="text-xs text-slate-500 bg-slate-950 border border-slate-800 rounded-lg p-3 max-h-52 overflow-auto whitespace-pre-wrap break-all font-mono">
+            {rawContent}
+          </pre>
+        )}
+
+        {showRendered && rawContent && isHtml && (
+          <iframe
+            sandbox="allow-same-origin"
+            srcDoc={rawContent}
+            title="Aperçu rendu"
+            className="w-full min-h-[200px] max-h-72 rounded-lg border border-slate-800 bg-white text-gray-900 overflow-auto"
+          />
+        )}
+
+        <div className="flex flex-wrap gap-2">
+          {(email.open_url || email.gmail_message_id) && (
+            <button
+              onClick={openExternal}
+              className="px-3 py-2 rounded-md bg-blue-600 text-sm hover:bg-blue-500 text-black font-medium"
+            >
+              📩 Ouvrir dans la boîte mail
+            </button>
+          )}
+
+          <button
+            onClick={archive}
+            className="px-3 py-2 rounded-md bg-gray-800 text-sm hover:bg-gray-700"
+          >
+            Archiver
+          </button>
+        </div>
+      </div>
+
+      {/* IA reply (accordion) */}
+      <div className="p-5 rounded-xl bg-gray-900 border border-gray-800">
+        <button
+          onClick={() => {
+            if (!aiReply) generateReply();
+            else setReplyOpen((v) => !v);
+          }}
+          className="flex items-center justify-between w-full text-left"
+        >
+          <span className="text-sm font-medium text-gray-200">
+            ✉️ Réponse de l’IA (agent virtuel)
+          </span>
+          <span className="text-xs text-gray-400">
+            {replyLoading ? "Génération…" : replyOpen ? "Masquer" : aiReply ? "Afficher" : "Générer"}
+          </span>
+        </button>
+
+        {replyOpen && aiReply && (
+          <div className="mt-3 space-y-3">
+            <div className="text-sm text-gray-200 whitespace-pre-line bg-gray-800 rounded-md p-3">
+              {aiReply}
+            </div>
+
+            <div className="flex gap-2 flex-wrap">
+              <button
+                onClick={async () => {
+                  if (aiReply) await navigator.clipboard.writeText(aiReply);
+                  notify("Réponse copiée 📋");
+                }}
+                className="px-3 py-2 rounded-md bg-gray-700 text-xs hover:bg-gray-600"
+              >
+                Copier
+              </button>
+
+              <button
+                onClick={forceBooking}
+                className="px-3 py-2 rounded-md bg-green-600 text-xs hover:bg-green-500 text-black font-medium"
+              >
+                ⚡ Forcer RDV
+              </button>
+            </div>
+
+            <div className="text-[11px] text-gray-500">
+              Étape suivante : brancher Free/Busy + génération slots + envoi automatique si Autopilot ON.
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}

@@ -3,7 +3,10 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 
-const TOTAL_STEPS = 5;
+const TOTAL_STEPS = 6;
+
+type BienForm = { titre: string; loyer: string; type: string };
+const BIEN_TYPES = ["Appartement", "Maison", "Studio", "Parking", "Local commercial"];
 
 const PROPERTY_TYPES = [
   { id: "appartements", label: "Appartements" },
@@ -116,7 +119,10 @@ export default function OnboardingClient() {
   const [city, setCity] = useState("");
   const [propertyTypes, setPropertyTypes] = useState<string[]>(["appartements"]);
 
-  // Étape 4 — IA
+  // Étape 4 — Mes biens
+  const [biens, setBiens] = useState<BienForm[]>([{ titre: "", loyer: "", type: "Appartement" }]);
+
+  // Étape 5 — IA
   const [iaAnswers, setIaAnswers] = useState<Record<string, string>>({});
   const [currentQuestion, setCurrentQuestion] = useState(0);
 
@@ -130,7 +136,7 @@ export default function OnboardingClient() {
     const stepParam = parseInt(params.get("step") ?? "1");
     const providerParam = params.get("provider");
 
-    if (!isNaN(stepParam) && stepParam >= 1 && stepParam <= TOTAL_STEPS) {
+    if (!isNaN(stepParam) && stepParam >= 1 && stepParam <= 6) {
       setStep(stepParam);
     }
     if (providerParam === "gmail" || providerParam === "outlook") {
@@ -200,6 +206,25 @@ export default function OnboardingClient() {
       }
     } catch (e) {
       console.error("[ONBOARDING] Erreur réseau settings:", e);
+    }
+
+    // Sauvegarder les biens ajoutés pendant l'onboarding (BLOC 2A)
+    const validBiens = biens.filter((b) => b.titre.trim().length > 0);
+    for (const bien of validBiens) {
+      try {
+        await fetch("/api/properties", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            title: bien.titre.trim(),
+            rent: parseFloat(bien.loyer) || null,
+            type: bien.type,
+            available: true,
+          }),
+        });
+      } catch (e) {
+        console.warn("[ONBOARDING] Bien non sauvegardé:", bien.titre, e);
+      }
     }
 
     setSaving(false);
@@ -494,10 +519,128 @@ export default function OnboardingClient() {
           </div>
         )}
 
-        {/* ── ÉTAPE 4 : Configuration IA ── */}
+        {/* ── ÉTAPE 4 : Mes biens ── */}
         {step === 4 && (
           <div className="space-y-5">
             <StepBadge step={4} />
+            <div>
+              <h2 className="text-xl font-semibold mb-1" style={{ color: "rgb(30 41 59)" }}>
+                Vos biens à louer
+              </h2>
+              <p className="text-sm" style={{ color: "rgb(100 116 139)" }}>
+                Ajoutez vos premiers biens. Vous pourrez en ajouter d'autres depuis votre tableau de bord.
+              </p>
+            </div>
+
+            {biens.map((bien, idx) => (
+              <div
+                key={idx}
+                className="rounded-xl border p-4 space-y-3"
+                style={{ borderColor: "rgb(226 232 240)", background: idx === 0 ? "white" : "rgb(250 250 252)" }}
+              >
+                <div className="flex items-center justify-between">
+                  <span className="text-xs font-semibold" style={{ color: "rgb(100 116 139)" }}>
+                    Bien {idx + 1}
+                  </span>
+                  {idx > 0 && (
+                    <button
+                      type="button"
+                      onClick={() => setBiens((prev) => prev.filter((_, i) => i !== idx))}
+                      className="text-xs"
+                      style={{ color: "rgb(220 38 38)" }}
+                    >
+                      Supprimer
+                    </button>
+                  )}
+                </div>
+
+                <div>
+                  <label className="text-xs font-medium block mb-1" style={{ color: "rgb(71 85 105)" }}>
+                    Titre du bien <span style={{ color: "rgb(79 70 229)" }}>*</span>
+                  </label>
+                  <input
+                    type="text"
+                    value={bien.titre}
+                    onChange={(e) => setBiens((prev) => prev.map((b, i) => i === idx ? { ...b, titre: e.target.value } : b))}
+                    placeholder="Ex: Appartement T3 - Paris 11e"
+                    className="w-full rounded-xl border px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                    style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+                  />
+                </div>
+
+                <div className="grid grid-cols-2 gap-3">
+                  <div>
+                    <label className="text-xs font-medium block mb-1" style={{ color: "rgb(71 85 105)" }}>
+                      Loyer (€/mois)
+                    </label>
+                    <input
+                      type="number"
+                      value={bien.loyer}
+                      onChange={(e) => setBiens((prev) => prev.map((b, i) => i === idx ? { ...b, loyer: e.target.value } : b))}
+                      placeholder="850"
+                      className="w-full rounded-xl border px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                      style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+                    />
+                  </div>
+                  <div>
+                    <label className="text-xs font-medium block mb-1" style={{ color: "rgb(71 85 105)" }}>
+                      Type
+                    </label>
+                    <select
+                      value={bien.type}
+                      onChange={(e) => setBiens((prev) => prev.map((b, i) => i === idx ? { ...b, type: e.target.value } : b))}
+                      className="w-full rounded-xl border px-3 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-indigo-400"
+                      style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+                    >
+                      {BIEN_TYPES.map((t) => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </div>
+            ))}
+
+            <button
+              type="button"
+              onClick={() => setBiens((prev) => [...prev, { titre: "", loyer: "", type: "Appartement" }])}
+              className="w-full py-2.5 rounded-xl text-sm font-medium border border-dashed transition-colors"
+              style={{ borderColor: "rgb(199 210 254)", color: "rgb(79 70 229)" }}
+              onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgb(238 242 255)"; }}
+              onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+            >
+              + Ajouter un autre bien
+            </button>
+
+            <div className="flex gap-3">
+              <button
+                onClick={goPrev}
+                className="flex-1 py-3 rounded-xl text-sm font-medium border transition-colors"
+                style={{ borderColor: "rgb(226 232 240)", color: "rgb(71 85 105)" }}
+              >
+                ← Retour
+              </button>
+              <button
+                onClick={goNext}
+                className="flex-1 py-3 rounded-xl text-sm font-semibold text-white"
+                style={{ background: "rgb(79 70 229)" }}
+              >
+                Continuer →
+              </button>
+            </div>
+
+            <button
+              onClick={goNext}
+              className="w-full text-sm text-center py-1"
+              style={{ color: "rgb(148 163 184)" }}
+            >
+              Passer cette étape →
+            </button>
+          </div>
+        )}
+
+        {/* ── ÉTAPE 5 : Configuration IA ── */}
+        {step === 5 && (
+          <div className="space-y-5">
+            <StepBadge step={5} />
             <div>
               <h2 className="text-xl font-semibold mb-1" style={{ color: "rgb(30 41 59)" }}>
                 Configurez votre agent IA
@@ -584,10 +727,10 @@ export default function OnboardingClient() {
           </div>
         )}
 
-        {/* ── ÉTAPE 5 : Récap + Lancement ── */}
-        {step === 5 && (
+        {/* ── ÉTAPE 6 : Récap + Lancement ── */}
+        {step === 6 && (
           <div className="space-y-5">
-            <StepBadge step={5} />
+            <StepBadge step={6} />
             <div>
               <h2 className="text-xl font-semibold mb-1" style={{ color: "rgb(30 41 59)" }}>
                 Votre espace est prêt
@@ -649,6 +792,14 @@ export default function OnboardingClient() {
                   <span style={{ color: "rgb(71 85 105)" }}>🏠 Types de biens</span>
                   <span className="font-medium text-right ml-4" style={{ color: "rgb(30 41 59)" }}>
                     {propertyTypes.length} type{propertyTypes.length > 1 ? "s" : ""}
+                  </span>
+                </div>
+              )}
+              {biens.filter((b) => b.titre.trim()).length > 0 && (
+                <div className="flex justify-between text-sm">
+                  <span style={{ color: "rgb(71 85 105)" }}>🏢 Biens ajoutés</span>
+                  <span className="font-medium" style={{ color: "rgb(79 70 229)" }}>
+                    {biens.filter((b) => b.titre.trim()).length} bien{biens.filter((b) => b.titre.trim()).length > 1 ? "s" : ""}
                   </span>
                 </div>
               )}

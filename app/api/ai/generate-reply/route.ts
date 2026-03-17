@@ -2,13 +2,19 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { supabaseServer } from "@/lib/supabaseServer";
 import OpenAI from "openai";
+import { getAvailabilitySlots } from "@/lib/calendar/availability";
+import { matchFaq, type FaqItem } from "@/lib/faq/matchFaq";
+import { setLastAction } from "@/lib/lead/lastAction";
+
+export const runtime = "nodejs";
+export const maxDuration = 60;
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-/* ── Extraction heuristique depuis le corps de l'email ── */
+/* ── Extraction heuristique depuis le corps (fallback si prospect_data absent) ── */
 function detectSituation(body: string): string | null {
   const l = body.toLowerCase();
-  if (l.includes("étudiant") || l.includes("etudiante") || l.includes("école") || l.includes("université") || l.includes("lycée")) return "etudiant";
+  if (l.includes("étudiant") || l.includes("etudiante") || l.includes("école") || l.includes("université")) return "etudiant";
   if (l.includes("cdi")) return "cdi";
   if (l.includes("cdd")) return "cdd";
   if (l.includes("auto-entrepreneur") || l.includes("autoentrepreneur") || l.includes("freelance") || l.includes("indépendant")) return "auto";
@@ -32,7 +38,6 @@ function extractMoney(body: string): { revenus: number | null; loyer: number | n
       if (!loyer) loyer = val;
     }
   }
-  // Fallback : 2 premiers montants > 200
   if (!revenus || !loyer) {
     const all = [...body.matchAll(/(\d[\d\s]*)\s*(?:€|euros?)/gi)]
       .map((m) => parseFloat(m[1].replace(/\s/g, "")))
@@ -46,39 +51,47 @@ function extractMoney(body: string): { revenus: number | null; loyer: number | n
 function extractNom(body: string): string {
   const m = body.match(/(?:je m['']appelle|je suis|prénom\s*:?\s*)([A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+(?:\s+[A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+)*)/);
   if (m?.[1]) return m[1].trim();
-  // Signature
   const lines = body.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 2 && l.length < 45);
   const last = lines[lines.length - 1] ?? "";
   if (last.split(/\s+/).length >= 2 && !/[@.]/.test(last)) return last;
   return "";
 }
 
-/* ── Déterminer le cas selon la logique 4 cas ── */
-type ReplyCase = "etudiant" | "insolvable" | "incomplet" | "complet";
+/* ── Cas de réponse selon l'étape du process ── */
+type ReplyCase =
+  | "qualification"      // QUALIFICATION → demander situation + revenus SEULEMENT
+  | "visite_proposee"    // VISITE_PROPOSEE → proposer créneaux, PAS de docs
+  | "etudiant"           // VISITE_PROPOSEE (étudiant) → garant + créneaux, PAS de docs
+  | "refuse"             // REFUSE → refus poli + suggestion garant
+  | "visite_confirmee"   // VISITE_CONFIRMEE → confirmer RDV + attendre visite
+  | "dossier_demande"    // DOSSIER_DEMANDE → envoyer liste de documents
+  | "dossier_recu";      // DOSSIER_RECU → accusé réception
 
 function determineCase(params: {
   situation: string | null;
   revenus: number | null;
   loyer: number | null;
   multiplicateur: number;
-  garantObligatoire: Record<string, boolean>;
+  etapeProcess: string | null;
 }): ReplyCase {
-  const { situation, revenus, loyer, multiplicateur, garantObligatoire } = params;
+  const { situation, revenus, loyer, multiplicateur, etapeProcess } = params;
 
-  // Cas 1 : étudiant
-  if (situation === "etudiant") return "etudiant";
+  // Les étapes avancées et manuelles priment toujours
+  if (etapeProcess === "DOSSIER_RECU")    return "dossier_recu";
+  if (etapeProcess === "DOSSIER_DEMANDE") return "dossier_demande";
+  if (etapeProcess === "VISITE_CONFIRMEE") return "visite_confirmee";
+  if (etapeProcess === "REFUSE")          return "refuse";
 
-  // Cas 2 : insolvable
-  if (revenus !== null && loyer !== null) {
-    const ratio = revenus / loyer;
-    if (ratio < multiplicateur) return "insolvable";
+  // Étape VISITE_PROPOSEE
+  if (etapeProcess === "VISITE_PROPOSEE") {
+    return situation === "etudiant" ? "etudiant" : "visite_proposee";
   }
 
-  // Cas 3 : infos manquantes (revenus ou loyer inconnus)
-  if (!revenus || !loyer || !situation) return "incomplet";
-
-  // Cas 4 : complet + solvable
-  return "complet";
+  // Pas d'étape renseignée → déterminer depuis le profil
+  if (situation === "etudiant") return "etudiant";
+  if (revenus !== null && loyer !== null && loyer > 0 && revenus / loyer < multiplicateur) return "refuse";
+  if (!revenus || !loyer || !situation) return "qualification";
+  return "visite_proposee";
 }
 
 /* ── Builders de prompt selon le cas ── */
@@ -110,116 +123,161 @@ function buildPrompt(params: {
   const agenceLine = nomAgence ? `Agence : ${nomAgence}` : "Agence immobilière";
   const nomProspect = prospect.nom || "Madame, Monsieur";
   const instructLine = instructions ? `\nINSTRUCTIONS SPÉCIALES : ${instructions}` : "";
+  const emailCtx = `Email reçu :\nExpéditeur : ${email.sender}\nSujet : ${email.subject}\nContenu : ${email.body}`;
+  const sig = `Cordialement, L'équipe ${nomAgence || "de l'agence"}`;
 
-  if (cas === "etudiant") {
-    const docsList = docsProfiles.etudiant.map((d) => `• ${d}`).join("\n");
-    const needsGarant = garantObligatoire["etudiant"] !== false;
-    return `Tu es l'assistant de l'${agenceLine}.
-Rédige un email professionnel et chaleureux pour un candidat étudiant.
-${instructLine}
+  // ── DOSSIER_RECU — accusé réception ────────────────────────────────────────
+  if (cas === "dossier_recu") {
+    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
 
-Contenu de l'email à envoyer :
-- Remercier ${nomProspect} pour sa candidature
-- Expliquer que pour les étudiants, un garant est ${needsGarant ? "obligatoire" : "recommandé"}
-- Demander les documents suivants :
-${docsList}
-- Préciser que la candidature sera examinée dès réception du dossier complet
-- Signature : Cordialement, L'équipe ${nomAgence || "de l'agence"}
+Rédige un email bref et professionnel pour accuser réception des documents de ${nomProspect}.
 
-Email reçu :
-Expéditeur : ${email.sender}
-Sujet : ${email.subject}
-Contenu : ${email.body}
+Contenu :
+- Remercier chaleureusement pour l'envoi du dossier
+- Confirmer la bonne réception de l'ensemble des pièces
+- Indiquer que le dossier va être étudié et qu'un retour sera communiqué rapidement
+- Ne pas s'engager sur un délai précis
+- Signature : ${sig}
+
+${emailCtx}
 
 Réponse (française, professionnelle, directement envoyable) :`;
   }
 
-  if (cas === "insolvable") {
+  // ── DOSSIER_DEMANDE — envoyer liste de documents ──────────────────────────
+  if (cas === "dossier_demande") {
+    const sitKeyMap: Record<string, keyof typeof docsProfiles> = {
+      cdi: "cdi", cdd: "cdd", auto: "auto", retraite: "retraite", etudiant: "etudiant",
+    };
+    const sitKey: keyof typeof docsProfiles =
+      (prospect.situation ? (sitKeyMap[prospect.situation] ?? "cdi") : "cdi");
+    const docsList = (docsProfiles[sitKey] ?? docsProfiles.cdi).map(d => `• ${d}`).join("\n");
+    const needsGarant = prospect.situation && garantObligatoire[prospect.situation];
+    const garantLine = needsGarant ? "\n• Pour votre profil, un garant sera également requis (mêmes documents)." : "";
+    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
+
+Rédige un email chaleureux pour demander le dossier locataire à ${nomProspect}, suite à la visite.
+
+Contenu :
+- Remercier ${nomProspect} pour la visite et l'intérêt pour le bien
+- Demander de transmettre les documents suivants pour constituer le dossier :
+${docsList}${garantLine}
+- Indiquer que la candidature sera examinée dès réception du dossier complet
+- Rester enthousiaste et professionnel
+- Signature : ${sig}
+
+${emailCtx}
+
+Réponse (française, professionnelle, directement envoyable) :`;
+  }
+
+  // ── VISITE_CONFIRMEE — confirmer RDV (pas de docs, attendre visite) ────────
+  if (cas === "visite_confirmee") {
+    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
+
+Rédige un email de confirmation de visite pour ${nomProspect}.
+
+Contenu :
+- Confirmer chaleureusement la visite (date/heure telles que mentionnées dans l'email reçu)
+- Indiquer l'adresse du bien si connue, sinon proposer un rappel
+- Préciser qu'un retour sera communiqué rapidement après la visite
+- NE PAS demander de documents — les documents seront demandés après la visite
+- Signature : ${sig}
+
+${emailCtx}
+
+Réponse (française, professionnelle, directement envoyable) :`;
+  }
+
+  // ── REFUSE — refus poli + suggestion garant ────────────────────────────────
+  if (cas === "refuse") {
     const ratio = prospect.revenus && prospect.loyer
       ? (prospect.revenus / prospect.loyer).toFixed(1)
       : "insuffisant";
-    return `Tu es l'assistant de l'${agenceLine}.
-Rédige un email professionnel, poli et respectueux pour décliner cette candidature.
-${instructLine}
+    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
 
-Contenu de l'email à envoyer :
+Rédige un email professionnel, poli et respectueux pour décliner cette candidature.
+
+Contenu :
 - Remercier ${nomProspect} pour sa candidature et son intérêt
 - Expliquer poliment que le critère de solvabilité n'est pas atteint (revenus insuffisants pour couvrir ${multiplicateur}x le loyer, ratio actuel : ${ratio}x)
 - Suggérer la possibilité d'un garant solide (revenus ≥ ${multiplicateur}x le loyer) qui pourrait permettre de reconsidérer
 - Encourager à revenir vers l'agence si la situation évolue
+- NE PAS demander de documents
 - Rester positif et professionnel
-- Signature : Cordialement, L'équipe ${nomAgence || "de l'agence"}
+- Signature : ${sig}
 
-Email reçu :
-Expéditeur : ${email.sender}
-Sujet : ${email.subject}
-Contenu : ${email.body}
+${emailCtx}
 
 Réponse (française, professionnelle, directement envoyable) :`;
   }
 
-  if (cas === "incomplet") {
+  // ── ETUDIANT — garant + créneaux, PAS de documents ────────────────────────
+  if (cas === "etudiant") {
+    const needsGarant = garantObligatoire["etudiant"] !== false;
+    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
+
+Rédige un email professionnel et bienveillant pour un candidat étudiant.
+
+Contenu :
+- Remercier ${nomProspect} pour son intérêt pour le bien
+- Expliquer que pour les étudiants, un garant (personne physique avec revenus stables ≥ ${multiplicateur}x le loyer) est ${needsGarant ? "obligatoire" : "fortement recommandé"}
+- Si l'email mentionne déjà un garant disponible : proposer 3 créneaux de visite (jours ouvrés entre ${heureDebut}h et ${heureFin}h, durée ${dureeVisite}min) et demander de confirmer le créneau préféré
+- Si aucun garant n'est mentionné : demander si ${nomProspect} dispose d'un garant avant d'aller plus loin
+- NE PAS demander de documents à ce stade — les documents seront demandés après la visite
+- Signature : ${sig}
+
+${emailCtx}
+
+Réponse (française, professionnelle, directement envoyable) :`;
+  }
+
+  // ── QUALIFICATION — demander situation + revenus SEULEMENT ────────────────
+  if (cas === "qualification") {
     const missingList: string[] = [];
-    if (!prospect.situation) missingList.push("votre situation professionnelle (CDI, CDD, étudiant, indépendant…)");
-    if (!prospect.revenus) missingList.push("vos revenus nets mensuels (€)");
-    if (!prospect.loyer) missingList.push("le loyer du bien qui vous intéresse");
+    if (!prospect.situation) missingList.push("votre situation professionnelle (CDI, CDD, étudiant, indépendant, retraité…)");
+    if (!prospect.revenus) missingList.push("vos revenus nets mensuels (en €)");
     const missingStr = missingList.map((m, i) => `${i + 1}. ${m}`).join("\n");
-    return `Tu es l'assistant de l'${agenceLine}.
-Rédige un email professionnel pour demander les informations manquantes au candidat.
-${instructLine}
+    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
 
-Contenu de l'email à envoyer :
-- Remercier ${nomProspect} pour sa candidature
-- Expliquer qu'avant de continuer, nous avons besoin des informations suivantes :
+Rédige un email chaleureux pour demander les informations manquantes.
+
+Contenu :
+- Remercier ${nomProspect} pour son intérêt pour le bien
+- Expliquer qu'avant d'étudier sa candidature, il manque quelques informations :
 ${missingStr}
-- Rester chaleureux et encourageant
-- Indiquer que la réponse sera rapide dès réception
-- Signature : Cordialement, L'équipe ${nomAgence || "de l'agence"}
+- Préciser que ces informations permettront de traiter rapidement sa candidature
+- Rester encourageant et disponible pour toute question
+- NE PAS demander de documents à ce stade
+- Signature : ${sig}
 
-Email reçu :
-Expéditeur : ${email.sender}
-Sujet : ${email.subject}
-Contenu : ${email.body}
+${emailCtx}
 
 Réponse (française, professionnelle, directement envoyable) :`;
   }
 
-  // cas === "complet" — solvable, envoyer les docs et proposer des créneaux
-  // PROBLÈME 3 FIX : mapper chaque situation vers le bon profil docs
-  const sitKeyMap: Record<string, keyof typeof docsProfiles> = {
-    cdi:     "cdi",
-    cdd:     "cdd",
-    auto:    "auto",
-    retraite:"retraite",
-    etudiant:"etudiant", // étudiant solvable et avec garant
-  };
-  const sitKey: keyof typeof docsProfiles =
-    (prospect.situation ? (sitKeyMap[prospect.situation] ?? "cdi") : "cdi");
-  const docsList = docsProfiles[sitKey] ?? docsProfiles.cdi;
-  const docsStr = docsList.map((d) => `• ${d}`).join("\n");
-  const needsGarant = prospect.situation && garantObligatoire[prospect.situation];
-  const garantLine = needsGarant ? "\n• Pour votre profil, un garant sera également requis (mêmes documents)." : "";
+  // ── VISITE_PROPOSEE — solvable, proposer créneaux, PAS de documents ────────
   const ratio = prospect.revenus && prospect.loyer
     ? (prospect.revenus / prospect.loyer).toFixed(1)
     : null;
-  const solvLine = ratio ? ` Votre dossier présente un ratio de ${ratio}x, ce qui est ${parseFloat(ratio) >= multiplicateur ? "conforme" : "proche"} à nos critères.` : "";
+  const solvLine = ratio
+    ? ` Son profil présente un ratio de ${ratio}x (critère : ${multiplicateur}x).`
+    : "";
 
-  return `Tu es l'assistant de l'${agenceLine}.
-Rédige un email professionnel pour accueillir favorablement ce candidat et lancer la constitution du dossier.
-${instructLine}
+  return `Tu es l'assistant de l'${agenceLine}.${instructLine}
 
-Contenu de l'email à envoyer :
-- Accueillir chaleureusement ${nomProspect}${solvLine}
-- Lui demander de transmettre les documents suivants pour monter son dossier :
-${docsStr}${garantLine}
-- Lui proposer de planifier une visite (créneaux en semaine entre ${heureDebut}h et ${heureFin}h, durée ${dureeVisite} min) — lui demander ses disponibilités
+Rédige un email professionnel et enthousiaste pour proposer une visite à ce candidat solvable.${solvLine}
+
+Contenu :
+- Accueillir chaleureusement ${nomProspect}
+- Confirmer que son profil correspond à nos critères (sans rentrer dans les détails chiffrés)
+- Proposer 3 créneaux de visite concrets et réalistes à court terme (jours ouvrés, entre ${heureDebut}h et ${heureFin}h, durée ${dureeVisite}min)
+- Demander de confirmer le créneau préféré ou de proposer une autre disponibilité
+- NE PAS demander de documents — les documents seront demandés après la visite
 - Rester enthousiaste et professionnel
-- Signature : Cordialement, L'équipe ${nomAgence || "de l'agence"}
+- Signature : ${sig}
 
-Email reçu :
-Expéditeur : ${email.sender}
-Sujet : ${email.subject}
-Contenu : ${email.body}
+${emailCtx}
 
 Réponse (française, professionnelle, directement envoyable) :`;
 }
@@ -236,14 +294,15 @@ export async function POST(req: Request) {
     const { emailId } = await req.json();
     if (!emailId) return NextResponse.json({ error: "EMAIL_ID_REQUIRED" }, { status: 400 });
 
-    const { data: email, error } = await supabaseAdmin
+    // 3) Charger email
+    const { data: email, error: emailErr } = await supabaseAdmin
       .from("emails")
       .select("id, sender, subject, body, ai_reply, category, prospect_data")
       .eq("id", emailId)
       .eq("user_id", user.id)
       .single();
 
-    if (error || !email) return NextResponse.json({ error: "EMAIL_NOT_FOUND" }, { status: 404 });
+    if (emailErr || !email) return NextResponse.json({ error: "EMAIL_NOT_FOUND" }, { status: 404 });
 
     // 3. Anti-coût : réponse déjà générée
     if (email.ai_reply && email.ai_reply.trim().length > 0) {
@@ -285,52 +344,45 @@ export async function POST(req: Request) {
       dureeVisite: (calSection.dureeVisite as number) ?? 60,
     };
 
-    // 5. Extraction prospect (uniquement pour emails LOCATION)
+    // 5. Construction du prompt selon l'intention et l'étape
     const body = email.body ?? "";
     const isLocation = (email.category || "").toUpperCase() === "LOCATION";
 
     let prompt: string;
 
     if (isLocation) {
-      // BLOC 1 FIX : utiliser prospect_data (données IA) en priorité au lieu de
-      // re-parser le body avec l'heuristique qui inversait revenus/loyer
       const pd = (email as any).prospect_data as Record<string, unknown> | null;
 
-      // Mapper les valeurs situation_pro (enum DB) vers les clés internes
       const situationProMap: Record<string, string> = {
-        ETUDIANT: "etudiant",
-        CDI: "cdi",
-        CDD: "cdd",
-        AUTO_ENTREPRENEUR: "auto",
-        RETRAITE: "retraite",
+        ETUDIANT: "etudiant", CDI: "cdi", CDD: "cdd", AUTO_ENTREPRENEUR: "auto", RETRAITE: "retraite",
       };
 
-      // Situation : prospect_data en priorité, fallback heuristique
       const situation = pd?.situation_pro
         ? (situationProMap[String(pd.situation_pro)] ?? detectSituation(body))
         : detectSituation(body);
 
-      // Revenus & loyer : prospect_data en priorité, fallback extractMoney
       const pdRevenus = typeof pd?.revenus_mensuels === "number" ? pd.revenus_mensuels as number : null;
       const pdLoyer = typeof pd?.loyer_max === "number" ? pd.loyer_max as number : null;
       const { revenus: bodyRevenus, loyer: bodyLoyer } = extractMoney(body);
       const revenus = pdRevenus ?? bodyRevenus;
       const loyer = pdLoyer ?? bodyLoyer;
 
-      // Nom : prospect_data.nom en priorité (extrait du corps, pas de l'expéditeur Gmail)
       const nom = (typeof pd?.nom === "string" && pd.nom.trim().length > 0)
         ? pd.nom.trim()
         : extractNom(body);
+
+      // ← BLOC 2 : lire l'étape depuis prospect_data
+      const etapeProcess = (pd?.etape_process as string | null) ?? null;
 
       const cas = determineCase({
         situation,
         revenus,
         loyer,
         multiplicateur: settings.multiplicateur,
-        garantObligatoire: settings.garantObligatoire,
+        etapeProcess,
       });
 
-      console.log(`[generate-reply] emailId=${emailId} cas=${cas} situation=${situation} revenus=${revenus} loyer=${loyer} nom="${nom}" source=${pd ? "prospect_data" : "heuristique"}`);
+      console.log(`[generate-reply] emailId=${emailId} etape=${etapeProcess ?? "null"} cas=${cas} situation=${situation} revenus=${revenus} loyer=${loyer} nom="${nom}"`);
 
       prompt = buildPrompt({
         cas,
@@ -342,8 +394,6 @@ export async function POST(req: Request) {
       // Email non-LOCATION : prompt générique professionnel
       const contextLine = settings.nomAgence ? `Tu es l'assistant de l'${settings.nomAgence}.` : "Tu es l'assistant personnel d'un dirigeant très occupé.";
       const instructLine = settings.instructions ? `\nINSTRUCTIONS SPÉCIALES : ${settings.instructions}` : "";
-
-      // Intégrer les FAQ si disponibles
       const faqContext = settings.faq.length > 0
         ? `\nFAQ AGENCE (utilise ces réponses si pertinent) :\n${settings.faq.slice(0, 5).map((f) => `Q: ${f.question}\nR: ${f.reponse}`).join("\n\n")}`
         : "";
@@ -357,16 +407,15 @@ Règles :
 - Ton humain, poli, efficace
 - Pas trop long
 - Adapté au CONTENU réel
-- Pas de promesse irréaliste
-- Signature neutre : Cordialement, L'équipe ${settings.nomAgence || "de l'agence"}
+- Signature neutre : Cordialement, L’équipe ${settings.nomAgence || "de l’agence"}
 
 Email reçu :
 Expéditeur : ${email.sender}
 Sujet : ${email.subject}
 Contenu :
-${email.body || "Email sans contenu visible"}
+${email.body}
 
-Réponse :`;
+Réponse (française, professionnelle, directement envoyable) :`;
     }
 
     // 6. Appel OpenAI

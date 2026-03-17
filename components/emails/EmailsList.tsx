@@ -13,6 +13,8 @@ type Email = {
   is_important?: boolean | null;
   category?: string | null;
   classification_reason?: string | null;
+  prospect_data?: Record<string, unknown> | null;
+  attachments?: unknown[] | null;
 };
 
 /* ────────────────────────── HELPERS ────────────────────────── */
@@ -169,6 +171,47 @@ function ScoreCircle({ score }: { score: number }) {
   );
 }
 
+/* ────────────────── DOSSIER STATUS BADGE ──────────────────── */
+
+const DOSSIER_ETAPES_REQUIS = ["DOSSIER_DEMANDE", "DOSSIER_RECU", "VALIDE", "REFUSE"];
+
+function computeDossierStatus(email: Email): { label: string; bg: string; color: string } | null {
+  const etape = email.prospect_data?.etape_process as string | null | undefined;
+  if (!etape || !DOSSIER_ETAPES_REQUIS.includes(etape)) return null;
+
+  const atts = (email.attachments ?? []) as any[];
+  const total = 4; // fiches_paie, contrat, avis_imposition, piece_identite
+  const docsDetected = new Set<string>();
+  for (const att of atts) {
+    const dt = att.docTypes as Record<string, boolean> | undefined;
+    if (dt) { for (const [k, v] of Object.entries(dt)) { if (v) docsDetected.add(k); } }
+  }
+  // Normalize contrat_travail → contrat
+  if (docsDetected.has("contrat_travail")) docsDetected.add("contrat");
+  const count = Math.min(docsDetected.size, total);
+
+  if (count >= total || etape === "VALIDE") {
+    return { label: "📂 Complet", bg: "rgba(22,163,74,0.1)", color: "rgb(22,163,74)" };
+  } else if (count >= 2) {
+    return { label: `📂 Partiel (${count}/${total})`, bg: "rgba(234,88,12,0.1)", color: "rgb(194,65,12)" };
+  } else {
+    return { label: "📂 Incomplet", bg: "rgba(220,38,38,0.08)", color: "rgb(185,28,28)" };
+  }
+}
+
+function DossierStatusBadge({ email }: { email: Email }) {
+  const status = computeDossierStatus(email);
+  if (!status) return null;
+  return (
+    <span
+      className="text-xs px-1.5 py-0.5 rounded-full font-medium"
+      style={{ background: status.bg, color: status.color }}
+    >
+      {status.label}
+    </span>
+  );
+}
+
 /* ────────────────── INTENTION BADGE ──────────────────── */
 
 function IntentionBadge({ intention }: { intention: string | null }) {
@@ -186,6 +229,33 @@ function IntentionBadge({ intention }: { intention: string | null }) {
       style={{ background: s.bg, color: s.text }}
     >
       {s.label}
+    </span>
+  );
+}
+
+/* ────────────────── ETAPE BADGE ──────────────────── */
+
+const ETAPE_STYLES: Record<string, { label: string; bg: string; text: string; emoji: string }> = {
+  NEW:              { label: "Nouveau",          bg: "rgba(100,116,139,0.1)",  text: "rgb(71,85,105)",   emoji: "🆕" },
+  QUALIFICATION:    { label: "Qualification",    bg: "rgba(234,88,12,0.1)",    text: "rgb(194,65,12)",   emoji: "🔍" },
+  VISITE_PROPOSEE:  { label: "Visite proposée",  bg: "rgba(59,130,246,0.1)",   text: "rgb(37,99,235)",   emoji: "📅" },
+  VISITE_CONFIRMEE: { label: "Visite confirmée", bg: "rgba(22,163,74,0.12)",   text: "rgb(22,163,74)",   emoji: "✅" },
+  DOSSIER_DEMANDE:  { label: "Dossier demandé",  bg: "rgba(79,70,229,0.1)",    text: "rgb(79,70,229)",   emoji: "📋" },
+  DOSSIER_RECU:     { label: "Dossier reçu",     bg: "rgba(79,70,229,0.15)",   text: "rgb(67,56,202)",   emoji: "📁" },
+  VALIDE:           { label: "Validé",            bg: "rgba(22,163,74,0.15)",   text: "rgb(21,128,61)",   emoji: "🎉" },
+  REFUSE:           { label: "Refusé",            bg: "rgba(220,38,38,0.1)",    text: "rgb(185,28,28)",   emoji: "❌" },
+};
+
+function EtapeBadge({ etape }: { etape: string | null | undefined }) {
+  if (!etape || etape === "NEW") return null; // NEW est implicite, pas besoin de badge
+  const s = ETAPE_STYLES[etape];
+  if (!s) return null;
+  return (
+    <span
+      className="text-xs px-1.5 py-0.5 rounded-full font-medium"
+      style={{ background: s.bg, color: s.text }}
+    >
+      {s.emoji} {s.label}
     </span>
   );
 }
@@ -384,6 +454,8 @@ export function EmailsList({ emails, selectedEmailId, onSelect, loading }: Email
                         <>
                           <IntentionBadge intention={intention} />
                           {!isHorsSujet && <StatusPill email={email} />}
+                          {/* BLOC 7 : badge étape_process depuis prospect_data */}
+                          <EtapeBadge etape={email.prospect_data?.etape_process as string | null | undefined} />
                         </>
                       )}
                       {email.is_urgent && !isRdvConfirme && (
@@ -431,6 +503,9 @@ export function EmailsList({ emails, selectedEmailId, onSelect, loading }: Email
                   >
                     {preview}
                   </div>
+
+                  {/* Ligne 4 : statut dossier (BLOC 4) — visible si etape >= DOSSIER_DEMANDE */}
+                  <DossierStatusBadge email={email} />
                 </div>
               </div>
             </div>

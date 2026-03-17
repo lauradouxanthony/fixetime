@@ -1,9 +1,19 @@
 export type EmailDecision = "traiter" | "planifier" | "ignorer" | null;
-
 export type EmailAction = "reply" | "schedule" | "archive" | null;
 
 // Intention immobilière — stockée dans la colonne `category`
 export type EmailIntention = "LOCATION" | "INFO" | "HORS_SUJET" | null;
+
+/** Étapes du process immobilier (ordre de progression) */
+export type EtapeProcess =
+  | "NEW"
+  | "QUALIFICATION"
+  | "VISITE_PROPOSEE"
+  | "VISITE_CONFIRMEE"
+  | "DOSSIER_DEMANDE"
+  | "DOSSIER_RECU"
+  | "VALIDE"
+  | "REFUSE";
 
 export type ProspectData = {
   nom?: string | null;
@@ -13,22 +23,34 @@ export type ProspectData = {
   loyer_max?: number | null;
   animaux?: "OUI" | "NON" | null;
   nb_personnes?: number | null;
-  /** Garant disponible — remplace date_emmenagement */
+  /** Garant disponible */
   garant?: "OUI" | "NON" | "A_CONFIRMER" | null;
+  /** Étape courante du process immobilier */
+  etape_process?: EtapeProcess | null;
+  /** property_id lié (optionnel) */
+  property_id?: string | null;
 };
 
 export type Email = {
   id: string;
+
+  // Provider
+  provider?: "google" | "microsoft" | string | null;
+  provider_message_id?: string | null;
+  open_url?: string | null;
   gmail_message_id?: string | null;
 
+  // Raw email
   sender: string | null;
   subject: string | null;
   body?: string | null;
   received_at: string | null;
 
+  // Bien immobilier lié (colonne top-level emails.property_id)
+  property_id?: string | null;
+
   summary?: string | null;
   classification_reason?: string | null;
-
   decision?: EmailDecision;
   estimated_time?: number | null;
   recommended_action?: EmailAction;
@@ -39,11 +61,17 @@ export type Email = {
   is_archived?: boolean | null;
   is_urgent?: boolean | null;
   is_important?: boolean | null;
-
   ai_reply?: string | null;
 
   // Données prospect extraites par l'IA (JSONB en DB)
   prospect_data?: ProspectData | null;
+
+  // Legacy pipeline fields (optional, kept for backward compat with utils)
+  lead_status?: string | null;
+  lead_json?: Record<string, unknown> | null;
+  lead_profile?: Record<string, unknown> | null;
+  lead_property_address?: string | null;
+  candidate_name?: string | null;
 };
 
 // Helper : extraire l'intention depuis `category`

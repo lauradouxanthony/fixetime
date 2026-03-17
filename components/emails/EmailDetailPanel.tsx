@@ -11,6 +11,7 @@ import {
 } from "@/components/calendar/getOptimalSlotForEmail";
 import ProspectFiche from "@/components/emails/ProspectFiche";
 import type { ProspectData } from "@/types/email";
+import type { GeneratePdfParams } from "@/lib/pdf/generateProspectPdf";
 
 type PipelineMode = "DRAFT" | "AUTOPILOTE";
 
@@ -193,7 +194,17 @@ function SolvabiliteWidget({ body, prospectData }: { body: string | null | undef
 }
 
 type DocStatus = "recu" | "manquant" | "unknown";
+type DocValidationStatus = "pending" | "validated" | "rejected";
 type AttachmentInfo = { filename: string; mimeType: string; attachmentId: string; size: number };
+
+const REJECTION_REASONS = [
+  "Document illisible",
+  "Document expiré",
+  "Mauvais document",
+  "Document incomplet",
+  "Signature manquante",
+  "Autre",
+];
 
 const DOCS = [
   { key: "fiches_paie", label: "Fiches de paie (3 derniers mois)" },
@@ -202,34 +213,46 @@ const DOCS = [
   { key: "piece_identite", label: "Pièce d'identité" },
 ];
 
-function DossierWidget({ body, attachments, gmailMessageId }: {
+function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
   body: string | null | undefined;
   attachments?: AttachmentInfo[];
   gmailMessageId?: string | null;
+  emailId?: string;
 }) {
+  const { toast: notify } = useToast();
   const [docs, setDocs] = useState<Record<string, DocStatus>>(
     Object.fromEntries(DOCS.map((d) => [d.key, "unknown"]))
   );
+  const [validationStatus, setValidationStatus] = useState<Record<string, DocValidationStatus>>({});
+  const [validating, setValidating] = useState<string | null>(null);
+  // Rejection modal state
+  const [rejectModal, setRejectModal] = useState<{ attachmentId: string; filename: string; docType: string | null } | null>(null);
+  const [rejectReason, setRejectReason] = useState(REJECTION_REASONS[0]);
 
   // BLOC 3 : auto-marquer depuis les noms de fichiers des pièces jointes
+  // Priorité : att.docTypes (pré-calculé par le sync) > détection locale
   useEffect(() => {
     if (!attachments || attachments.length === 0) return;
     const updates: Record<string, DocStatus> = {};
     for (const att of attachments) {
-      const fname = att.filename.toLowerCase()
-        .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // remove accents
-      if (fname.includes("fiche") || fname.includes("paie") || fname.includes("bulletin")) {
-        updates.fiches_paie = "recu";
-      }
-      if (fname.includes("contrat")) {
-        updates.contrat = "recu";
-      }
-      if (fname.includes("imposition") || fname.includes("avis") || fname.includes("impot")) {
-        updates.avis_imposition = "recu";
-      }
-      if (fname.includes("identite") || fname.includes("identity") || fname.includes("cni")
-        || fname.includes("passeport") || fname.includes("carte")) {
-        updates.piece_identite = "recu";
+      // Utiliser docTypes pré-calculé s'il est disponible
+      const docTypes = (att as any).docTypes as Record<string, boolean> | undefined;
+      if (docTypes) {
+        for (const [key, val] of Object.entries(docTypes)) {
+          if (val) updates[key] = "recu";
+        }
+      } else {
+        // Fallback : détection locale par nom de fichier
+        const fname = att.filename.toLowerCase()
+          .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        if (fname.includes("fiche") || fname.includes("paie") || fname.includes("bulletin"))
+          updates.fiches_paie = "recu";
+        if (fname.includes("contrat") || fname.includes("cdi") || fname.includes("cdd"))
+          updates.contrat = "recu";
+        if (fname.includes("imposition") || fname.includes("avis") || fname.includes("impot"))
+          updates.avis_imposition = "recu";
+        if (fname.includes("identite") || fname.includes("cni") || fname.includes("passeport") || fname.includes("carte"))
+          updates.piece_identite = "recu";
       }
     }
     if (Object.keys(updates).length > 0) {
@@ -278,12 +301,137 @@ function DossierWidget({ body, attachments, gmailMessageId }: {
     }));
   };
 
+  // ── BLOC 3 : Validation / Rejet ─────────────────────────────────────────
+
+  // Détermine le docType d'une attachment
+  function getAttDocType(att: AttachmentInfo): string | null {
+    const dt = (att as any).docTypes as Record<string, boolean> | undefined;
+    if (dt) {
+      for (const [k, v] of Object.entries(dt)) { if (v) return k; }
+    }
+    // Fallback par nom de fichier
+    const fname = att.filename.toLowerCase();
+    if (fname.includes("paie") || fname.includes("bulletin")) return "fiches_paie";
+    if (fname.includes("contrat")) return "contrat";
+    if (fname.includes("imposition") || fname.includes("impot")) return "avis_imposition";
+    if (fname.includes("identite") || fname.includes("cni") || fname.includes("passeport") || fname.includes("carte")) return "piece_identite";
+    return null;
+  }
+
+  const handleValidateDoc = async (att: AttachmentInfo) => {
+    if (!emailId || validating) return;
+    const docType = getAttDocType(att);
+    setValidating(att.attachmentId);
+
+    // Calculer si le dossier sera complet après validation de ce doc
+    const newValidated = { ...validationStatus, [att.attachmentId]: "validated" as DocValidationStatus };
+    const validatedDocTypes = new Set(
+      (attachments ?? [])
+        .filter(a => newValidated[a.attachmentId] === "validated")
+        .map(a => getAttDocType(a))
+        .filter(Boolean)
+    );
+    // Map docType variants to DOCS keys
+    const normalize = (k: string | null) => k === "contrat_travail" ? "contrat" : k;
+    const docsComplet = DOCS.every(d => validatedDocTypes.has(d.key) || validatedDocTypes.has(
+      d.key === "contrat" ? "contrat_travail" : d.key
+    ));
+
+    try {
+      const res = await fetch("/api/emails/validate-doc", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          emailId,
+          attachmentId: att.attachmentId,
+          filename: att.filename,
+          docType,
+          action: "validate",
+          dossierComplet: docsComplet,
+        }),
+      });
+      if (res.ok) {
+        setValidationStatus(prev => ({ ...prev, [att.attachmentId]: "validated" }));
+        // Auto-check doc in checklist
+        if (docType) {
+          const checkKey = normalize(docType) ?? docType;
+          setDocs(prev => ({ ...prev, [checkKey]: "recu" }));
+        }
+        if (docsComplet) {
+          notify("🎉 Dossier complet ! Email envoyé au prospect.", "success");
+        } else {
+          notify(`✅ ${att.filename} validé`, "success");
+        }
+      } else {
+        notify("Erreur lors de la validation", "error");
+      }
+    } catch {
+      notify("Erreur réseau", "error");
+    } finally {
+      setValidating(null);
+    }
+  };
+
+  const handleRejectConfirm = async () => {
+    if (!emailId || !rejectModal || validating) return;
+    const { attachmentId, filename, docType } = rejectModal;
+    setValidating(attachmentId);
+    try {
+      const res = await fetch("/api/emails/validate-doc", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          emailId,
+          attachmentId,
+          filename,
+          docType,
+          action: "reject",
+          rejectionReason: rejectReason,
+        }),
+      });
+      if (res.ok) {
+        setValidationStatus(prev => ({ ...prev, [attachmentId]: "rejected" }));
+        notify(`❌ Rejet envoyé pour ${filename}`, "success");
+      } else {
+        notify("Erreur lors du rejet", "error");
+      }
+    } catch {
+      notify("Erreur réseau", "error");
+    } finally {
+      setValidating(null);
+      setRejectModal(null);
+      setRejectReason(REJECTION_REASONS[0]);
+    }
+  };
+
   const gmailUrl = gmailMessageId
     ? `https://mail.google.com/mail/u/0/#inbox/${gmailMessageId}`
     : null;
 
   return (
     <Section title="Dossier locataire">
+      {/* Statut dossier automatique */}
+      {(() => {
+        const receivedCount = Object.values(docs).filter(s => s === "recu").length;
+        const total = DOCS.length;
+        const status = receivedCount >= total ? "COMPLET" : receivedCount >= 2 ? "PARTIEL" : "INCOMPLET";
+        const statusStyle = status === "COMPLET"
+          ? { bg: "rgba(22,163,74,0.1)", color: "rgb(22 163 74)", label: "✅ Dossier complet" }
+          : status === "PARTIEL"
+          ? { bg: "rgba(234,88,12,0.1)", color: "rgb(234 88 12)", label: `📋 Dossier partiel (${receivedCount}/${total})` }
+          : { bg: "rgba(220,38,38,0.1)", color: "rgb(220 38 38)", label: `⚠️ Dossier incomplet (${receivedCount}/${total})` };
+        return (
+          <div className="flex items-center justify-between mb-3">
+            <span className="text-xs px-2.5 py-1 rounded-full font-semibold"
+              style={{ background: statusStyle.bg, color: statusStyle.color }}>
+              {statusStyle.label}
+            </span>
+            <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+              {receivedCount}/{total} docs reçus
+            </span>
+          </div>
+        );
+      })()}
       <div className="space-y-2">
         {DOCS.map((doc) => {
           const status = docs[doc.key];
@@ -307,39 +455,152 @@ function DossierWidget({ body, attachments, gmailMessageId }: {
         })}
       </div>
 
-      {/* BLOC 3 : pièces jointes détectées */}
+      {/* ── BLOC 2 + 3 : Documents reçus avec validation manuelle ── */}
       {attachments && attachments.length > 0 && (
-        <div className="mt-3 pt-3 border-t" style={{ borderColor: "rgb(226 232 240)" }}>
-          <div className="text-xs font-semibold uppercase tracking-wide mb-2" style={{ color: "rgb(100 116 139)" }}>
-            📎 Pièces jointes détectées ({attachments.length})
+        <div className="mt-4 pt-3 border-t" style={{ borderColor: "rgb(226 232 240)" }}>
+          <div className="flex items-center gap-2 mb-3">
+            <span className="text-sm font-semibold" style={{ color: "rgb(30 41 59)" }}>
+              📎 Documents reçus
+            </span>
+            <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+              (vérification manuelle requise)
+            </span>
           </div>
-          <div className="space-y-1.5">
-            {attachments.map((att, i) => (
-              <div
-                key={i}
-                className="flex items-center gap-2 px-3 py-2 rounded-lg"
-                style={{ background: "rgba(79,70,229,0.04)", border: "1px solid rgba(79,70,229,0.12)" }}
+          <div className="space-y-2">
+            {attachments.map((att, i) => {
+              const linkUrl: string | null = (att as any).gmailLink ?? (att as any).storage_url ?? gmailUrl;
+              const isPdf = att.mimeType?.includes("pdf");
+              const isImage = att.mimeType?.startsWith("image/");
+              const icon = isPdf ? "📄" : isImage ? "🖼️" : "📎";
+              const vStatus = validationStatus[att.attachmentId] ?? "pending";
+              const isValidatingThis = validating === att.attachmentId;
+
+              const statusBadge =
+                vStatus === "validated" ? (
+                  <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
+                    style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22,163,74)" }}>
+                    ✅ Validé
+                  </span>
+                ) : vStatus === "rejected" ? (
+                  <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
+                    style={{ background: "rgba(220,38,38,0.1)", color: "rgb(220,38,38)" }}>
+                    ❌ Rejeté
+                  </span>
+                ) : (
+                  <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
+                    style={{ background: "rgba(234,88,12,0.08)", color: "rgb(234,88,12)" }}>
+                    ⏳ En attente
+                  </span>
+                );
+
+              return (
+                <div key={i} className="rounded-lg border p-3"
+                  style={{
+                    borderColor: vStatus === "validated" ? "rgba(22,163,74,0.25)"
+                      : vStatus === "rejected" ? "rgba(220,38,38,0.2)"
+                      : "rgb(226 232 240)",
+                    background: vStatus === "validated" ? "rgba(22,163,74,0.03)"
+                      : vStatus === "rejected" ? "rgba(220,38,38,0.03)"
+                      : "rgb(250 250 252)",
+                  }}>
+                  {/* Ligne 1: icône + nom + taille + lien */}
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-base flex-shrink-0">{icon}</span>
+                    <div className="flex-1 min-w-0">
+                      <p className="text-sm font-medium truncate" style={{ color: "rgb(30 41 59)" }} title={att.filename}>
+                        {att.filename}
+                      </p>
+                      <p className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+                        {att.size > 0 ? `${Math.round(att.size / 1024)} Ko` : "—"}
+                      </p>
+                    </div>
+                    {linkUrl && (
+                      <a href={linkUrl} target="_blank" rel="noopener noreferrer"
+                        className="text-xs px-2 py-1 rounded-lg font-medium flex-shrink-0"
+                        style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}>
+                        Voir →
+                      </a>
+                    )}
+                  </div>
+                  {/* Ligne 2: statut + boutons */}
+                  <div className="flex items-center gap-2 flex-wrap">
+                    {statusBadge}
+                    {vStatus === "pending" && (
+                      <>
+                        <button
+                          disabled={!!validating}
+                          onClick={() => handleValidateDoc(att)}
+                          className="text-xs px-2 py-1 rounded-lg font-medium transition-colors disabled:opacity-50"
+                          style={{ background: "rgba(22,163,74,0.1)", color: "rgb(22,163,74)" }}
+                        >
+                          {isValidatingThis ? "…" : "✅ Valider"}
+                        </button>
+                        <button
+                          disabled={!!validating}
+                          onClick={() => {
+                            setRejectModal({ attachmentId: att.attachmentId, filename: att.filename, docType: getAttDocType(att) });
+                            setRejectReason(REJECTION_REASONS[0]);
+                          }}
+                          className="text-xs px-2 py-1 rounded-lg font-medium transition-colors disabled:opacity-50"
+                          style={{ background: "rgba(220,38,38,0.08)", color: "rgb(220,38,38)" }}
+                        >
+                          ❌ Rejeter
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Modal rejet ── */}
+      {rejectModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+          style={{ background: "rgba(0,0,0,0.4)" }}
+          onClick={(e) => { if (e.target === e.currentTarget) setRejectModal(null); }}>
+          <div className="bg-white rounded-2xl p-6 w-full max-w-sm shadow-xl">
+            <h3 className="text-base font-semibold mb-1" style={{ color: "rgb(30 41 59)" }}>
+              Rejeter le document
+            </h3>
+            <p className="text-xs mb-4" style={{ color: "rgb(100 116 139)" }}>
+              {rejectModal.filename}
+            </p>
+            <div className="mb-3">
+              <label className="text-xs font-medium block mb-1.5" style={{ color: "rgb(71 85 105)" }}>
+                Raison du rejet
+              </label>
+              <select
+                value={rejectReason}
+                onChange={(e) => setRejectReason(e.target.value)}
+                className="w-full rounded-xl border px-3 py-2.5 text-sm focus:outline-none focus:ring-2"
+                style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
               >
-                <span className="text-sm">📄</span>
-                <span className="text-xs flex-1 truncate" style={{ color: "rgb(51 65 85)" }} title={att.filename}>
-                  {att.filename}
-                </span>
-                <span className="text-xs flex-shrink-0" style={{ color: "rgb(148 163 184)" }}>
-                  {att.size > 0 ? `${Math.round(att.size / 1024)} Ko` : ""}
-                </span>
-                {gmailUrl && (
-                  <a
-                    href={gmailUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="text-xs px-2 py-0.5 rounded font-medium flex-shrink-0"
-                    style={{ background: "rgba(79,70,229,0.1)", color: "rgb(79 70 229)" }}
-                  >
-                    Voir
-                  </a>
-                )}
-              </div>
-            ))}
+                {REJECTION_REASONS.map(r => <option key={r} value={r}>{r}</option>)}
+              </select>
+            </div>
+            <p className="text-xs mb-4" style={{ color: "rgb(148 163 184)" }}>
+              Un email sera envoyé automatiquement au prospect avec cette raison.
+            </p>
+            <div className="flex gap-2">
+              <button
+                onClick={() => setRejectModal(null)}
+                className="flex-1 py-2.5 rounded-xl text-sm border"
+                style={{ borderColor: "rgb(226 232 240)", color: "rgb(71 85 105)" }}
+              >
+                Annuler
+              </button>
+              <button
+                onClick={handleRejectConfirm}
+                disabled={!!validating}
+                className="flex-1 py-2.5 rounded-xl text-sm font-semibold text-white disabled:opacity-50"
+                style={{ background: "rgb(220 38 38)" }}
+              >
+                {validating ? "Envoi…" : "Confirmer le rejet"}
+              </button>
+            </div>
           </div>
         </div>
       )}
@@ -539,6 +800,268 @@ function BookingWidget({
   );
 }
 
+/* ===================== BLOC 6 : NOTES INTERNES ===================== */
+
+function NotesWidget({ emailId }: { emailId: string }) {
+  const [notes, setNotes] = useState<Array<{ id: string; description: string | null; created_at: string }>>([]);
+  const [newNote, setNewNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const { toast: showToast } = useToast();
+
+  const fetchNotes = useCallback(async () => {
+    try {
+      const res = await fetch(`/api/leads/${emailId}/timeline`);
+      if (!res.ok) {
+        console.warn("[NotesWidget] GET timeline failed:", res.status);
+        return;
+      }
+      const data = await res.json();
+      setNotes((data.timeline ?? []).filter((e: any) => e.action_type === "NOTE_INTERNE"));
+    } catch (e) {
+      console.warn("[NotesWidget] Fetch error:", e);
+    }
+  }, [emailId]);
+
+  useEffect(() => { fetchNotes(); }, [fetchNotes]);
+
+  const saveNote = async () => {
+    if (!newNote.trim() || saving) return;
+    setSaving(true);
+    console.log("[NotesWidget] Saving note — emailId:", emailId, "text:", newNote.trim().substring(0, 50));
+    try {
+      const res = await fetch(`/api/leads/${emailId}/timeline`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          action_type: "NOTE_INTERNE",
+          description: newNote.trim(),
+          metadata: { internal: true },
+        }),
+      });
+      if (res.ok) {
+        setNewNote("");
+        showToast("Note sauvegardée ✅", "success");
+        console.log("[NotesWidget] ✅ Note saved");
+        fetchNotes();
+      } else {
+        const errData = await res.json().catch(() => ({}));
+        console.error("[NotesWidget] ❌ Save failed:", res.status, errData);
+        const msg = (errData as any)?.error ?? "";
+        if (msg.includes("does not exist") || res.status === 500) {
+          showToast("Table prospect_timeline introuvable — lancez /api/admin/migrate", "error");
+        } else {
+          showToast("Erreur lors de la sauvegarde de la note", "error");
+        }
+      }
+    } catch (e) {
+      console.error("[NotesWidget] ❌ Network error:", e);
+      showToast("Erreur réseau — note non sauvegardée", "error");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="rounded-xl border bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
+      <div className="px-4 py-3 border-b" style={{ borderColor: "rgb(226 232 240)" }}>
+        <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>
+          📝 Notes internes
+        </div>
+      </div>
+      <div className="p-4 space-y-3">
+        {/* Existing notes */}
+        {notes.length > 0 && (
+          <div className="space-y-2">
+            {notes.map((note) => (
+              <div key={note.id} className="rounded-lg p-3" style={{ background: "rgb(250 250 252)", border: "1px solid rgb(226 232 240)" }}>
+                <div className="text-sm" style={{ color: "rgb(30 41 59)" }}>{note.description}</div>
+                <div className="text-xs mt-1" style={{ color: "rgb(148 163 184)" }}>
+                  {new Date(note.created_at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
+                  {" "}
+                  {new Date(note.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+        {/* New note */}
+        <textarea
+          value={newNote}
+          onChange={(e) => setNewNote(e.target.value)}
+          placeholder="Ajouter une note interne (visible uniquement par vous)…"
+          rows={3}
+          className="w-full rounded-lg border px-3 py-2 text-sm resize-none outline-none focus:ring-2 focus:ring-indigo-300"
+          style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+        />
+        <button
+          onClick={saveNote}
+          disabled={saving || !newNote.trim()}
+          className="px-4 py-2 rounded-lg text-sm font-medium text-white transition-opacity disabled:opacity-50"
+          style={{ background: "rgb(79 70 229)" }}
+        >
+          {saving ? "Sauvegarde…" : "💾 Sauvegarder"}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+/* ===================== BLOC 2 : TIMELINE ===================== */
+
+const ACTION_ICONS: Record<string, string> = {
+  EMAIL_RECU: "📧",
+  IA_REPONDU: "🤖",
+  PROSPECT_REPONDU: "📧",
+  VISITE_PROPOSEE: "📅",
+  VISITE_CONFIRMEE: "✅",
+  VISITE_EFFECTUEE: "🏠",
+  DOSSIER_DEMANDE: "📋",
+  DOCUMENT_RECU: "📎",
+  VALIDE: "🎉",
+  REFUSE: "❌",
+  RELANCE: "🔁",
+  NOTE_INTERNE: "📝",
+};
+
+function TimelineWidget({ emailId, emailReceivedAt }: { emailId: string; emailReceivedAt?: string | null }) {
+  const [timeline, setTimeline] = useState<Array<{
+    id: string;
+    action_type: string;
+    description: string | null;
+    created_at: string;
+    metadata: Record<string, unknown>;
+  }>>([]);
+  const [loading, setLoading] = useState(true);
+
+  const loadTimeline = useCallback(async () => {
+    if (!emailId) return;
+    try {
+      const res = await fetch(`/api/leads/${emailId}/timeline`);
+      const data = await res.json();
+      const tl: typeof timeline = data.timeline ?? [];
+      if (tl.length === 0 && emailId) {
+        // Auto-créer l'entrée EMAIL_RECU si timeline vide
+        try {
+          await fetch(`/api/leads/${emailId}/timeline`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action_type: "EMAIL_RECU",
+              description: "Email reçu",
+              metadata: { auto_created: true, email_received_at: emailReceivedAt ?? null },
+            }),
+          });
+          const res2 = await fetch(`/api/leads/${emailId}/timeline`);
+          const data2 = await res2.json();
+          setTimeline(data2.timeline ?? []);
+        } catch {
+          setTimeline([]);
+        }
+      } else {
+        setTimeline(tl);
+      }
+    } catch {
+      setTimeline([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [emailId, emailReceivedAt]);
+
+  useEffect(() => { loadTimeline(); }, [loadTimeline]);
+
+  if (loading) return null;
+
+  return (
+    <div className="rounded-xl border bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
+      <div className="px-4 py-3 border-b" style={{ borderColor: "rgb(226 232 240)" }}>
+        <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>
+          🕐 Historique
+        </div>
+      </div>
+      <div className="divide-y" style={{ borderColor: "rgb(241 245 249)" }}>
+        {timeline.map((entry) => {
+          const icon = ACTION_ICONS[entry.action_type] ?? "•";
+          const date = new Date(entry.created_at);
+          const dateStr = date.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+          const timeStr = date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+          return (
+            <div key={entry.id} className="px-4 py-2.5 flex items-start gap-3">
+              <span className="text-sm flex-shrink-0 mt-0.5">{icon}</span>
+              <div className="flex-1 min-w-0">
+                <div className="text-xs font-medium" style={{ color: "rgb(30 41 59)" }}>
+                  {entry.description ?? entry.action_type}
+                </div>
+              </div>
+              <div className="text-xs flex-shrink-0" style={{ color: "rgb(148 163 184)" }}>
+                {dateStr} {timeStr}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+/* ===================== BLOC 7 : BIEN CONCERNÉ ===================== */
+
+function BienConcerneWidget({ propertyId }: { propertyId: string | null }) {
+  const [property, setProperty] = useState<{ title: string; rent: number; type: string | null } | null>(null);
+
+  useEffect(() => {
+    if (!propertyId) { setProperty(null); return; }
+    fetch("/api/properties")
+      .then((r) => r.json())
+      .then((data) => {
+        const props: Array<{ id: string; title: string; rent: number; type: string | null }> = data.properties ?? [];
+        const found = props.find((p) => p.id === propertyId);
+        setProperty(found ?? null);
+      })
+      .catch(() => {});
+  }, [propertyId]);
+
+  if (!propertyId) return null;
+
+  return (
+    <div
+      className="rounded-xl border p-3 bg-white animate-fade-in"
+      style={{ borderColor: "rgba(79,70,229,0.25)", background: "rgba(79,70,229,0.03)" }}
+    >
+      <div className="flex items-center gap-2">
+        <span className="text-sm">🏠</span>
+        <div className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>
+          Bien concerné
+        </div>
+      </div>
+      {property ? (
+        <div className="mt-2 flex items-center justify-between gap-2">
+          <div>
+            <div className="text-sm font-semibold" style={{ color: "rgb(30 41 59)" }}>
+              {property.title}
+            </div>
+            {property.type && (
+              <span className="text-xs px-1.5 py-0.5 rounded mt-0.5 inline-block"
+                style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79,70,229)" }}>
+                {property.type}
+              </span>
+            )}
+          </div>
+          <div className="text-right">
+            <div className="text-base font-bold" style={{ color: "rgb(79 70 229)" }}>
+              {property.rent.toLocaleString("fr-FR")} €
+            </div>
+            <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>/mois</div>
+          </div>
+        </div>
+      ) : (
+        <div className="mt-2 text-xs" style={{ color: "rgb(148 163 184)" }}>
+          Chargement…
+        </div>
+      )}
+    </div>
+  );
+}
+
 /* ===================== COMPONENT PRINCIPAL ===================== */
 
 export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | null; mode?: PipelineMode }) {
@@ -552,6 +1075,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
   const [emailSent, setEmailSent] = useState(false);
   const [sending, setSending] = useState(false);
   const [reclassifyOpen, setReclassifyOpen] = useState(false);
+  const [exportingPdf, setExportingPdf] = useState(false);
 
   const intention = getIntention(email);
   const decision = email?.decision ?? fallbackDecision(email);
@@ -653,6 +1177,68 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
     notify("RDV créé dans Google Calendar ✅", "success");
   };
 
+  const exportPdf = async () => {
+    if (!email || exportingPdf) return;
+    setExportingPdf(true);
+    try {
+      // Fetch timeline
+      let timeline: GeneratePdfParams["timeline"] = [];
+      try {
+        const tlRes = await fetch(`/api/leads/${email.id}/timeline`);
+        if (tlRes.ok) {
+          const tlData = await tlRes.json();
+          timeline = tlData.timeline ?? [];
+        }
+      } catch {}
+
+      // Fetch property if linked
+      let property: GeneratePdfParams["property"] = null;
+      const propertyId = (email as any).property_id ?? (email as any).prospect_data?.property_id;
+      if (propertyId) {
+        try {
+          const propRes = await fetch("/api/properties");
+          if (propRes.ok) {
+            const propData = await propRes.json();
+            const props: Array<{ id: string; title: string; rent: number; type: string | null }> =
+              propData.properties ?? [];
+            property = props.find((p) => p.id === propertyId) ?? null;
+          }
+        } catch {}
+      }
+
+      // Fetch agency name from settings
+      let agenceName = "Votre agence";
+      try {
+        const sRes = await fetch("/api/settings", { cache: "no-store" });
+        if (sRes.ok) {
+          const sData = await sRes.json();
+          agenceName = (sData?.email_rules?.ft_locatif as any)?.nomAgence ?? agenceName;
+        }
+      } catch {}
+
+      const { generateProspectPdf } = await import("@/lib/pdf/generateProspectPdf");
+      await generateProspectPdf({
+        email: {
+          id: email.id,
+          sender: email.sender,
+          subject: email.subject,
+          received_at: email.received_at,
+          prospect_data: (email as any).prospect_data ?? null,
+          attachments: (email as any).attachments ?? [],
+        },
+        property,
+        timeline,
+        agenceName,
+      });
+      notify("PDF exporté ✅", "success");
+    } catch (e) {
+      console.error("[exportPdf] erreur:", e);
+      notify("Erreur lors de l'export PDF", "error");
+    } finally {
+      setExportingPdf(false);
+    }
+  };
+
   if (!email) {
     return (
       <div className="h-full flex flex-col items-center justify-center gap-3 p-8" style={{ color: "rgb(148 163 184)" }}>
@@ -716,6 +1302,10 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
       {/* ── Widgets LOCATION ── */}
       {intention === "LOCATION" && (
         <>
+          {/* BLOC 7 : Bien concerné */}
+          <BienConcerneWidget
+            propertyId={(email as any).property_id ?? (email as any).prospect_data?.property_id ?? null}
+          />
           <ProspectFiche
             key={email.id}
             body={body || email.body}
@@ -740,9 +1330,36 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
             body={body || email.body}
             attachments={(email as any).attachments ?? []}
             gmailMessageId={email.gmail_message_id}
+            emailId={email.id}
           />
           <DocumentsTemplateWidget email={email} mode={mode} />
           <BookingWidget email={email} mode={mode} onApprove={handleBookingApprove} />
+          <TimelineWidget emailId={email.id} emailReceivedAt={email.received_at} />
+          <NotesWidget emailId={email.id} />
+
+          {/* BLOC 4 — Export dossier PDF */}
+          <div className="flex justify-end">
+            <button
+              onClick={exportPdf}
+              disabled={exportingPdf}
+              className="flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-xl transition-opacity disabled:opacity-60"
+              style={{
+                background: "rgb(79 70 229)",
+                color: "white",
+              }}
+            >
+              {exportingPdf ? (
+                <>
+                  <span className="animate-spin">⏳</span>
+                  Génération en cours…
+                </>
+              ) : (
+                <>
+                  📄 Exporter dossier PDF
+                </>
+              )}
+            </button>
+          </div>
         </>
       )}
 

@@ -68,13 +68,23 @@ export function CalendarAIPanel({
   );
   const load = useMemo(() => loadLabel(meetingMins), [meetingMins]);
 
-  const createTask = async (title: string, dueAt: string | null) => {
+  const createTask = async (params: {
+    title: string;
+    start?: Date;
+    end?: Date;
+    estimatedMinutes?: number;
+  }) => {
     try {
       setBusy(true);
       const res = await fetch("/api/tasks/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, dueAt }),
+        body: JSON.stringify({
+          title: params.title,
+          start: params.start?.toISOString(),
+          end: params.end?.toISOString(),
+          estimatedMinutes: params.estimatedMinutes,
+        }),
       });
       if (!res.ok) { showToast("Erreur lors de la création de la tâche.", "error"); return; }
       showToast("Tâche créée ✅", "success");
@@ -84,6 +94,7 @@ export function CalendarAIPanel({
       setBusy(false);
     }
   };
+  
 
   const dateLabel = date.toLocaleDateString("fr-FR", {
     weekday: "long",
@@ -191,10 +202,12 @@ export function CalendarAIPanel({
                   <button
                     disabled={busy}
                     onClick={() =>
-                      createTask(
-                        `Deep Work (${s.minutes} min) — ${dateLabel} ${formatHM(s.start)}`,
-                        s.start.toISOString()
-                      )
+                      createTask({
+                        title: `Deep Work (${s.minutes} min) — ${dateLabel} ${formatHM(s.start)}`,
+                        start: s.start,
+                        end: s.end,
+                        estimatedMinutes: s.minutes,
+                      })
                     }
                     className="px-2.5 py-1 rounded-md text-xs font-medium transition-all disabled:opacity-50"
                     style={{ background: "rgb(238 242 255)", color: "rgb(79 70 229)" }}
@@ -267,7 +280,7 @@ export function CalendarAIPanel({
                   </div>
                   <button
                     disabled={busy}
-                    onClick={() => createTask(`Action recommandée — ${dateLabel}`, null)}
+                    onClick={() => createTask({ title: `Action recommandée — ${dateLabel}` })}
                     className="px-2.5 py-1 rounded-md text-xs font-medium transition-all disabled:opacity-50 flex-shrink-0"
                     style={{ background: "rgb(238 242 255)", color: "rgb(79 70 229)" }}
                   >
