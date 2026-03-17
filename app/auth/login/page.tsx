@@ -31,11 +31,11 @@ export default function LoginPage() {
       return;
     }
 
-    console.log("✅ Login success — redirecting to /home");
+    console.log("✅ Login success — redirecting to /onboarding");
 
-    // IMPORTANT : petit délai pour laisser Supabase créer le cookie
+    // Toujours passer par l'onboarding après login (redirige vers /home si déjà connecté)
     setTimeout(() => {
-      router.push("/home");
+      router.push("/onboarding");
     }, 150);
   }
 

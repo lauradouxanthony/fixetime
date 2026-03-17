@@ -1,0 +1,10 @@
+{
+  "functions": {
+    "app/api/cron/analyze-backlog/route.ts": { "maxDuration": 120 },
+    "app/api/cron/autopilot-dispatch/route.ts": { "maxDuration": 60 }
+  },
+  "crons": [
+    { "path": "/api/cron/analyze-backlog", "schedule": "*/5 * * * *" },
+    { "path": "/api/cron/autopilot-dispatch", "schedule": "*/5 * * * *" }
+  ]
+}

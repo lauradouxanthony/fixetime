@@ -1,87 +1,105 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { supabase } from "@/lib/supabaseClient";
 
-export type Theme = "light" | "dark";
-export type AutomationLevel = "suggest" | "prepare" | "propose";
-export type EmailCategoryAction = "important" | "analyze" | "ignore";
-
-export type EmailRules = {
-  always_important: string[];
-  always_ignore: string[];
-  keywords: {
-    urgent: string[];
-    ignore: string[];
-  };
-  clients?: EmailCategoryAction;
-  bank?: EmailCategoryAction;
-  partners?: EmailCategoryAction;
-  newsletters?: EmailCategoryAction;
-};
-
-export type SettingsV1 = {
-  theme: Theme;
-  automation_level: AutomationLevel;
+export type Settings = {
   assistant_enabled: boolean;
-  email_rules: EmailRules;
-
-  // ✅ ajout safe (optionnel) pour SettingsClient.tsx
-  language?: "fr" | "en";
-  time_format?: "12h" | "24h";
+  automation_level: "draft" | "autopilot"; // Normalisé: "draft" ou "autopilot"
+  email_rules: {                              // ✅ AJOUTE ÇA
+    always_important: string[];
+    always_ignore: string[];
+    keywords: {
+      urgent: string[];
+      ignore: string[];
+    };
+  };
+  config: {
+    ui?: {
+      theme?: "dark" | "light";
+      density?: "comfortable" | "compact";
+    };
+    rental_rules: {
+      income_multiplier: number;
+      accepted_employment_status?: string[];
+      required_documents: string[];
+      allow_guarantor: boolean;
+      guarantor_required_for_status?: string[];
+    };
+    faq_items?: Array<{ id: string; question: string; answer: string; updated_at?: string }>;
+    scheduling_rules: {
+      timezone: string;
+      workdays: number[];
+      hours: { start: string; end: string };
+      slot_duration_min: number;
+      days_ahead?: number;
+      min_notice_hours?: number;
+      travel_buffer_min?: number;
+      proposal_count?: number;
+      spread_mode?: "multi_day" | "same_day_ok";
+      exclude_lunch: boolean;
+      constraints_text: string;
+    };
+    properties: Array<{
+      id?: string;
+      name?: string;
+      address?: string;
+      rent?: number;
+    }>;
+    agent_persona: {
+      agent_name: string;
+      tone: string;
+      signature: string;
+    };
+  };
 };
-
-
-function applyTheme(theme: Theme) {
-  document.documentElement.classList.toggle("dark", theme === "dark");
-}
 
 export function useSettings() {
-  const [settings, setSettings] = useState<SettingsV1 | null>(null);
+  const [settings, setSettings] = useState<Settings | null>(null);
   const [loading, setLoading] = useState(true);
 
-  // ✅ SOURCE UNIQUE : API
   async function loadSettings() {
-    try {
-      const res = await fetch("/api/settings", { cache: "no-store" });
-
-      if (!res.ok) {
-        setSettings(null);
-        setLoading(false);
-        return;
-      }
-
-      const data: SettingsV1 = await res.json();
-
-      setSettings(data);
-
-      if (data.theme) {
-        applyTheme(data.theme);
-      }
-
-      setLoading(false);
-    } catch (e) {
-      console.error("LOAD_SETTINGS_FAILED", e);
-      setSettings(null);
-      setLoading(false);
-    }
+    const res = await fetch("/api/settings", { cache: "no-store" });
+    const json = await res.json().catch(() => null);
+    setSettings(json?.settings ?? null);
   }
 
-  async function updateSettings(partial: Partial<SettingsV1>) {
-    setSettings((prev) => (prev ? { ...prev, ...partial } : prev));
+  async function updateSettings(patch: Partial<Settings>) {
+    // UI optimiste
+    setSettings((prev) => (prev ? ({ ...prev, ...patch } as Settings) : prev));
 
-    if (partial.theme) {
-      applyTheme(partial.theme);
-    }
-
-    await fetch("/api/settings", {
+    const res = await fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(partial),
+      body: JSON.stringify(patch),
     });
+
+    if (!res.ok) {
+      const error = await res.json().catch(() => ({ error: "UNKNOWN_ERROR" }));
+      console.error("[useSettings] Update failed:", error);
+      await loadSettings();
+      throw new Error(error.error || "SETTINGS_UPDATE_FAILED");
+    }
+
+    const json = await res.json();
+    if (json.settings) {
+      setSettings(json.settings);
+    }
   }
 
   useEffect(() => {
-    loadSettings();
+    let cancelled = false;
+
+    const init = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      if (!session || cancelled) return;
+
+      await loadSettings();
+      if (!cancelled) setLoading(false);
+    };
+
+    init();
+    return () => { cancelled = true; };
   }, []);
 
   return { settings, loading, updateSettings };

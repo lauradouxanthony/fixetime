@@ -51,21 +51,31 @@ export function CalendarAIPanel({
   );
   const load = useMemo(() => loadLabel(meetingMins), [meetingMins]);
 
-  const createTask = async (title: string, dueAt: string | null) => {
+  const createTask = async (params: {
+    title: string;
+    start?: Date;
+    end?: Date;
+    estimatedMinutes?: number;
+  }) => {
     try {
       setBusy(true);
-
+  
       const res = await fetch("/api/tasks/create", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title, dueAt }),
+        body: JSON.stringify({
+          title: params.title,
+          start: params.start?.toISOString(),
+          end: params.end?.toISOString(),
+          estimatedMinutes: params.estimatedMinutes,
+        }),
       });
-
+  
       if (!res.ok) {
         notify("Erreur lors de la création de la tâche.");
         return;
       }
-
+  
       notify("Tâche créée ✅");
     } catch {
       notify("Erreur lors de la création de la tâche.");
@@ -73,6 +83,7 @@ export function CalendarAIPanel({
       setBusy(false);
     }
   };
+  
 
   const dateLabel = date.toLocaleDateString("fr-FR", {
     weekday: "long",
@@ -158,11 +169,14 @@ export function CalendarAIPanel({
                   <button
                     disabled={busy}
                     onClick={() =>
-                      createTask(
-                        `Deep Work (${s.minutes} min) — ${dateLabel} ${formatHM(s.start)}`,
-                        s.start.toISOString()
-                      )
+                      createTask({
+                        title: `Deep Work (${s.minutes} min) — ${dateLabel} ${formatHM(s.start)}`,
+                        start: s.start,
+                        end: s.end,
+                        estimatedMinutes: s.minutes,
+                      })
                     }
+                    
                     className="px-3 py-1.5 rounded-md bg-gray-800 text-xs hover:bg-gray-700 disabled:opacity-50"
                   >
                     {busy ? "..." : "Créer une tâche"}
@@ -225,8 +239,12 @@ export function CalendarAIPanel({
                   <button
                     disabled={busy}
                     onClick={() =>
-                      createTask(`Action recommandée — ${dateLabel}`, null)
+                      createTask({
+                        title: r,
+                        estimatedMinutes: 30,
+                      })
                     }
+                    
                     className="px-3 py-1.5 rounded-md bg-gray-800 text-xs hover:bg-gray-700 disabled:opacity-50"
                   >
                     {busy ? "..." : "Créer tâche"}

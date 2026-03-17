@@ -20,7 +20,7 @@ export default function SignupPage() {
 
     if (error) return setError(error.message);
 
-    router.push("/home");
+    router.push("/auth/login");
   }
 
   return (

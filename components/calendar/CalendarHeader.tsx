@@ -41,10 +41,11 @@ export function CalendarHeader({
   });
 
   return (
-    <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="flex flex-wrap items-center justify-between gap-4">
       <div>
-        <div className="text-sm text-gray-400">Calendrier</div>
-        <div className="text-xl font-bold text-white capitalize">
+        <h1 className="text-xl font-bold text-white">Visites & tournée</h1>
+        <p className="text-xs text-gray-400 mt-0.5">Créneaux, RDV confirmés, conflits</p>
+        <div className="text-sm text-gray-500 capitalize mt-1">
           {label}
         </div>
       </div>
@@ -98,9 +99,9 @@ export function CalendarHeader({
         <button
           onClick={onRefresh}
           disabled={refreshing}
-          className="px-4 py-2 rounded-md bg-green-600 text-sm disabled:opacity-50"
+          className="px-5 py-2.5 rounded-lg bg-emerald-600 text-sm font-semibold text-white hover:bg-emerald-500 disabled:opacity-50 shadow-lg shadow-emerald-900/30"
         >
-          {refreshing ? "Actualisation…" : "Actualiser"}
+          {refreshing ? "Actualisation…" : "🔄 Actualiser"}
         </button>
       </div>
     </div>

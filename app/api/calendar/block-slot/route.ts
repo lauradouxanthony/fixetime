@@ -2,6 +2,27 @@ import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getValidGoogleAccessToken } from "@/lib/google/getValidAccessToken";
+import { fetchWithTimeout } from "@/lib/http/fetchWithTimeout";
+
+const BLOCK_FETCH_TIMEOUT_MS = 12000;
+
+function isTimeout(err: unknown): boolean {
+  return err instanceof Error && err.message === "TIMEOUT";
+}
+
+function isNoToken(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const m = err.message;
+  return m === "NO_GOOGLE_TOKEN" || m === "NO_REFRESH_TOKEN" || m === "NO_MICROSOFT_TOKEN" || m === "NO_MICROSOFT_REFRESH_TOKEN";
+}
+
+function isReauth(err: unknown): { provider: "google" | "microsoft" } | null {
+  if (!(err instanceof Error)) return null;
+  const m = err.message;
+  if (m === "GOOGLE_TOKEN_REVOKED") return { provider: "google" };
+  if (m === "NO_MICROSOFT_TOKEN" || m === "NO_MICROSOFT_REFRESH_TOKEN") return { provider: "microsoft" };
+  return null;
+}
 
 export async function POST(req: Request) {
   try {
@@ -10,7 +31,7 @@ export async function POST(req: Request) {
 
     if (!user) return NextResponse.json({ error: "NO_USER" }, { status: 401 });
 
-    const body = await req.json();
+    const body = await req.json().catch(() => ({}));
     const { emailId, title, start, end, notes } = body || {};
 
     if (!start || !end) {
@@ -25,25 +46,28 @@ export async function POST(req: Request) {
       .maybeSingle();
 
     if (!tokenRow) {
-      return NextResponse.json({ error: "NO_GOOGLE_TOKEN" }, { status: 400 });
+      return NextResponse.json({ ok: true, skipped: true, reason: "NO_TOKEN" }, { status: 200 });
     }
 
     const accessToken = await getValidGoogleAccessToken(user.id);
 
-    // 👉 on crée l'event dans le calendrier principal ("primary")
-    const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
-      method: "POST",
-      headers: {
-        Authorization: `Bearer ${accessToken}`,
-        "Content-Type": "application/json",
+    const res = await fetchWithTimeout(
+      "https://www.googleapis.com/calendar/v3/calendars/primary/events",
+      {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          summary: title ?? "FixTime — Créneau",
+          description: notes ?? "",
+          start: { dateTime: start },
+          end: { dateTime: end },
+        }),
       },
-      body: JSON.stringify({
-        summary: title ?? "FixTime — Créneau",
-        description: notes ?? "",
-        start: { dateTime: start },
-        end: { dateTime: end },
-      }),
-    });
+      BLOCK_FETCH_TIMEOUT_MS
+    );
 
     const json = await res.json();
 
@@ -59,7 +83,16 @@ export async function POST(req: Request) {
 
     return NextResponse.json({ success: true, event: json });
   } catch (e) {
-    console.error("BLOCK_SLOT_ERROR", e);
-    return NextResponse.json({ error: "BLOCK_SLOT_FAILED" }, { status: 500 });
+    if (isTimeout(e)) {
+      return NextResponse.json({ ok: false, error: "TIMEOUT" }, { status: 200 });
+    }
+    if (isNoToken(e)) {
+      return NextResponse.json({ ok: true, skipped: true, reason: "NO_TOKEN" }, { status: 200 });
+    }
+    const reauth = isReauth(e);
+    if (reauth) {
+      return NextResponse.json({ ok: true, skipped: true, needs_reauth: true, provider: reauth.provider }, { status: 200 });
+    }
+    return NextResponse.json({ ok: false, error: "SERVER_ERROR" }, { status: 200 });
   }
 }

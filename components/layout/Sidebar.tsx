@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { usePathname } from "next/navigation";
 import {
   LayoutDashboard,
@@ -15,7 +14,7 @@ import {
 
 const navItems = [
   { label: "Home", href: "/home", icon: LayoutDashboard },
-  { label: "Emails", href: "/emails", icon: Mail },
+  { label: "Pipeline", href: "/pipeline", icon: Mail },
   { label: "Calendrier", href: "/calendar", icon: CalendarDays },
   { label: "Paramètres", href: "/settings", icon: Settings },
 ];
@@ -24,7 +23,7 @@ export function Sidebar() {
   const pathname = usePathname();
 
   return (
-    <aside className="flex h-screen w-64 flex-col border-r border-slate-800 bg-slate-950/95 text-slate-100">
+    <aside className="flex h-screen w-64 flex-col border-r border-slate-800 bg-slate-950/95 text-slate-100 sticky top-0">
       {/* Logo / Brand */}
       <div className="flex items-center gap-2 px-5 py-4 border-b border-slate-800">
         <div className="flex h-8 w-8 items-center justify-center rounded-xl bg-sky-500 text-sm font-bold">
@@ -45,7 +44,7 @@ export function Sidebar() {
           const isActive = pathname === item.href;
 
           return (
-            <Link
+            <a
               key={item.href}
               href={item.href}
               className={`flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition
@@ -56,7 +55,7 @@ export function Sidebar() {
             >
               <Icon className="h-4 w-4" />
               <span>{item.label}</span>
-            </Link>
+            </a>
           );
         })}
       </nav>
