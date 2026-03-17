@@ -47,13 +47,7 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    console.log("[GOOGLE_CALLBACK] TOKEN_EXCHANGE_OK", {
-      hasAccessToken: !!tokenData.access_token,
-      hasRefreshToken: !!tokenData.refresh_token,
-      expiresIn: tokenData.expires_in,
-    });
-
-    // 3) Récupération de l’email Google
+    // 3) Récupération de l'email Google
     const userInfoRes = await fetch(
       "https://www.googleapis.com/oauth2/v2/userinfo",
       {
@@ -75,69 +69,61 @@ export async function GET(req: NextRequest) {
       );
     }
 
-    // 4) UPSERT DANS gmail_tokens (COLONNES RÉELLES)
-    //    - Ne pas écraser un refresh_token existant si Google n'en renvoie pas
-    const { data: existing } = await supabaseAdmin
-      .from("gmail_tokens")
-      .select("refresh_token")
+    // 4) UPSERT dans gmail_tokens
+    await supabaseAdmin.from("gmail_tokens").upsert(
+      {
+        user_id: userId,
+        user_email: userInfo.email,
+        access_token: tokenData.access_token,
+        refresh_token: tokenData.refresh_token,
+        expires_at: new Date(
+          Date.now() + tokenData.expires_in * 1000
+        ).toISOString(),
+        last_history_id: null,
+      },
+      { onConflict: "user_id" }
+    );
+
+    // 5) Déclencher gmail/sync en arrière-plan (fire & forget)
+    //    → On n'attend pas la réponse pour ne pas bloquer la redirection
+    const baseUrl =
+      process.env.NEXT_PUBLIC_APP_URL ||
+      process.env.NEXT_PUBLIC_SITE_URL ||
+      "http://localhost:3001";
+
+    fetch(`${baseUrl}/api/gmail/sync`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ user_id: userId, mode: "quick" }),
+      cache: "no-store",
+    }).catch((err) => {
+      console.error("[GOOGLE CALLBACK] Sync background error:", err);
+    });
+
+    console.log(`[GOOGLE CALLBACK] ✅ Token sauvegardé pour user=${userId} — sync lancé en background`);
+
+    // 6) Vérifier si l'onboarding est terminé → redirect intelligent
+    const { data: settingsRow } = await supabaseAdmin
+      .from("settings_v1")
+      .select("email_rules")
       .eq("user_id", userId)
       .maybeSingle();
 
-    const effectiveRefreshToken =
-      tokenData.refresh_token ?? existing?.refresh_token ?? null;
+    const emailRules =
+      settingsRow?.email_rules && typeof settingsRow.email_rules === "object"
+        ? (settingsRow.email_rules as Record<string, unknown>)
+        : {};
 
-    const expiresAt =
-      typeof tokenData.expires_in === "number"
-        ? new Date(Date.now() + tokenData.expires_in * 1000).toISOString()
-        : null;
+    const onboardingDone = emailRules.ft_onboarding_done === true;
 
-    try {
-      const { error: upsertError } = await supabaseAdmin
-        .from("gmail_tokens")
-        .upsert(
-          {
-            user_id: userId,
-            user_email: userInfo.email,
-            access_token: tokenData.access_token,
-            refresh_token: effectiveRefreshToken,
-            expires_at: expiresAt,
-            last_history_id: null, // TRES IMPORTANT
-            needs_reconnect: false,
-          },
-          { onConflict: "user_id" }
-        );
+    // Si onboarding terminé → home (reconnexion Gmail depuis les settings)
+    // Si onboarding en cours → retour step 3 avec provider=gmail
+    const redirectPath = onboardingDone
+      ? "/home"
+      : "/onboarding?step=3&provider=gmail";
 
-      if (upsertError) {
-        console.error("[GOOGLE_CALLBACK] DB_UPSERT_ERR", {
-          userId,
-          error: upsertError.message,
-          code: upsertError.code,
-        });
-        return NextResponse.json(
-          { error: "DB_UPSERT_ERR", details: upsertError.message },
-          { status: 500 }
-        );
-      }
-
-      console.log("[GOOGLE_CALLBACK] DB_UPSERT_OK", {
-        userId,
-        hasRefreshToken: !!effectiveRefreshToken,
-      });
-    } catch (e: any) {
-      console.error("[GOOGLE_CALLBACK] DB_UPSERT_FATAL", {
-        userId,
-        message: e?.message,
-      });
-      return NextResponse.json(
-        { error: "DB_UPSERT_FATAL", details: e?.message ?? String(e) },
-        { status: 500 }
-      );
-    }
-
-    // 5) Redirection vers onboarding : la page verra le token et redirigera vers /home
-    //    (évite une race où le layout (app) ne verrait pas encore le token)
     return NextResponse.redirect(
-      new URL("/onboarding", process.env.NEXT_PUBLIC_SITE_URL)
+      new URL(redirectPath, process.env.NEXT_PUBLIC_SITE_URL)
     );
   } catch (error) {
     console.error("GOOGLE_CALLBACK_ERROR:", error);

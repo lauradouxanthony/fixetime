@@ -1,332 +1,351 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { google } from "googleapis";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { supabaseServer } from "@/lib/supabaseServer";
+import { getValidGoogleAccessToken } from "@/lib/google/getValidAccessToken";
 
 export const runtime = "nodejs";
 
-export async function POST(req: Request) {
-  const trace_id =
-    req.headers.get("x-fixetime-trace-id") ?? "gmail-sync-" + Date.now().toString(36);
+// Approche simplifiée : stocker le lien Gmail direct (pas de Supabase Storage)
+// L'utilisateur peut ouvrir la PJ depuis Gmail en un clic
+function buildGmailLink(gmailMsgId: string): string {
+  return `https://mail.google.com/mail/u/0/#inbox/${gmailMsgId}`;
+}
 
-  let stage: string = "start";
-  let lastSupabaseError: string | null = null;
-  let googleStatus: string | number | null = null;
-  let googleErrorMessage: string | null = null;
-  let userIdForCatch: string | null = null;
+// Auto-détection du type de document selon le nom du fichier
+function autoCheckDoc(filename: string): Record<string, boolean> {
+  const name = filename.toLowerCase();
+  const docs: Record<string, boolean> = {};
+  if (name.includes("paie") || name.includes("salaire") || name.includes("bulletin"))
+    docs.fiches_paie = true;
+  if (name.includes("contrat") || name.includes("cdi") || name.includes("cdd") || name.includes("travail"))
+    docs.contrat_travail = true;
+  if (name.includes("impos") || name.includes("avis") || name.includes("impot") || name.includes("fiscal"))
+    docs.avis_imposition = true;
+  if (name.includes("identit") || name.includes("cni") || name.includes("passeport") || name.includes("carte"))
+    docs.piece_identite = true;
+  if (name.includes("etudiant") || name.includes("scolarit") || name.includes("universite") || name.includes("carte_etud"))
+    docs.carte_etudiant = true;
+  if (name.includes("kbis") || name.includes("siren") || name.includes("extrait"))
+    docs.kbis = true;
+  if (name.includes("bilan") || name.includes("comptable"))
+    docs.bilan = true;
+  return docs;
+}
+
+// Fonction helper : extraire les pièces jointes (récursif, version robuste)
+// RÈGLE : on ne garde que les parts avec attachmentId (vraies PJ, pas les images inline)
+function extractAttachments(payload: any): { filename: string; mimeType: string; attachmentId: string; size: number }[] {
+  const result: { filename: string; mimeType: string; attachmentId: string; size: number }[] = [];
+  const seen = new Set<string>();
+
+  const scan = (part: any) => {
+    if (!part) return;
+    // PJ réelle : doit avoir un attachmentId ET un nom de fichier non-vide
+    if (part.body?.attachmentId && part.filename && part.filename.trim().length > 0) {
+      const key = `${part.body.attachmentId}:${part.filename}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push({
+          filename: part.filename.trim(),
+          mimeType: part.mimeType ?? "application/octet-stream",
+          attachmentId: part.body.attachmentId,
+          size: part.body.size ?? 0,
+        });
+      }
+    }
+    // Scanner récursivement les sous-parties
+    if (Array.isArray(part.parts)) {
+      part.parts.forEach(scan);
+    }
+  };
+
+  // Scanner le payload lui-même (cas extrême : payload = PJ directe)
+  if (payload) {
+    scan(payload);
+    // Scanner aussi payload.parts directement (cas standard multipart)
+    if (Array.isArray(payload.parts)) {
+      payload.parts.forEach(scan);
+    }
+  }
+
+  return result;
+}
+
+// BLOC 1 FIX : extraire le corps de l'email (base64url → utf-8)
+// Priorité : text/plain > html (cherche récursivement dans payload.parts)
+function getBody(payload: any): string {
+  if (!payload) return "";
+  if (payload.body?.data) {
+    return Buffer.from(payload.body.data, "base64url").toString("utf-8");
+  }
+  if (payload.parts) {
+    for (const part of payload.parts) {
+      if (part.mimeType === "text/plain" && part.body?.data) {
+        return Buffer.from(part.body.data, "base64url").toString("utf-8");
+      }
+    }
+    for (const part of payload.parts) {
+      if (part.parts) {
+        const nested = getBody(part);
+        if (nested) return nested;
+      }
+    }
+    // fallback html si pas de text/plain
+    for (const part of payload.parts) {
+      if (part.mimeType === "text/html" && part.body?.data) {
+        const html = Buffer.from(part.body.data, "base64url").toString("utf-8");
+        return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      }
+    }
+  }
+  return "";
+}
+
+export async function POST(req: NextRequest) {
+  const syncStart = Date.now();
+  console.log("[GMAIL SYNC] ▶ Démarrée", new Date().toISOString());
 
   try {
-    stage = "parse_body";
-    const body = await req.json().catch(() => ({}));
-    const { user_id, window_days: wd, max_messages: maxMsg } = body;
-    const window_days = wd === 30 ? 30 : 7;
-    const max_messages = Math.min(Math.max(1, Number(maxMsg) || 50), 500);
+    // ✅ 1) Récupérer user_id: soit cookie session, soit body JSON
+    let userId: string | null = null;
+    let quickMode = false; // mode rapide pour refresh manuel (INBOX 7j, 50 messages)
 
-    if (!user_id) {
-      console.error("GMAIL_SYNC_ERR", { trace_id, stage: "NO_USER_ID", message: "user_id manquant" });
-      return NextResponse.json(
-        { ok: false, error: "NO_USER_ID", trace_id, stage: "NO_USER_ID" },
-        { status: 400 }
-      );
+    // session cookie (stable pour le bouton dans l'app)
+    try {
+      const supabase = await supabaseServer();
+      const { data } = await supabase.auth.getUser();
+      if (data?.user?.id) userId = data.user.id;
+    } catch {}
+
+    // fallback body JSON (pour tests curl / cron)
+    let bodyJson: any = null;
+    try {
+      bodyJson = await req.json();
+      if (bodyJson?.user_id) userId = bodyJson.user_id;
+      if (bodyJson?.mode === "quick") quickMode = true;
+    } catch {}
+
+    if (!userId) {
+      return NextResponse.json({ error: "UNAUTHENTICATED" }, { status: 401 });
     }
 
-    userIdForCatch = user_id;
+    console.log(`[GMAIL SYNC] user=${userId} mode=${quickMode ? "quick" : "full"}`);
 
-    stage = "load_token";
-    const { data: tokenRow, error: tokenError } = await supabaseAdmin
-      .from("gmail_tokens")
-      .select("*")
-      .eq("user_id", user_id)
-      .maybeSingle();
+    // ✅ 2) Token Google valide + retry si Gmail renvoie 401
+    let accessToken = await getValidGoogleAccessToken(userId);
 
-    if (tokenError) {
-      lastSupabaseError = tokenError.message;
-      console.error("GMAIL_SYNC_ERR", {
-        trace_id,
-        stage: "TOKEN_ROW",
-        user_id,
-        message: tokenError.message,
-      });
-    }
+    // ── Paramètres selon le mode ──────────────────────────────────────────
+    // QUICK (manuel) : 50 messages INBOX uniquement → ~50 appels API → rapide
+    // FULL  (cron)   : 200 messages INBOX 30j        → ~200 appels API → complet
+    const MAX_MESSAGES = quickMode ? 50 : 200;
+    const PAGE_SIZE = quickMode ? 50 : 100;
+    const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
 
-    if (!tokenRow) {
-      console.error("GMAIL_SYNC_ERR", {
-        trace_id,
-        stage: "NO_GMAIL_TOKEN",
-        user_id,
-        message: "Aucun token Gmail",
-      });
-      return NextResponse.json(
-        { ok: false, error: "NO_GMAIL_TOKEN", trace_id, stage: "NO_GMAIL_TOKEN" },
-        { status: 400 }
-      );
-    }
+    const callList = (token: string, pageToken?: string) => {
+      const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
+      url.searchParams.set("maxResults", String(PAGE_SIZE));
+      url.searchParams.set("labelIds", "INBOX"); // ✅ INBOX seulement (pas sent/drafts/spam)
+      if (pageToken) url.searchParams.set("pageToken", pageToken);
+      return fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
+    };
 
-    // Log non-sensible de l'état du token en base
-    const refreshToken = (tokenRow as any).refresh_token as string | null | undefined;
-    const accessToken = (tokenRow as any).access_token as string | null | undefined;
-    const tokenExpiresAt = (tokenRow as any).expires_at ?? null;
-    console.log("GMAIL_TOKEN_STATE", {
-      trace_id,
-      user_id,
-      has_refresh_token: !!refreshToken,
-      refresh_token_length: typeof refreshToken === "string" ? refreshToken.length : 0,
-      has_access_token: !!accessToken,
-      token_expires_at: tokenExpiresAt,
-    });
-
-    stage = "google_auth";
-    const clientId = process.env.GOOGLE_CLIENT_ID;
-    const clientSecret = process.env.GOOGLE_CLIENT_SECRET;
-    const redirectUri = process.env.GOOGLE_REDIRECT_URI;
-
-    if (!clientId || !clientSecret) {
-      console.error("[GOOGLE_OAUTH_ENV_MISSING]", {
-        hasClientId: !!clientId,
-        hasClientSecret: !!clientSecret,
-        presentKeys: Object.keys(process.env)
-          .filter((k) => k.includes("GOOGLE"))
-          .sort(),
-      });
-      throw new Error("GOOGLE_OAUTH_MISSING_CLIENT_CREDENTIALS");
-    }
-
-    const auth = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
-    auth.setCredentials({
-      access_token: tokenRow.access_token,
-      refresh_token: tokenRow.refresh_token,
-    });
-
-    const gmail = google.gmail({ version: "v1", auth });
-
-    stage = "google_list";
-    console.log("GMAIL_SYNC_START", { trace_id, user_id, window_days, max_messages });
-
-    const newerThan = window_days === 30 ? "30d" : "7d";
-    const allMessages: { id?: string | null }[] = [];
-    let nextPageToken: string | undefined = undefined;
-    let remaining = max_messages;
-
-    type GmailListResponse = { data: { messages?: { id?: string | null }[]; nextPageToken?: string } };
-    do {
-      const page: GmailListResponse = await gmail.users.messages.list({
-        userId: "me",
-        maxResults: Math.min(100, Math.max(1, remaining)),
-        labelIds: ["INBOX"],
-        q: `newer_than:${newerThan}`,
-        pageToken: nextPageToken,
-      }) as GmailListResponse;
-      const pageMessages = page.data.messages ?? [];
-      allMessages.push(...pageMessages);
-      remaining -= pageMessages.length;
-      nextPageToken = page.data.nextPageToken ?? undefined;
-    } while (nextPageToken && remaining > 0);
-
-    const messages = allMessages;
-    const messageIds = (messages.map((m) => m.id).filter(Boolean) as string[]);
-
-    console.log("GMAIL_SYNC_LIST_OK", {
-      trace_id,
-      user_id,
-      fetched: messages.length,
-      ids_count: messageIds.length,
-      window_days,
-    });
-
-    stage = "load_existing";
-    const { data: existing, error: existingError } = await supabaseAdmin
+    // ── Récupérer les gmail_message_id déjà en DB ──
+    // On charge aussi le champ `attachments` pour distinguer :
+    //   - emails déjà traités avec PJ → skip complet
+    //   - emails en DB sans PJ → on re-traite les attachments uniquement
+    const { data: existingRows } = await supabaseAdmin
       .from("emails")
-      .select("gmail_message_id")
-      .eq("user_id", user_id)
-      .in("gmail_message_id", messageIds);
+      .select("id, gmail_message_id, attachments")
+      .eq("user_id", userId)
+      .not("gmail_message_id", "is", null);
 
-    if (existingError) {
-      lastSupabaseError = existingError.message;
-      console.error("GMAIL_SYNC_ERR", {
-        trace_id,
-        stage: "LOAD_EXISTING",
-        user_id,
-        message: existingError.message,
-      });
-    }
-
-    const existingSet = new Set(
-      (existing?.map((e: { gmail_message_id: string | null }) => e.gmail_message_id) ?? []).filter(
-        Boolean
-      )
+    const knownIds = new Set((existingRows || []).map((r: any) => r.gmail_message_id));
+    // IDs avec PJ déjà traitées (array non vide)
+    const knownWithAttachments = new Set(
+      (existingRows || [])
+        .filter((r: any) => Array.isArray(r.attachments) && r.attachments.length > 0)
+        .map((r: any) => r.gmail_message_id)
     );
-    const toInsert = messageIds.filter((id) => !existingSet.has(id));
+    // Map gmail_message_id → DB uuid (pour UPDATE ciblé)
+    const gmailIdToDbId = new Map<string, string>(
+      (existingRows || []).map((r: any) => [r.gmail_message_id, r.id])
+    );
+    console.log(`[GMAIL SYNC] ${knownIds.size} emails en DB, ${knownWithAttachments.size} avec PJ déjà traitées`);
 
-    console.log("GMAIL_SYNC_GET_OK", {
-      trace_id,
-      user_id,
-      total_ids: messageIds.length,
-      existing_count: existingSet.size,
-      to_upsert: toInsert.length,
-    });
+    let pageToken: string | undefined = undefined;
+    let fetched = 0;
+    let inserted = 0;
+    let skipped = 0;
 
-    stage = "upsert_loop";
-    let insertedCount = 0;
-    let lastUpsertError: string | null = null;
+    outer: while (true) {
+      let listRes = await callList(accessToken, pageToken);
 
-    for (const id of toInsert) {
-      stage = "google_get";
-      const detail = await gmail.users.messages.get({
-        userId: "me",
-        id,
-        format: "metadata",
-      });
+      if (!listRes.ok) {
+        const txt = await listRes.text();
+        console.error("[GMAIL SYNC] Gmail list error:", txt);
+        return NextResponse.json({ error: "GMAIL_LIST_ERROR", details: txt }, { status: 400 });
+      }
 
-      const internalDate = Number(detail.data.internalDate ?? Date.now());
-      const headers = detail.data.payload?.headers ?? [];
-      const from = headers.find((h) => h.name === "From")?.value ?? "";
-      const subject = headers.find((h) => h.name === "Subject")?.value ?? "";
+      const listJson = await listRes.json();
+      const messages: { id: string }[] = listJson.messages ?? [];
+      pageToken = listJson.nextPageToken;
 
-      stage = "supabase_upsert";
-      const { error: upsertError } = await supabaseAdmin
-        .from("emails")
-        .upsert(
-          {
-            user_id,
-            provider: "google",
-            gmail_message_id: id,
-            gmail_thread_id: detail.data.threadId ?? null,
-            received_at: new Date(internalDate).toISOString(),
-            sender: from,
-            subject,
-            lead_status: null,
-            lead_json: null,
-          },
-          { onConflict: "user_id,gmail_message_id" }
+      for (const msg of messages) {
+        fetched++;
+
+        // Skip si déjà en DB avec PJ traitées → évite l'appel inutile
+        if (knownWithAttachments.has(msg.id)) {
+          skipped++;
+          if (fetched >= MAX_MESSAGES) break outer;
+          continue;
+        }
+
+        // Email en DB sans PJ : re-traiter uniquement les attachments (lien Gmail direct)
+        if (knownIds.has(msg.id)) {
+          const dbId = gmailIdToDbId.get(msg.id);
+          if (dbId) {
+            try {
+              const detailResAtt = await fetch(
+                `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
+                { headers: { Authorization: `Bearer ${accessToken}` } }
+              );
+              if (detailResAtt.ok) {
+                const detailAtt = await detailResAtt.json();
+                const attsRaw = extractAttachments(detailAtt.payload);
+                console.log(`[GMAIL SYNC][PJ] Re-scan msg=${msg.id} → ${attsRaw.length} PJ détectée(s)`);
+                if (attsRaw.length > 0) {
+                  const gmailLink = buildGmailLink(msg.id);
+                  const enriched = attsRaw.map(att => ({
+                    ...att,
+                    gmailLink,
+                    docTypes: autoCheckDoc(att.filename),
+                  }));
+                  await supabaseAdmin
+                    .from("emails")
+                    .update({ attachments: enriched })
+                    .eq("id", dbId);
+                  console.log(`[GMAIL SYNC][PJ] ✅ Re-scan mis à jour: ${enriched.length} PJ sur email ${dbId}`);
+                }
+              }
+            } catch (e: any) {
+              console.warn(`[GMAIL SYNC][PJ] Re-scan failed msg=${msg.id}:`, e?.message);
+            }
+          }
+          skipped++;
+          if (fetched >= MAX_MESSAGES) break outer;
+          continue;
+        }
+
+        // BLOC 3 : format=full pour obtenir payload.parts (pièces jointes)
+        // + headers From/Subject/Date dans payload.headers
+        const detailRes = await fetch(
+          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
+          { headers: { Authorization: `Bearer ${accessToken}` } }
         );
 
-      if (upsertError) {
-        lastSupabaseError = upsertError.message;
-        lastUpsertError = upsertError.message;
-        console.error("GMAIL_SYNC_ERR", {
-          trace_id,
-          stage: "SUPABASE_UPSERT",
-          user_id,
-          gmail_message_id: id,
-          message: upsertError.message,
-        });
-      } else {
-        insertedCount++;
+        if (!detailRes.ok) {
+          if (fetched >= MAX_MESSAGES) break outer;
+          continue;
+        }
+
+        const detail = await detailRes.json();
+        const internalDate = detail.internalDate ? Number(detail.internalDate) : null;
+
+        // Filtre 30j côté serveur
+        if (internalDate && Date.now() - internalDate > THIRTY_DAYS) {
+          if (fetched >= MAX_MESSAGES) break outer;
+          continue;
+        }
+
+        const headers: { name: string; value: string }[] = detail.payload?.headers || [];
+        const from = headers.find((h) => h.name === "From")?.value ?? "Inconnu";
+        const subject = headers.find((h) => h.name === "Subject")?.value ?? "(Sans objet)";
+        const date = headers.find((h) => h.name === "Date")?.value;
+        const receivedAt = date ? new Date(date).toISOString() : new Date().toISOString();
+
+        const emailBody = getBody(detail.payload);
+
+        // ── DIAGNOSTIC PJ ──────────────────────────────────────────────────
+        const payloadMimeType = detail.payload?.mimeType ?? "unknown";
+        const partsCount = (detail.payload?.parts ?? []).length;
+        console.log(`[GMAIL SYNC][PJ] msg=${msg.id} mimeType=${payloadMimeType} parts=${partsCount}`);
+        if (partsCount > 0) {
+          const partsLog = (detail.payload.parts as any[]).map((p: any) => ({
+            mime: p.mimeType, filename: p.filename || "", hasData: !!p.body?.data, hasAttId: !!p.body?.attachmentId,
+          }));
+          console.log(`[GMAIL SYNC][PJ] parts=`, JSON.stringify(partsLog));
+        }
+
+        // Extraire les pièces jointes (récursif, version robuste avec attachmentId requis)
+        const attachments = extractAttachments(detail.payload);
+        console.log(`[GMAIL SYNC][PJ] msg=${msg.id} → ${attachments.length} PJ réelle(s)${attachments.length > 0 ? ": " + attachments.map((a: any) => a.filename).join(", ") : " (aucune PJ avec attachmentId)"}`);
+
+        // Approche simplifiée : lien Gmail direct + auto-détection du type de document
+        const gmailLink = buildGmailLink(msg.id);
+        const enrichedAttachments = attachments.map((att: any) => ({
+          ...att,
+          gmailLink,
+          docTypes: autoCheckDoc(att.filename),
+        }));
+
+        // PROBLÈME 1 : thread_id pour la détection des fils de conversation
+        const threadId: string | null = detail.threadId ?? null;
+
+        // ✅ FIX BUG 1 : is_archived:false explicite + ignoreDuplicates
+        // → les nouveaux emails ont is_archived=false (visible dans fetchEmails)
+        // → on n'écrase pas les emails déjà archivés manuellement
+        console.log(`[GMAIL SYNC] msg=${msg.id} body_length=${emailBody.length} body_sample=${emailBody.substring(0, 100)}`);
+
+        const { error } = await supabaseAdmin.from("emails").upsert(
+          {
+            user_id: userId,
+            provider: "google",
+            gmail_message_id: msg.id,
+            gmail_thread_id: threadId,
+            received_at: receivedAt,
+            sender: from,
+            subject,
+            body: emailBody || null,
+            is_archived: false,  // ← CRITIQUE : évite is_archived=NULL
+            attachments: enrichedAttachments.length > 0 ? enrichedAttachments : [],
+            thread_id: threadId,
+          },
+          {
+            onConflict: "gmail_message_id",
+            ignoreDuplicates: true, // ← Ne pas écraser les emails existants (archivage préservé)
+          }
+        );
+
+        if (!error) {
+          inserted++;
+          knownIds.add(msg.id); // éviter doublons dans la même exécution
+        }
+
+        if (fetched >= MAX_MESSAGES) break outer;
       }
+
+      if (!pageToken) break;
     }
 
-    stage = "done";
-    console.log("GMAIL_SYNC_DB_OK", {
-      trace_id,
-      user_id,
-      fetched: messages.length,
-      ids_count: messageIds.length,
-      inserted: insertedCount,
-      skipped_existing: messageIds.length - insertedCount,
-      last_error: lastUpsertError,
-    });
+    const durationMs = Date.now() - syncStart;
+    console.log(
+      `[GMAIL SYNC] ✅ Terminée en ${durationMs}ms — parcourus=${fetched} nouveaux=${inserted} déjà_connus=${skipped}`
+    );
 
     return NextResponse.json({
-      ok: true,
-      trace_id,
-      gmail_fetched: messageIds.length,
-      gmail_inserted: insertedCount,
-      skipped_existing: messageIds.length - insertedCount,
-      last_error: lastUpsertError,
+      success: true,
+      fetched,
+      inserted,
+      skipped,
+      durationMs,
     });
-  } catch (e: unknown) {
-    const err = e as any;
-    const message: string = err?.message ?? String(e);
-    const stack: string | undefined = err?.stack;
-
-    // Essayer d'extraire des infos Google si dispo (code HTTP, errors[] ou réponse OAuth)
-    if (typeof err?.code !== "undefined") {
-      googleStatus = err.code;
-    }
-    if (Array.isArray(err?.errors) && err.errors[0]?.message) {
-      googleErrorMessage = String(err.errors[0].message);
-    } else if (err?.response?.data?.error?.message) {
-      googleErrorMessage = String(err.response.data.error.message);
-    }
-
-    const oauthError = err?.response?.data ?? null;
-    const oauthStatus = err?.response?.status ?? null;
-    const oauthUrl =
-      err?.config?.url ??
-      err?.response?.config?.url ??
-      err?.request?.path ??
-      null;
-
-    // Si erreur OAuth invalid_grant / token révoqué → marquer needs_reconnect et retourner un code clair
-    const oauthErrorCode = oauthError?.error;
-    const oauthErrorDesc = String(oauthError?.error_description || "").toLowerCase();
-    const isInvalidGrant =
-      oauthErrorCode === "invalid_grant" ||
-      oauthErrorDesc.includes("revoked") ||
-      oauthErrorDesc.includes("expired");
-
-    if (isInvalidGrant && userIdForCatch) {
-      try {
-        await supabaseAdmin
-          .from("gmail_tokens")
-          .update({ needs_reconnect: true })
-          .eq("user_id", userIdForCatch);
-      } catch (e2) {
-        console.error("GMAIL_SYNC_MARK_RECONNECT_ERROR", {
-          trace_id,
-          user_id: userIdForCatch,
-          error: (e2 as any)?.message,
-        });
-      }
-
-      console.error("GMAIL_SYNC_ERR", {
-        trace_id,
-        stage,
-        message: "GMAIL_NEEDS_RECONNECT",
-        oauth_error: oauthError,
-        oauth_status: oauthStatus,
-        oauth_url: oauthUrl,
-        supabase_error: lastSupabaseError,
-      });
-
-      return NextResponse.json(
-        {
-          ok: false,
-          error: "GMAIL_NEEDS_RECONNECT",
-          stage,
-          oauth_error: oauthError,
-          oauth_status: oauthStatus,
-          oauth_message: err?.message ?? null,
-        },
-        { status: 401 }
-      );
-    }
-
-    console.error("GMAIL_SYNC_ERR", {
-      trace_id,
-      stage,
-      message,
-      googleStatus,
-      googleErrorMessage,
-      supabase_error: lastSupabaseError,
-      oauth_error: oauthError,
-      oauth_status: oauthStatus,
-      oauth_url: oauthUrl,
-      stack,
-    });
-
+  } catch (error: any) {
+    console.error("[GMAIL SYNC] FULL ERROR:", error);
     return NextResponse.json(
       {
-        ok: false,
-        error: "GMAIL_SYNC_FATAL",
-        stage,
-        message,
-        stack,
-        google_status: googleStatus ?? null,
-        google_error: googleErrorMessage ?? null,
-        supabase_error: lastSupabaseError,
-        oauth_error: oauthError,
-        oauth_status: oauthStatus,
-        oauth_message: err?.message ?? null,
+        error: "GMAIL_SYNC_FAILED",
+        message: error?.message ?? null,
       },
       { status: 500 }
     );

@@ -5,215 +5,55 @@ html, body {
 }
 
 /* =========================
-   🌞 MODE CLAIR (fallback)
+   THÈME LIGHT PREMIUM
+   Référence : Linear / Notion
    ========================= */
 
-   :root {
-    --background: 249 250 251;
-    --foreground: 15 23 42;
-  
-    --card: 255 255 255;
-    --card-foreground: 15 23 42;
-  
-    --border: 226 232 240;
-  
-    --muted: 243 244 246;
-    --muted-foreground: 75 85 99;
-  
-    --primary: 37 99 235;
-    --primary-foreground: 255 255 255;
-  }
-  
-/* =========================
-   🌙 MODE SOMBRE (PRIORITAIRE)
-   ========================= */
+:root {
+  /* Fonds */
+  --background: 250 250 250;      /* #FAFAFA */
+  --foreground: 30 41 59;         /* #1E293B slate-800 */
 
-html.dark {
-  /* Fond & texte */
-  --background: 2 6 23;
-  --foreground: 248 250 252;
-
-  /* Surfaces */
-  --card: 15 23 42;
-  --card-foreground: 248 250 252;
-
-  /* Bordures */
-  --border: 30 41 59;
-
-  /* Textes secondaires */
-  --muted: 15 23 42;
-  --muted-foreground: 148 163 184;
-
-  /* Action */
-  --primary: 59 130 246;
-  --primary-foreground: 2 6 23;
-}
-
-/* =========================
-   🎨 THÈME CLAIR PREMIUM
-   ========================= */
-
-html.theme-light {
-  /* Fond premium gris très léger (pas blanc agressif) */
-  --background: 250 250 252;
-  --foreground: 17 24 39;
-
-  /* Cards blanches avec ombre douce */
+  /* Cards / surfaces */
   --card: 255 255 255;
-  --card-foreground: 17 24 39;
+  --card-foreground: 30 41 59;
 
-  /* Bordures douces */
-  --border: 229 231 235;
-
-  /* Surfaces secondaires */
-  --muted: 249 250 251;
-  --muted-foreground: 107 114 128;
-
-  /* Action premium */
-  --primary: 37 99 235;
-  --primary-foreground: 255 255 255;
-}
-
-html.theme-light body {
-  background: linear-gradient(to bottom, rgb(250 250 252), rgb(243 244 246));
-}
-
-/* =========================
-   🌙 THÈME SOMBRE PREMIUM (avec gradient subtil)
-   ========================= */
-
-html.dark:not(.theme-light) {
-  /* Fond sombre avec gradient subtil */
-  --background: 2 6 23;
-  --foreground: 248 250 252;
-
-  /* Surfaces */
-  --card: 15 23 42;
-  --card-foreground: 248 250 252;
-
-  /* Bordures */
-  --border: 30 41 59;
+  /* Bordures subtiles */
+  --border: 226 232 240;          /* slate-200 */
 
   /* Textes secondaires */
-  --muted: 15 23 42;
-  --muted-foreground: 148 163 184;
+  --muted: 248 250 252;
+  --muted-foreground: 100 116 139; /* slate-500 */
 
-  /* Action */
-  --primary: 59 130 246;
-  --primary-foreground: 2 6 23;
+  /* Accent principal indigo */
+  --primary: 79 70 229;           /* #4F46E5 indigo-600 */
+  --primary-foreground: 255 255 255;
+
+  /* Sidebar */
+  --sidebar-bg: 255 255 255;
+  --sidebar-border: 226 232 240;
+  --sidebar-text: 71 85 105;      /* slate-600 */
+  --sidebar-active-bg: 238 242 255; /* indigo-50 */
+  --sidebar-active-text: 79 70 229; /* indigo-600 */
 }
 
-html.dark:not(.theme-light) body {
-  background: linear-gradient(to bottom, rgb(2 6 23), rgb(15 23 42));
-}
-
-/* =========================
-   📏 DENSITÉ
-   ========================= */
-
-html.density-compact {
-  --spacing-xs: 0.25rem;
-  --spacing-sm: 0.375rem;
-  --spacing-md: 0.5rem;
-  --spacing-lg: 0.75rem;
-  --spacing-xl: 1rem;
-  --card-padding: 0.75rem;
-  --header-height: 2.5rem;
-}
-
-html.density-comfortable {
-  --spacing-xs: 0.375rem;
-  --spacing-sm: 0.5rem;
-  --spacing-md: 0.75rem;
-  --spacing-lg: 1rem;
-  --spacing-xl: 1.5rem;
-  --card-padding: 1rem;
-  --header-height: 3rem;
-}
-
-/* =========================
-   🔒 APPLICATION GLOBALE
-   ========================= */
-
+/* Application globale */
 html, body {
   background: rgb(var(--background));
   color: rgb(var(--foreground));
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* =========================
-   🩹 COMPATIBILITÉ (legacy)
-   ========================= */
-/* À garder tant que des bg-white / text-slate-* existent */
-
-/* =========================
-   🎨 ALIAS UI (OBLIGATOIRES)
+   ALIAS UI
    ========================= */
 
-   .bg-surface {
-    background-color: rgb(var(--card));
-  }
-  
-  .text-main {
-    color: rgb(var(--foreground));
-  }
-  
-  .text-secondary {
-    color: rgb(var(--muted-foreground));
-  }
-  
-  .border-surface {
-    border-color: rgb(var(--border));
-  }
-  
-/* =========================
-   🔁 FORÇAGE GLOBAL UI
-   ========================= */
-
-   .bg-card {
-    background-color: rgb(var(--card));
-  }
-  
-  .text-muted {
-    color: rgb(var(--muted-foreground));
-  }
-  
-  .border-default {
-    border-color: rgb(var(--border));
-  }
-  
-  /* Boutons désactivés lisibles */
-  button:disabled {
-    opacity: 0.5;
-    cursor: not-allowed;
-  }
-
-/* =========================
-   🎨 CLASSES UTILITAIRES THÈME
-   ========================= */
-
-/* Backgrounds */
-.bg-page {
-  background-color: rgb(var(--background));
-}
-
-.bg-page-overlay {
-  background-color: rgba(var(--background) / 0.95);
-}
-
-.bg-card {
+.bg-surface {
   background-color: rgb(var(--card));
 }
 
-.bg-card-subtle {
-  background-color: rgba(var(--card) / 0.5);
-}
-
-.bg-muted {
-  background-color: rgb(var(--muted));
-}
-
-/* Text */
-.text-primary {
+.text-main {
   color: rgb(var(--foreground));
 }
 
@@ -221,63 +61,132 @@ html, body {
   color: rgb(var(--muted-foreground));
 }
 
-/* Borders */
+.border-surface {
+  border-color: rgb(var(--border));
+}
+
+.bg-card {
+  background-color: rgb(var(--card));
+}
+
+.text-muted {
+  color: rgb(var(--muted-foreground));
+}
+
 .border-default {
   border-color: rgb(var(--border));
 }
 
-.border-subtle {
-  border-color: rgba(var(--border) / 0.5);
+/* =========================
+   OMBRES DOUCES (style Linear)
+   ========================= */
+
+.shadow-card {
+  box-shadow: 0 1px 3px 0 rgb(0 0 0 / 0.06), 0 1px 2px -1px rgb(0 0 0 / 0.06);
 }
 
-/* Thème light spécifique */
-html.theme-light .bg-page {
-  background: linear-gradient(to bottom, rgb(250 250 252), rgb(243 244 246));
+.shadow-card-hover {
+  box-shadow: 0 4px 12px 0 rgb(0 0 0 / 0.08), 0 2px 4px -1px rgb(0 0 0 / 0.06);
 }
 
-html.theme-light .bg-card {
-  background-color: rgb(255 255 255);
-  box-shadow: 0 1px 3px 0 rgba(0, 0, 0, 0.05);
+/* =========================
+   ÉTATS INTERACTIFS
+   ========================= */
+
+button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
 }
 
-html.theme-light .bg-card-subtle {
-  background-color: rgba(255 255 255 / 0.7);
+/* Scrollbar subtile */
+::-webkit-scrollbar {
+  width: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: rgb(203 213 225);
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: rgb(148 163 184);
 }
 
-html.theme-light .text-primary {
-  color: rgb(17 24 39);
+/* =========================
+   ANIMATIONS
+   ========================= */
+
+@keyframes fade-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-html.theme-light .text-secondary {
-  color: rgb(107 114 128);
+@keyframes slide-up {
+  from { opacity: 0; transform: translateY(12px); }
+  to   { opacity: 1; transform: translateY(0); }
 }
 
-html.theme-light .border-default {
-  border-color: rgb(229 231 235);
+@keyframes slide-in-right {
+  from { opacity: 0; transform: translateX(16px); }
+  to   { opacity: 1; transform: translateX(0); }
 }
 
-/* Thème dark spécifique */
-html.dark:not(.theme-light) .bg-page {
-  background: linear-gradient(to bottom, rgb(2 6 23), rgb(15 23 42));
+@keyframes scale-in {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
 }
 
-html.dark:not(.theme-light) .bg-card {
-  background-color: rgb(15 23 42);
+@keyframes pulse-ring {
+  0%   { box-shadow: 0 0 0 0 rgba(79, 70, 229, 0.35); }
+  70%  { box-shadow: 0 0 0 8px rgba(79, 70, 229, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(79, 70, 229, 0); }
 }
 
-html.dark:not(.theme-light) .bg-card-subtle {
-  background-color: rgba(15 23 42 / 0.5);
+.animate-fade-in {
+  animation: fade-in 0.2s ease-out forwards;
 }
 
-html.dark:not(.theme-light) .text-primary {
-  color: rgb(248 250 252);
+.animate-slide-up {
+  animation: slide-up 0.25s ease-out forwards;
 }
 
-html.dark:not(.theme-light) .text-secondary {
-  color: rgb(148 163 184);
+.animate-slide-in-right {
+  animation: slide-in-right 0.2s ease-out forwards;
 }
 
-html.dark:not(.theme-light) .border-default {
-  border-color: rgb(30 41 59);
+.animate-scale-in {
+  animation: scale-in 0.15s ease-out forwards;
 }
-  
+
+.animate-pulse-ring {
+  animation: pulse-ring 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+}
+
+/* Toast entry */
+.toast-enter {
+  animation: slide-in-right 0.22s ease-out forwards;
+}
+
+/* Staggered list animations */
+.stagger-children > * {
+  opacity: 0;
+  animation: fade-in 0.2s ease-out forwards;
+}
+.stagger-children > *:nth-child(1)  { animation-delay: 0ms; }
+.stagger-children > *:nth-child(2)  { animation-delay: 40ms; }
+.stagger-children > *:nth-child(3)  { animation-delay: 80ms; }
+.stagger-children > *:nth-child(4)  { animation-delay: 120ms; }
+.stagger-children > *:nth-child(5)  { animation-delay: 160ms; }
+.stagger-children > *:nth-child(6)  { animation-delay: 200ms; }
+.stagger-children > *:nth-child(7)  { animation-delay: 240ms; }
+.stagger-children > *:nth-child(8)  { animation-delay: 280ms; }
+
+/* Hover lift */
+.hover-lift {
+  transition: transform 0.15s ease, box-shadow 0.15s ease;
+}
+.hover-lift:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px 0 rgb(0 0 0 / 0.08), 0 2px 4px -1px rgb(0 0 0 / 0.06);
+}

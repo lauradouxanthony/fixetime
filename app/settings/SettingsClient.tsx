@@ -362,72 +362,47 @@ export default function SettingsClient() {
         </div>
       </section>
 
-      {/* Section 2 : FAQ agence (Q/R) */}
-      <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
-        <h2 className="text-sm font-semibold text-white mb-3">2. FAQ agence</h2>
-        <p className="text-xs text-slate-500 mb-3">Questions/réponses utilisées quand intent = INFORMATION. L’IA répond à partir de cette base.</p>
-        <div className="space-y-3">
-          {(cfg.faq_items ?? []).map((item) => (
-            <div key={item.id} className="rounded-lg border border-slate-700 bg-slate-800/50 p-3">
-              {faqEditId === item.id ? (
-                <div className="space-y-2">
-                  <input
-                    value={faqEditQuestion}
-                    onChange={(e) => setFaqEditQuestion(e.target.value)}
-                    className="w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white"
-                    placeholder="Question"
-                  />
-                  <textarea
-                    value={faqEditAnswer}
-                    onChange={(e) => setFaqEditAnswer(e.target.value)}
-                    rows={2}
-                    className="w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white"
-                    placeholder="Réponse agence"
-                  />
-                  <div className="flex gap-2">
-                    <button type="button" onClick={() => saveEditFaq(item.id)} className="text-xs text-emerald-400 hover:text-emerald-300">Enregistrer</button>
-                    <button type="button" onClick={() => setFaqEditId(null)} className="text-xs text-slate-400 hover:text-white">Fermer</button>
-                    <button type="button" onClick={() => removeFaqItem(item.id)} className="text-xs text-red-400 hover:text-red-300">Supprimer</button>
-                  </div>
-                </div>
-              ) : (
-                <div className="flex justify-between items-start gap-2">
-                  <div>
-                    <p className="text-sm font-medium text-white">{item.question}</p>
-                    <p className="text-xs text-slate-400 mt-0.5">{item.answer}</p>
-                  </div>
-                  <div className="flex gap-1 shrink-0">
-                    <button type="button" onClick={() => startEditFaq(item)} className="text-xs text-slate-400 hover:text-white">Modifier</button>
-                    <button type="button" onClick={() => removeFaqItem(item.id)} className="text-xs text-red-400 hover:text-red-300">Supprimer</button>
-                  </div>
-                </div>
-              )}
-            </div>
-          ))}
-          <div className="rounded-lg border border-dashed border-slate-600 p-3 space-y-2">
+      {/* IA */}
+      <section className="rounded-xl border border-slate-800 p-4 space-y-3">
+        <h2 className="text-sm font-semibold">
+          Fonctionnement de l’assistant IA
+        </h2>
+
+        {[
+          {
+            key: "suggestions",
+            label: "Analyse uniquement",
+            description: "L'IA classe vos emails. Aucun envoi automatique.",
+          },
+          {
+            key: "semi",
+            label: "Mode DRAFT",
+            description:
+              "L'IA génère un brouillon de réponse. Vous approuvez avant d'envoyer.",
+          },
+          {
+            key: "advanced",
+            label: "Mode AUTOPILOTE",
+            description:
+              "L'IA envoie les réponses automatiquement et bloque les créneaux calendrier.",
+          },
+        ].map((opt) => (
+          <label
+            key={opt.key}
+            className="flex items-start gap-3 rounded-lg border border-slate-700 p-3 cursor-pointer"
+          >
             <input
-              value={faqNewQuestion}
-              onChange={(e) => setFaqNewQuestion(e.target.value)}
-              className="w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white placeholder-slate-500"
-              placeholder="Nouvelle question type"
+              type="radio"
+              className="mt-0.5"
+              checked={settings.automation_level === opt.key}
+              onChange={() => updateSettings({ automation_level: opt.key as any })}
             />
-            <textarea
-              value={faqNewAnswer}
-              onChange={(e) => setFaqNewAnswer(e.target.value)}
-              rows={2}
-              className="w-full rounded-lg bg-slate-900 border border-slate-600 px-2 py-1.5 text-sm text-white placeholder-slate-500"
-              placeholder="Réponse agence"
-            />
-            <button
-              type="button"
-              onClick={addFaqItem}
-              disabled={!faqNewQuestion.trim()}
-              className="rounded-lg bg-slate-700 px-3 py-1.5 text-xs font-medium text-white hover:bg-slate-600 disabled:opacity-50"
-            >
-              Ajouter à la FAQ
-            </button>
-          </div>
-        </div>
+            <div>
+              <span className="text-sm font-medium">{opt.label}</span>
+              <p className="text-xs text-slate-400 mt-0.5">{opt.description}</p>
+            </div>
+          </label>
+        ))}
       </section>
 
       {/* Section 3 : Calendrier (prise de RDV) */}

@@ -9,434 +9,431 @@ import { setLastAction } from "@/lib/lead/lastAction";
 export const runtime = "nodejs";
 export const maxDuration = 60;
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-function safeJsonParse(raw: string): any | null {
-  if (!raw) return null;
-  const match = raw.match(/\{[\s\S]*\}$/) || raw.match(/\{[\s\S]*\}/);
-  if (!match) return null;
-  try {
-    return JSON.parse(match[0]);
-  } catch {
-    return null;
+/* ── Extraction heuristique depuis le corps (fallback si prospect_data absent) ── */
+function detectSituation(body: string): string | null {
+  const l = body.toLowerCase();
+  if (l.includes("étudiant") || l.includes("etudiante") || l.includes("école") || l.includes("université")) return "etudiant";
+  if (l.includes("cdi")) return "cdi";
+  if (l.includes("cdd")) return "cdd";
+  if (l.includes("auto-entrepreneur") || l.includes("autoentrepreneur") || l.includes("freelance") || l.includes("indépendant")) return "auto";
+  if (l.includes("retraité") || l.includes("retraitée")) return "retraite";
+  return null;
+}
+
+function extractMoney(body: string): { revenus: number | null; loyer: number | null } {
+  const lines = body.split(/\r?\n/);
+  let revenus: number | null = null;
+  let loyer: number | null = null;
+  for (const line of lines) {
+    const l = line.toLowerCase();
+    const m = line.match(/(\d[\d\s]*)\s*(?:€|euros?)/i);
+    if (!m) continue;
+    const val = parseFloat(m[1].replace(/\s/g, ""));
+    if (!val || val < 100) continue;
+    if (l.includes("salaire") || l.includes("revenu") || l.includes("gagne") || l.includes("touche")) {
+      if (!revenus) revenus = val;
+    } else if (l.includes("loyer") || l.includes("budget") || l.includes("mensuel") || l.includes("loue")) {
+      if (!loyer) loyer = val;
+    }
   }
+  if (!revenus || !loyer) {
+    const all = [...body.matchAll(/(\d[\d\s]*)\s*(?:€|euros?)/gi)]
+      .map((m) => parseFloat(m[1].replace(/\s/g, "")))
+      .filter((v) => v >= 200);
+    if (!loyer && all[0]) loyer = all[0];
+    if (!revenus && all[1]) revenus = all[1];
+  }
+  return { revenus, loyer };
 }
 
-function clampInt(n: any, min: number, max: number, fallback: number) {
-  const x = Number(n);
-  if (Number.isNaN(x)) return fallback;
-  return Math.min(Math.max(Math.floor(x), min), max);
+function extractNom(body: string): string {
+  const m = body.match(/(?:je m['']appelle|je suis|prénom\s*:?\s*)([A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+(?:\s+[A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+)*)/);
+  if (m?.[1]) return m[1].trim();
+  const lines = body.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 2 && l.length < 45);
+  const last = lines[lines.length - 1] ?? "";
+  if (last.split(/\s+/).length >= 2 && !/[@.]/.test(last)) return last;
+  return "";
 }
 
-function normalizeTone(t: any) {
-  const s = String(t || "").toLowerCase();
-  if (s.includes("formel")) return "Très formel";
-  if (s.includes("amical")) return "Amical";
-  return "Professionnel";
+/* ── Cas de réponse selon l'étape du process ── */
+type ReplyCase =
+  | "qualification"      // QUALIFICATION → demander situation + revenus SEULEMENT
+  | "visite_proposee"    // VISITE_PROPOSEE → proposer créneaux, PAS de docs
+  | "etudiant"           // VISITE_PROPOSEE (étudiant) → garant + créneaux, PAS de docs
+  | "refuse"             // REFUSE → refus poli + suggestion garant
+  | "visite_confirmee"   // VISITE_CONFIRMEE → confirmer RDV + attendre visite
+  | "dossier_demande"    // DOSSIER_DEMANDE → envoyer liste de documents
+  | "dossier_recu";      // DOSSIER_RECU → accusé réception
+
+function determineCase(params: {
+  situation: string | null;
+  revenus: number | null;
+  loyer: number | null;
+  multiplicateur: number;
+  etapeProcess: string | null;
+}): ReplyCase {
+  const { situation, revenus, loyer, multiplicateur, etapeProcess } = params;
+
+  // Les étapes avancées et manuelles priment toujours
+  if (etapeProcess === "DOSSIER_RECU")    return "dossier_recu";
+  if (etapeProcess === "DOSSIER_DEMANDE") return "dossier_demande";
+  if (etapeProcess === "VISITE_CONFIRMEE") return "visite_confirmee";
+  if (etapeProcess === "REFUSE")          return "refuse";
+
+  // Étape VISITE_PROPOSEE
+  if (etapeProcess === "VISITE_PROPOSEE") {
+    return situation === "etudiant" ? "etudiant" : "visite_proposee";
+  }
+
+  // Pas d'étape renseignée → déterminer depuis le profil
+  if (situation === "etudiant") return "etudiant";
+  if (revenus !== null && loyer !== null && loyer > 0 && revenus / loyer < multiplicateur) return "refuse";
+  if (!revenus || !loyer || !situation) return "qualification";
+  return "visite_proposee";
 }
 
-function normalizeEmployment(t: any) {
-  const s = String(t || "").toLowerCase();
-  if (s.includes("cdi")) return "CDI";
-  if (s.includes("cdd")) return "CDD";
-  if (s.includes("ind")) return "Indé";
-  if (s.includes("interim")) return "Interim";
-  if (s.includes("étu") || s.includes("etu")) return "Étudiant";
-  return "Inconnu";
-}
-
-async function getProviders(userId: string) {
-  const [g, m] = await Promise.all([
-    supabaseAdmin
-      .from("gmail_tokens")
-      .select("user_id")
-      .eq("user_id", userId)
-      .maybeSingle(),
-    supabaseAdmin
-      .from("microsoft_tokens")
-      .select("user_id")
-      .eq("user_id", userId)
-      .maybeSingle(),
-  ]);
-
-  return {
-    google: !!g?.data?.user_id,
-    microsoft: !!m?.data?.user_id,
+/* ── Builders de prompt selon le cas ── */
+function buildPrompt(params: {
+  cas: ReplyCase;
+  email: { sender: string | null; subject: string | null; body: string | null };
+  settings: {
+    nomAgence: string;
+    multiplicateur: number;
+    animaux: string;
+    garantObligatoire: Record<string, boolean>;
+    docsProfiles: { cdi: string[]; cdd: string[]; etudiant: string[]; auto: string[]; retraite: string[] };
+    faq: { question: string; reponse: string }[];
+    instructions: string;
+    heureDebut: number;
+    heureFin: number;
+    dureeVisite: number;
   };
+  prospect: {
+    nom: string;
+    situation: string | null;
+    revenus: number | null;
+    loyer: number | null;
+  };
+}): string {
+  const { cas, email, settings, prospect } = params;
+  const { nomAgence, multiplicateur, garantObligatoire, docsProfiles, instructions, heureDebut, heureFin, dureeVisite } = settings;
+
+  const agenceLine = nomAgence ? `Agence : ${nomAgence}` : "Agence immobilière";
+  const nomProspect = prospect.nom || "Madame, Monsieur";
+  const instructLine = instructions ? `\nINSTRUCTIONS SPÉCIALES : ${instructions}` : "";
+  const emailCtx = `Email reçu :\nExpéditeur : ${email.sender}\nSujet : ${email.subject}\nContenu : ${email.body}`;
+  const sig = `Cordialement, L'équipe ${nomAgence || "de l'agence"}`;
+
+  // ── DOSSIER_RECU — accusé réception ────────────────────────────────────────
+  if (cas === "dossier_recu") {
+    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
+
+Rédige un email bref et professionnel pour accuser réception des documents de ${nomProspect}.
+
+Contenu :
+- Remercier chaleureusement pour l'envoi du dossier
+- Confirmer la bonne réception de l'ensemble des pièces
+- Indiquer que le dossier va être étudié et qu'un retour sera communiqué rapidement
+- Ne pas s'engager sur un délai précis
+- Signature : ${sig}
+
+${emailCtx}
+
+Réponse (française, professionnelle, directement envoyable) :`;
+  }
+
+  // ── DOSSIER_DEMANDE — envoyer liste de documents ──────────────────────────
+  if (cas === "dossier_demande") {
+    const sitKeyMap: Record<string, keyof typeof docsProfiles> = {
+      cdi: "cdi", cdd: "cdd", auto: "auto", retraite: "retraite", etudiant: "etudiant",
+    };
+    const sitKey: keyof typeof docsProfiles =
+      (prospect.situation ? (sitKeyMap[prospect.situation] ?? "cdi") : "cdi");
+    const docsList = (docsProfiles[sitKey] ?? docsProfiles.cdi).map(d => `• ${d}`).join("\n");
+    const needsGarant = prospect.situation && garantObligatoire[prospect.situation];
+    const garantLine = needsGarant ? "\n• Pour votre profil, un garant sera également requis (mêmes documents)." : "";
+    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
+
+Rédige un email chaleureux pour demander le dossier locataire à ${nomProspect}, suite à la visite.
+
+Contenu :
+- Remercier ${nomProspect} pour la visite et l'intérêt pour le bien
+- Demander de transmettre les documents suivants pour constituer le dossier :
+${docsList}${garantLine}
+- Indiquer que la candidature sera examinée dès réception du dossier complet
+- Rester enthousiaste et professionnel
+- Signature : ${sig}
+
+${emailCtx}
+
+Réponse (française, professionnelle, directement envoyable) :`;
+  }
+
+  // ── VISITE_CONFIRMEE — confirmer RDV (pas de docs, attendre visite) ────────
+  if (cas === "visite_confirmee") {
+    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
+
+Rédige un email de confirmation de visite pour ${nomProspect}.
+
+Contenu :
+- Confirmer chaleureusement la visite (date/heure telles que mentionnées dans l'email reçu)
+- Indiquer l'adresse du bien si connue, sinon proposer un rappel
+- Préciser qu'un retour sera communiqué rapidement après la visite
+- NE PAS demander de documents — les documents seront demandés après la visite
+- Signature : ${sig}
+
+${emailCtx}
+
+Réponse (française, professionnelle, directement envoyable) :`;
+  }
+
+  // ── REFUSE — refus poli + suggestion garant ────────────────────────────────
+  if (cas === "refuse") {
+    const ratio = prospect.revenus && prospect.loyer
+      ? (prospect.revenus / prospect.loyer).toFixed(1)
+      : "insuffisant";
+    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
+
+Rédige un email professionnel, poli et respectueux pour décliner cette candidature.
+
+Contenu :
+- Remercier ${nomProspect} pour sa candidature et son intérêt
+- Expliquer poliment que le critère de solvabilité n'est pas atteint (revenus insuffisants pour couvrir ${multiplicateur}x le loyer, ratio actuel : ${ratio}x)
+- Suggérer la possibilité d'un garant solide (revenus ≥ ${multiplicateur}x le loyer) qui pourrait permettre de reconsidérer
+- Encourager à revenir vers l'agence si la situation évolue
+- NE PAS demander de documents
+- Rester positif et professionnel
+- Signature : ${sig}
+
+${emailCtx}
+
+Réponse (française, professionnelle, directement envoyable) :`;
+  }
+
+  // ── ETUDIANT — garant + créneaux, PAS de documents ────────────────────────
+  if (cas === "etudiant") {
+    const needsGarant = garantObligatoire["etudiant"] !== false;
+    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
+
+Rédige un email professionnel et bienveillant pour un candidat étudiant.
+
+Contenu :
+- Remercier ${nomProspect} pour son intérêt pour le bien
+- Expliquer que pour les étudiants, un garant (personne physique avec revenus stables ≥ ${multiplicateur}x le loyer) est ${needsGarant ? "obligatoire" : "fortement recommandé"}
+- Si l'email mentionne déjà un garant disponible : proposer 3 créneaux de visite (jours ouvrés entre ${heureDebut}h et ${heureFin}h, durée ${dureeVisite}min) et demander de confirmer le créneau préféré
+- Si aucun garant n'est mentionné : demander si ${nomProspect} dispose d'un garant avant d'aller plus loin
+- NE PAS demander de documents à ce stade — les documents seront demandés après la visite
+- Signature : ${sig}
+
+${emailCtx}
+
+Réponse (française, professionnelle, directement envoyable) :`;
+  }
+
+  // ── QUALIFICATION — demander situation + revenus SEULEMENT ────────────────
+  if (cas === "qualification") {
+    const missingList: string[] = [];
+    if (!prospect.situation) missingList.push("votre situation professionnelle (CDI, CDD, étudiant, indépendant, retraité…)");
+    if (!prospect.revenus) missingList.push("vos revenus nets mensuels (en €)");
+    const missingStr = missingList.map((m, i) => `${i + 1}. ${m}`).join("\n");
+    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
+
+Rédige un email chaleureux pour demander les informations manquantes.
+
+Contenu :
+- Remercier ${nomProspect} pour son intérêt pour le bien
+- Expliquer qu'avant d'étudier sa candidature, il manque quelques informations :
+${missingStr}
+- Préciser que ces informations permettront de traiter rapidement sa candidature
+- Rester encourageant et disponible pour toute question
+- NE PAS demander de documents à ce stade
+- Signature : ${sig}
+
+${emailCtx}
+
+Réponse (française, professionnelle, directement envoyable) :`;
+  }
+
+  // ── VISITE_PROPOSEE — solvable, proposer créneaux, PAS de documents ────────
+  const ratio = prospect.revenus && prospect.loyer
+    ? (prospect.revenus / prospect.loyer).toFixed(1)
+    : null;
+  const solvLine = ratio
+    ? ` Son profil présente un ratio de ${ratio}x (critère : ${multiplicateur}x).`
+    : "";
+
+  return `Tu es l'assistant de l'${agenceLine}.${instructLine}
+
+Rédige un email professionnel et enthousiaste pour proposer une visite à ce candidat solvable.${solvLine}
+
+Contenu :
+- Accueillir chaleureusement ${nomProspect}
+- Confirmer que son profil correspond à nos critères (sans rentrer dans les détails chiffrés)
+- Proposer 3 créneaux de visite concrets et réalistes à court terme (jours ouvrés, entre ${heureDebut}h et ${heureFin}h, durée ${dureeVisite}min)
+- Demander de confirmer le créneau préféré ou de proposer une autre disponibilité
+- NE PAS demander de documents — les documents seront demandés après la visite
+- Rester enthousiaste et professionnel
+- Signature : ${sig}
+
+${emailCtx}
+
+Réponse (française, professionnelle, directement envoyable) :`;
 }
 
+/* ── Route handler ── */
 export async function POST(req: Request) {
-  const requestId = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-  const startMs = Date.now();
   try {
+    // 1. Auth
     const supabase = await supabaseServer();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
 
-    if (!user) {
-      console.log("GEN_REPLY_START", { requestId, emailId: undefined, userId: null, error: "UNAUTHORIZED" });
-      return NextResponse.json({ ok: false, error: "UNAUTHORIZED" }, { status: 401 });
-    }
-
-    const body = await req.json().catch(() => ({}));
-    const emailId = body?.emailId as string | undefined;
-    const force = !!body?.force;
-
-    console.log("GEN_REPLY_START", { requestId, emailId: emailId ?? null, userId: user.id });
-
-    if (!emailId || String(emailId).trim() === "") {
-      return NextResponse.json({ ok: false, error: "MISSING_EMAIL_ID" }, { status: 400 });
-    }
+    // 2. Email
+    const { emailId } = await req.json();
+    if (!emailId) return NextResponse.json({ error: "EMAIL_ID_REQUIRED" }, { status: 400 });
 
     // 3) Charger email
     const { data: email, error: emailErr } = await supabaseAdmin
       .from("emails")
-      .select(
-        "id, user_id, sender, subject, body, ai_reply, lead_json, lead_status, lead_score, estimated_time"
-      )
+      .select("id, sender, subject, body, ai_reply, category, prospect_data")
       .eq("id", emailId)
       .eq("user_id", user.id)
       .single();
 
-    if (emailErr || !email) {
-      return NextResponse.json({ ok: false, error: "EMAIL_NOT_FOUND" }, { status: 404 });
+    if (emailErr || !email) return NextResponse.json({ error: "EMAIL_NOT_FOUND" }, { status: 404 });
+
+    // 3. Anti-coût : réponse déjà générée
+    if (email.ai_reply && email.ai_reply.trim().length > 0) {
+      return NextResponse.json({ reply: email.ai_reply });
     }
 
-    const EMAIL_SELECT =
-      "id, provider, provider_message_id, open_url, gmail_message_id, gmail_thread_id, sender, subject, body, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply, lead_score, lead_status, lead_json, property_id, candidate_name, monthly_income, employment_type, guarantor_present, income_ratio, lead_profile, lead_property_address, lead_missing_fields, lead_is_qualified, lead_last_action, lead_last_action_at";
-
-    // anti-coût: si déjà généré et pas force — on persiste draft_reply et on renvoie l'email
-    if (!force && email.ai_reply && String(email.ai_reply).trim().length > 0) {
-      const reply = String(email.ai_reply).trim();
-      const subject = (email.subject || "Votre demande").trim().slice(0, 80);
-      const nowIso = new Date().toISOString();
-      const prev = (email.lead_json as any) ?? {};
-      const nextLeadJson = {
-        ...prev,
-        draft_reply: { text: reply, subject: `Re: ${subject}`, created_at: nowIso },
-        last_outbound: { type: "draft_reply", at: nowIso },
-      };
-      await supabaseAdmin
-        .from("emails")
-        .update({ lead_json: nextLeadJson })
-        .eq("id", email.id);
-
-      const { data: updatedRow } = await supabaseAdmin
-        .from("emails")
-        .select(EMAIL_SELECT)
-        .eq("id", email.id)
-        .eq("user_id", user.id)
-        .single();
-
-      return NextResponse.json({ ok: true, reply, email: updatedRow ?? email });
-    }
-
-    const content = (email.body || "").trim();
-    if (!content || content.length < 20) {
-      return NextResponse.json(
-        { ok: false, error: "EMAIL_BODY_MISSING", details: "Corps email vide ou trop court" },
-        { status: 400 }
-      );
-    }
-
-    const leadJson = (email.lead_json as any) ?? {};
-    const intent = leadJson?.intent as string | undefined;
-
-    // Intent INFORMATION : réponse basée FAQ uniquement (pas d’hallucination). Si pas de match => demande précision.
-    if (intent === "INFORMATION") {
-      const { data: settingsRow } = await supabaseAdmin
-        .from("settings_v1")
-        .select("config")
-        .eq("user_id", user.id)
-        .maybeSingle();
-      const configAny = (settingsRow as any)?.config ?? {};
-      const faqItemsRaw = (configAny?.faq_items ?? []) as Array<{ id?: string; question?: string; answer?: string }>;
-      const faqItems: FaqItem[] = faqItemsRaw.map((item) => ({
-        id: item.id ?? String(Math.random()),
-        question: item.question ?? "",
-        answer: item.answer ?? "",
-      }));
-      const questionText = `${(email.subject ?? "").trim()} ${content}`.trim();
-      const { match } = matchFaq(faqItems, questionText);
-      const aiName = "Julie";
-      const signature = `\n\n${aiName}`;
-      const reply = match
-        ? (match.item.answer + signature).trim()
-        : "Je n'ai pas trouvé la règle correspondante dans nos paramètres. Pouvez-vous préciser votre question ? Vous pouvez aussi nous appeler pour une réponse immédiate.";
-      const subject = (email.subject || "Votre demande").trim().slice(0, 80);
-      const nowIso = new Date().toISOString();
-      const nextLeadJson = {
-        ...leadJson,
-        draft_reply: { text: reply, subject: `Re: ${subject}`, created_at: nowIso },
-        last_outbound: { type: "draft_info_reply", at: nowIso },
-        info_question: (email.subject ?? "").slice(0, 150),
-        info_source: match ? "FAQ" : "MISSING_FAQ",
-        ...(match ? { faq_item_id: match.item.id } : {}),
-        last_action: setLastAction(leadJson, { type: match ? "draft_info_reply" : "info_missing_faq", label: match ? "Brouillon réponse FAQ" : "Demande de précision (FAQ manquante)" }, nowIso),
-      };
-      await supabaseAdmin
-        .from("emails")
-        .update({
-          ai_reply: reply,
-          lead_json: nextLeadJson,
-          lead_last_action: nextLeadJson.last_action?.label ?? "Brouillon réponse FAQ",
-          lead_last_action_at: nowIso,
-        })
-        .eq("id", email.id)
-        .eq("user_id", user.id);
-
-      const { data: updatedRow } = await supabaseAdmin
-        .from("emails")
-        .select(EMAIL_SELECT)
-        .eq("id", email.id)
-        .eq("user_id", user.id)
-        .single();
-
-      return NextResponse.json({ ok: true, reply, email: updatedRow ?? email });
-    }
-
-    // 4) Charger business_rules
-    const { data: settings } = await supabaseAdmin
+    // 4. Charger les settings
+    const { data: settingsRow } = await supabaseAdmin
       .from("settings_v1")
-      .select("business_rules")
+      .select("email_rules")
       .eq("user_id", user.id)
       .maybeSingle();
 
-    const rules = (settings?.business_rules ?? {}) as any;
+    const rules = (settingsRow?.email_rules && typeof settingsRow.email_rules === "object")
+      ? (settingsRow.email_rules as Record<string, unknown>) : {};
 
-    const aiName = String(rules?.aiName || "Julie");
-    const aiTone = normalizeTone(rules?.aiTone || "Professionnel");
-    const rentMultiplier = Number(rules?.rentMultiplier ?? 3);
-    const requiredDocs = Array.isArray(rules?.requiredDocs)
-      ? rules.requiredDocs
-      : ["Pièce d’identité", "3 bulletins de salaire", "Avis d’imposition"];
+    const locatif = (rules.ft_locatif as Record<string, unknown>) ?? {};
+    const docsSection = (rules.ft_documents as Record<string, unknown>) ?? {};
+    const iaSection = (rules.ft_ia as Record<string, unknown>) ?? {};
+    const calSection = (rules.ft_calendrier as Record<string, unknown>) ?? {};
+    const faqSection = (rules.ft_faq as { question: string; reponse: string }[] | null) ?? [];
 
-    // 5) Charger properties (catalogue)
-    const { data: properties } = await supabaseAdmin
-      .from("properties")
-      .select("id, name, rent, address, city")
-      .eq("user_id", user.id)
-      .order("created_at", { ascending: false });
+    const settings = {
+      nomAgence: (locatif.nomAgence as string) ?? "",
+      multiplicateur: (locatif.multiplicateur as number) ?? 3,
+      animaux: (locatif.animaux as string) ?? "selon",
+      garantObligatoire: (locatif.garantObligatoire as Record<string, boolean>) ?? { cdd: true, auto: true, etudiant: true, retraite: false },
+      docsProfiles: {
+        cdi:     (docsSection.cdi     as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail", "Avis d'imposition", "Pièce d'identité"],
+        cdd:     (docsSection.cdd     as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail (durée + date de fin)", "Avis d'imposition", "Pièce d'identité"],
+        etudiant:(docsSection.etudiant as string[]) ?? ["Carte étudiante", "Certificat de scolarité", "Justificatif de garant", "Pièce d'identité"],
+        auto:    (docsSection.auto    as string[]) ?? ["Extrait Kbis", "Bilans comptables (2 dernières années)", "Avis d'imposition", "Pièce d'identité"],
+        retraite:(docsSection.retraite as string[]) ?? ["Relevés de pension (3 derniers mois)", "Avis d'imposition", "Pièce d'identité"],
+      },
+      faq: Array.isArray(faqSection) ? faqSection : [],
+      instructions: (iaSection.instructions as string) ?? "",
+      heureDebut: (calSection.heureDebut as number) ?? 9,
+      heureFin: (calSection.heureFin as number) ?? 18,
+      dureeVisite: (calSection.dureeVisite as number) ?? 60,
+    };
 
-    const propertiesContext = (properties ?? []).map((p: any) => ({
-      id: p.id,
-      name: p.name,
-      rent: p.rent,
-      address: p.address,
-      city: p.city,
-    }));
+    // 5. Construction du prompt selon l'intention et l'étape
+    const body = email.body ?? "";
+    const isLocation = (email.category || "").toUpperCase() === "LOCATION";
 
-    // 6) Slots dispo (Google + Outlook si connectés)
-    const providers = await getProviders(user.id);
-    const hasAnyProvider = providers.google || providers.microsoft;
+    let prompt: string;
 
-    const durationMin = clampInt(email.estimated_time ?? 30, 15, 120, 30);
+    if (isLocation) {
+      const pd = (email as any).prospect_data as Record<string, unknown> | null;
 
-    const slots = hasAnyProvider
-      ? await getAvailabilitySlots({
-          userId: user.id,
-          daysAhead: 5,
-          durationMin,
-          maxSlots: 3,
-          useGoogle: providers.google,
-          useMicrosoft: providers.microsoft,
-          timezone: "Europe/Paris",
-          workDayStartHour: 9,
-          workDayEndHour: 18,
-        })
-      : [];
+      const situationProMap: Record<string, string> = {
+        ETUDIANT: "etudiant", CDI: "cdi", CDD: "cdd", AUTO_ENTREPRENEUR: "auto", RETRAITE: "retraite",
+      };
 
-    // 7) Prompt IMMO JSON strict
-    const prompt = `
-Tu es ${aiName}, l'Expert en Conversion Locative pour une agence immobilière.
-Objectif : filtrer les dossiers non éligibles et verrouiller des RDV pour les profils premium.
+      const situation = pd?.situation_pro
+        ? (situationProMap[String(pd.situation_pro)] ?? detectSituation(body))
+        : detectSituation(body);
 
-### 🏠 CONTEXTE DES BIENS DISPONIBLES :
-${JSON.stringify(propertiesContext)}
+      const pdRevenus = typeof pd?.revenus_mensuels === "number" ? pd.revenus_mensuels as number : null;
+      const pdLoyer = typeof pd?.loyer_max === "number" ? pd.loyer_max as number : null;
+      const { revenus: bodyRevenus, loyer: bodyLoyer } = extractMoney(body);
+      const revenus = pdRevenus ?? bodyRevenus;
+      const loyer = pdLoyer ?? bodyLoyer;
 
-### ⚙️ RÈGLES DE QUALIFICATION (STRICTES) :
-1. SEUIL FINANCIER : revenus NETS mensuels >= (${rentMultiplier} x loyer).
-   - Si le prospect donne un salaire ANNUEL, divise-le par 12.
-   - Si le prospect parle de revenus du foyer / conjoint, additionne les montants quand c’est explicite.
-2. DOCUMENTS : doit mentionner ou être prêt à fournir : ${requiredDocs.join(", ")}.
-3. PRIORITÉ : CDI avec ratio >= ${rentMultiplier} => lead_score élevé.
+      const nom = (typeof pd?.nom === "string" && pd.nom.trim().length > 0)
+        ? pd.nom.trim()
+        : extractNom(body);
 
-### 🧠 LOGIQUE DE RÉPONSE (TON : ${aiTone}) :
-- CAS A (infos manquantes) : ne propose JAMAIS de visite. Demande précisément ce qu'il manque (revenus, statut pro, garant, documents).
-- CAS B (inéligible) : refuse avec diplomatie. Suggère garant ou bien moins cher.
-- CAS C (éligible) : propose 3 créneaux de visite basés sur les disponibilités fournies.
-- RÈGLE D'OR : ne jamais divulguer l'adresse exacte (numéro de rue) avant confirmation d'un créneau précis.
+      // ← BLOC 2 : lire l'étape depuis prospect_data
+      const etapeProcess = (pd?.etape_process as string | null) ?? null;
 
-### 🕒 SLOTS DE VISITE DISPONIBLES (RÉELS) :
-${JSON.stringify(slots)}
+      const cas = determineCase({
+        situation,
+        revenus,
+        loyer,
+        multiplicateur: settings.multiplicateur,
+        etapeProcess,
+      });
 
-### 📋 SORTIE JSON OBLIGATOIRE :
-Retourne UNIQUEMENT un JSON valide :
-{
-  "is_rental_intent": boolean,
-  "property_id": "uuid|null",
-  "analysis": {
-    "prospect_name": "string",
-    "detected_income": number|null,
-    "income_ratio": "number|null",
-    "employment_type": "CDI|CDD|Indé|Interim|Étudiant|Inconnu",
-    "guarantor_present": boolean,
-    "urgency_level": "low|medium|high"
-  },
-  "lead_score": number,
-  "lead_status": "new_lead|qualifying|ready_for_visite|rejected|other",
-  "missing_elements": ["..."],
-  "next_action_logic": "string",
-  "email_reply": "string"
-}
+      console.log(`[generate-reply] emailId=${emailId} etape=${etapeProcess ?? "null"} cas=${cas} situation=${situation} revenus=${revenus} loyer=${loyer} nom="${nom}"`);
 
-### 📨 EMAIL À TRAITER :
-Expéditeur : ${email.sender}
-Sujet : ${email.subject}
-Contenu :
-${content}
-`;
+      prompt = buildPrompt({
+        cas,
+        email: { sender: email.sender, subject: email.subject, body: email.body },
+        settings,
+        prospect: { nom, situation, revenus, loyer },
+      });
+    } else {
+      // Email non-LOCATION : prompt générique professionnel
+      const contextLine = settings.nomAgence ? `Tu es l'assistant de l'${settings.nomAgence}.` : "Tu es l'assistant personnel d'un dirigeant très occupé.";
+      const instructLine = settings.instructions ? `\nINSTRUCTIONS SPÉCIALES : ${settings.instructions}` : "";
+      const faqContext = settings.faq.length > 0
+        ? `\nFAQ AGENCE (utilise ces réponses si pertinent) :\n${settings.faq.slice(0, 5).map((f) => `Q: ${f.question}\nR: ${f.reponse}`).join("\n\n")}`
+        : "";
 
-    // 8) OpenAI (temp = 0 pour stabilité)
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0,
-    });
+      prompt = `${contextLine}
+Rédige une réponse email professionnelle, claire, naturelle et prête à être envoyée.
+${instructLine}${faqContext}
 
-    const raw = completion.choices[0]?.message?.content?.trim() || "";
-    const result = safeJsonParse(raw);
+Règles :
+- Français professionnel
+- Ton humain, poli, efficace
+- Pas trop long
+- Adapté au CONTENU réel
+- Signature neutre : Cordialement, L’équipe ${settings.nomAgence || "de l’agence"}
 
-    // 9) fallback safe si JSON foire (ne casse pas ton flow)
-    if (!result || !result.email_reply) {
-      const fallbackPrompt = `
-Rédige une réponse email professionnelle, courte, claire et humaine.
-Ton : ${aiTone}. Pas de blabla inutile.
 Email reçu :
 Expéditeur : ${email.sender}
 Sujet : ${email.subject}
 Contenu :
-${content}
+${email.body}
 
-Réponse :
-`;
-      const fb = await openai.chat.completions.create({
-        model: "gpt-4o-mini",
-        messages: [{ role: "user", content: fallbackPrompt }],
-        temperature: 0.4,
-      });
-      const reply = fb.choices[0]?.message?.content?.trim() || null;
-
-      if (!reply) {
-        return NextResponse.json({ ok: false, error: "AI_NO_REPLY" }, { status: 500 });
-      }
-
-      const subject = (email.subject || "Votre demande").trim().slice(0, 80);
-      const fallbackNow = new Date().toISOString();
-      await supabaseAdmin
-        .from("emails")
-        .update({
-          ai_reply: reply,
-          lead_status: "other",
-          lead_score: null,
-          lead_json: {
-            draft_reply: { text: reply, subject: `Re: ${subject}`, created_at: fallbackNow },
-            last_outbound: { type: "draft_reply", at: fallbackNow },
-            classification_reason: "IMMO_FALLBACK_NO_JSON",
-          },
-          classification_reason: "IMMO_FALLBACK_NO_JSON",
-        })
-        .eq("id", email.id);
-
-      const { data: updatedRow } = await supabaseAdmin
-        .from("emails")
-        .select(EMAIL_SELECT)
-        .eq("id", email.id)
-        .eq("user_id", user.id)
-        .single();
-
-      return NextResponse.json({ ok: true, reply, email: updatedRow ?? email });
+Réponse (française, professionnelle, directement envoyable) :`;
     }
 
-    // 10) Normalisations + persist DB
-    const leadScore = clampInt(result.lead_score, 1, 10, 5);
-    const leadStatus = String(result.lead_status || "qualifying");
-    const propertyId =
-      result.property_id && String(result.property_id).length > 10
-        ? String(result.property_id)
-        : null;
-
-    const analysis = result.analysis || {};
-    const candidateName = String(analysis.prospect_name || "").slice(0, 120) || null;
-    const detectedIncome =
-      analysis.detected_income !== null && analysis.detected_income !== undefined
-        ? clampInt(analysis.detected_income, 0, 1_000_000, 0)
-        : null;
-
-    const employmentType = normalizeEmployment(analysis.employment_type);
-    const guarantorPresent = !!analysis.guarantor_present;
-
-    const incomeRatio =
-      analysis.income_ratio !== null && analysis.income_ratio !== undefined
-        ? Number(analysis.income_ratio)
-        : null;
-
-    const reply = String(result.email_reply).trim();
-    const subject = (email.subject || "Votre demande").trim().slice(0, 80);
-    const nowIso = new Date().toISOString();
-    const leadJsonWithDraft = {
-      ...result,
-      draft_reply: {
-        text: reply,
-        subject: `Re: ${subject}`,
-        created_at: nowIso,
-      },
-      last_outbound: { type: "draft_reply", at: nowIso },
-    };
-
-    await supabaseAdmin
-      .from("emails")
-      .update({
-        ai_reply: reply,
-        lead_score: leadScore,
-        lead_status: leadStatus,
-        lead_json: leadJsonWithDraft,
-        property_id: propertyId,
-        candidate_name: candidateName,
-        monthly_income: detectedIncome,
-        employment_type: employmentType,
-        guarantor_present: guarantorPresent,
-        income_ratio: incomeRatio,
-        classification_reason: "IMMO_JSON_V1",
-      })
-      .eq("id", email.id);
-
-    const { data: updatedRow } = await supabaseAdmin
-      .from("emails")
-      .select(EMAIL_SELECT)
-      .eq("id", email.id)
-      .eq("user_id", user.id)
-      .single();
-
-    console.log("GEN_REPLY_END", { requestId, updated: true, duration_ms: Date.now() - startMs });
-    return NextResponse.json({
-      ok: true,
-      reply,
-      email: updatedRow ?? email,
-      lead: {
-        lead_score: leadScore,
-        lead_status: leadStatus,
-        property_id: propertyId,
-      },
+    // 6. Appel OpenAI
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [{ role: "user", content: prompt }],
+      temperature: 0.4,
     });
-  } catch (err: any) {
-    console.error("GEN_REPLY_ERROR", { requestId, duration_ms: Date.now() - startMs, error: err?.message ?? err, stack: err?.stack });
-    return NextResponse.json(
-      { ok: false, error: "GENERATE_REPLY_FAILED", message: err?.message ?? null },
-      { status: 500 }
-    );
+
+    const reply = completion.choices[0]?.message?.content?.trim() || null;
+    if (!reply) return NextResponse.json({ error: "AI_NO_REPLY" }, { status: 500 });
+
+    // 7. Sauvegarde (anti-surcoût)
+    await supabaseAdmin.from("emails").update({ ai_reply: reply }).eq("id", email.id);
+
+    return NextResponse.json({ reply });
+  } catch (err) {
+    console.error("GENERATE_REPLY_API_ERROR", err);
+    return NextResponse.json({ error: "GENERATE_REPLY_FAILED" }, { status: 500 });
   }
 }

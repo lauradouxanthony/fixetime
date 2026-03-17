@@ -3,225 +3,84 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { logActivity } from "@/lib/activity/logActivity";
 
-export const runtime = "nodejs";
-export const maxDuration = 60;
-
 export async function POST(req: Request) {
-  const startedAt = Date.now();
-  let userId: string | null = null;
+  const t0 = Date.now();
+  console.log("[ANALYZE-NOW] ▶ Démarrée", new Date().toISOString());
+
   try {
     const supabase = await supabaseServer();
-    const {
-      data: { user },
-    } = await supabase.auth.getUser();
+    const { data: { user } } = await supabase.auth.getUser();
 
     if (!user) {
       return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
     }
-    userId = user.id;
 
-    await logActivity({
-      userId: user.id,
-      type: "analyze_now_started",
-      actor: "human",
-      title: "Analyse manuelle declenchee",
-      meta: { status: "info" },
-    });
+    const body = await req.json().catch(() => ({}));
+    const trigger = body?.trigger ?? "auto"; // "manual" | "auto"
+    const baseUrl = process.env.NEXT_PUBLIC_APP_URL || new URL(req.url).origin;
+    const cookie = req.headers.get("cookie") ?? "";
 
-    const [{ data: gTok }, { data: mTok }] = await Promise.all([
-      supabaseAdmin
-        .from("gmail_tokens")
-        .select("user_id")
-        .eq("user_id", user.id)
-        .maybeSingle(),
-      supabaseAdmin
-        .from("microsoft_tokens")
-        .select("user_id")
-        .eq("user_id", user.id)
-        .maybeSingle(),
-    ]);
+    console.log(`[ANALYZE-NOW] user=${user.id} trigger=${trigger}`);
 
-    const hasGoogle = !!gTok?.user_id;
-    const hasMicrosoft = !!mTok?.user_id;
-
-    const origin = new URL(req.url).origin;
-    const cookie = req.headers.get("cookie") || "";
-
-    console.log("INBOX_SYNC_START", {
-      userId,
-      hasGoogle,
-      hasMicrosoft,
-      origin,
-    });
-
-    let gmailInserted = 0;
-    let outlookUpserted = 0;
-
-    if (hasGoogle) {
-      try {
-        const res = await fetch(`${origin}/api/gmail/sync`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", cookie },
-          body: JSON.stringify({ user_id: user.id }),
-          cache: "no-store",
-        });
-        const json = await res.json().catch(() => null);
-        if (res.ok) {
-          gmailInserted = Number(json?.inserted ?? 0);
-        } else {
-          console.error("GMAIL_SYNC_FAILED", { status: res.status, json });
-        }
-      } catch (e: any) {
-        console.error("GMAIL_SYNC_FAILED", { message: e?.message ?? String(e) });
-      }
-    }
-
-    if (hasMicrosoft) {
-      try {
-        const res = await fetch(`${origin}/api/outlook/sync`, {
-          method: "POST",
-          headers: { "Content-Type": "application/json", cookie },
-          body: JSON.stringify({ user_id: user.id }),
-          cache: "no-store",
-        });
-        const json = await res.json().catch(() => null);
-        if (res.ok) {
-          outlookUpserted = Number(json?.upserted ?? 0);
-        } else {
-          console.error("OUTLOOK_SYNC_FAILED", { status: res.status, json });
-        }
-      } catch (e: any) {
-        console.error("OUTLOOK_SYNC_FAILED", { message: e?.message ?? String(e) });
-      }
-    }
-
-    const { data: settingsRow } = await supabaseAdmin
-      .from("settings_v1")
-      .select("assistant_enabled")
-      .eq("user_id", user.id)
-      .maybeSingle();
-
-    if ((settingsRow as any)?.assistant_enabled === false) {
-      await logActivity({
-        userId: user.id,
-        type: "analyze_now_completed",
-        actor: "human",
-        title: "Sync OK — Assistant désactivé, pas d'analyse",
-        meta: { status: "assistant_disabled" },
-      });
-
-      const { data: newest } = await supabaseAdmin
-        .from("emails")
-        .select("received_at")
-        .eq("user_id", user.id)
-        .order("received_at", { ascending: false })
-        .limit(1)
-        .maybeSingle();
-
-      console.log("INBOX_SYNC_END", {
-        userId,
-        gmail_inserted: gmailInserted,
-        outlook_upserted: outlookUpserted,
-        newest_received_at: newest?.received_at ?? null,
-        duration_ms: Date.now() - startedAt,
-        assistant_enabled: false,
-      });
-
-      return NextResponse.json({
-        success: true,
-        started: true,
-        sync: {
-          gmail_inserted: gmailInserted,
-          outlook_upserted: outlookUpserted,
-        },
-        analyze: { analyzed: 0, status: "assistant_disabled", remaining: null },
-        newest_received_at: newest?.received_at ?? null,
-        duration_ms: Date.now() - startedAt,
-      });
-    }
-
-    const analyzeRes = await fetch(`${origin}/api/ai/analyze-inbox`, {
+    // =========================
+    // 1) SYNC GMAIL — PRIORITAIRE : on attend qu'il finisse
+    //    mode=quick pour refresh manuel (50 msgs INBOX, rapide)
+    //    mode=full  pour cron (200 msgs, complet)
+    // =========================
+    const syncRes = await fetch(`${baseUrl}/api/gmail/sync`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        cookie,
-        "x-fixetime-analyze-now": "true",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         user_id: user.id,
-        period: "30d",
-        limit: 15,
-        force: false,
+        mode: trigger === "manual" ? "quick" : "full",
       }),
       cache: "no-store",
     });
 
-    const analyzeJson = await analyzeRes.json().catch(() => null);
+    const syncJson = await syncRes.json().catch(() => ({}));
+    const syncMs = Date.now() - t0;
 
-    if (!analyzeRes.ok) {
-      console.error("INBOX_SYNC_ERROR", {
-        userId,
-        phase: "analyze",
-        status: analyzeRes.status,
-        body: analyzeJson,
-      });
-      return NextResponse.json(
-        { error: "ANALYZE_INBOX_FAILED", details: analyzeJson },
-        { status: 500 }
+    if (!syncRes.ok) {
+      console.error("[ANALYZE-NOW] ❌ Sync Gmail échoué:", syncJson);
+    } else {
+      console.log(
+        `[ANALYZE-NOW] ✅ Sync Gmail OK en ${syncMs}ms — nouveaux=${syncJson.inserted ?? "?"} parcourus=${syncJson.fetched ?? "?"}`
       );
     }
 
-    await logActivity({
-      userId: user.id,
-      type: "analyze_now_completed",
-      actor: "human",
-      title: "Analyse terminee",
-      meta: { status: "success" },
+    // =========================
+    // 2) ANALYSE IA — BACKGROUND : on ne bloque pas le retour
+    //    → le frontend peut afficher les nouveaux emails de suite
+    //    → l'IA classe en arrière-plan (~30-60s)
+    // =========================
+    fetch(`${baseUrl}/api/ai/analyze-inbox`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-fixetime-cron-key": process.env.FIXETIME_INTERNAL_CRON_KEY || "",
+        ...(cookie ? { cookie } : {}),
+      },
+      body: JSON.stringify({ user_id: user.id, period: "30d" }),
+      cache: "no-store",
+    }).then(async (aiRes) => {
+      const aiJson = await aiRes.json().catch(() => ({}));
+      console.log(`[ANALYZE-NOW] ✅ Analyse IA terminée: ${JSON.stringify(aiJson)}`);
+    }).catch((err) => {
+      console.error("[ANALYZE-NOW] ❌ Analyse IA erreur background:", err);
     });
 
-    const { data: newest } = await supabaseAdmin
-      .from("emails")
-      .select("received_at")
-      .eq("user_id", user.id)
-      .order("received_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    console.log("INBOX_SYNC_END", {
-      userId,
-      gmail_inserted: gmailInserted,
-      outlook_upserted: outlookUpserted,
-      analyzed: analyzeJson?.analyzed ?? null,
-      newest_received_at: newest?.received_at ?? null,
-      duration_ms: Date.now() - startedAt,
-    });
-
+    // =========================
+    // 3) RÉPONSE IMMÉDIATE après sync
+    // =========================
     return NextResponse.json({
       success: true,
-      started: true,
-      sync: {
-        gmail_inserted: gmailInserted,
-        outlook_upserted: outlookUpserted,
-      },
-      analyze: analyzeJson,
-      newest_received_at: newest?.received_at ?? null,
-      duration_ms: Date.now() - startedAt,
+      trigger,
+      sync: syncJson,
+      ai: "running_background",
     });
-  } catch (e: any) {
-    console.error("INBOX_SYNC_ERROR", {
-      userId,
-      message: e?.message ?? String(e),
-      stack: e?.stack,
-    });
-    if (userId) {
-      await logActivity({
-        userId,
-        type: "analyze_now_error",
-        actor: "system",
-        title: "Erreur analyse manuelle",
-        meta: { status: "error" },
-      });
-    }
+
+  } catch (e) {
+    console.error("[ANALYZE-NOW] FATAL:", e);
     return NextResponse.json({ error: "ANALYZE_NOW_FAILED" }, { status: 500 });
   }
 }

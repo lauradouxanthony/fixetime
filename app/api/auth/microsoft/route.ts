@@ -19,24 +19,23 @@ export async function GET() {
     return new NextResponse("Missing MICROSOFT_REDIRECT_URI", { status: 500 });
   }
 
+  const tenant = process.env.MICROSOFT_TENANT_ID ?? "common";
+
   const params = new URLSearchParams({
     client_id: process.env.MICROSOFT_CLIENT_ID!,
-    response_type: "code",
     redirect_uri: redirectUri,
+    response_type: "code",
     response_mode: "query",
-    // scopes: mail + calendar + offline_access (refresh token)
     scope: [
       "offline_access",
-      "User.Read",
-      "Mail.Read",
       "Mail.ReadWrite",
-      "Calendars.Read",
-    ].join(" "),    
-        prompt: "consent",
+      "Calendars.ReadWrite",
+      "User.Read",
+    ].join(" "),
     state: data.user.id,
   });
 
   return NextResponse.redirect(
-    `https://login.microsoftonline.com/common/oauth2/v2.0/authorize?${params.toString()}`
+    `https://login.microsoftonline.com/${tenant}/oauth2/v2.0/authorize?${params.toString()}`
   );
 }

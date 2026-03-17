@@ -1,6 +1,5 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { DEFAULT_SETTINGS, deepMerge } from "@/app/api/settings/route";
 import { isInQuietHours } from "@/lib/autopilot/guardrails";
 
 export const runtime = "nodejs";
@@ -77,18 +76,6 @@ export async function GET(req: Request) {
     run("db_microsoft_tokens", async () => {
       const { error } = await supabaseAdmin.from("microsoft_tokens").select("user_id").limit(1);
       return { ok: !error, details: error?.message ?? "ok" };
-    }),
-
-    run("settings_merge", async () => {
-      const merged = deepMerge(DEFAULT_SETTINGS, { config: {} });
-      const cfg = (merged as any)?.config ?? {};
-      const guard = cfg.autopilot_guardrails ?? {};
-      const keys = ["require_calendar_connected", "quiet_hours", "max_autopilot_emails_per_hour", "require_property_match_for_location", "require_faq_match_for_information"];
-      const hasGuard = keys.every((k) => guard[k] !== undefined);
-      const hasMinNotice = cfg.scheduling_rules?.min_notice_hours !== undefined;
-      const faqArray = Array.isArray(cfg.faq_items);
-      const ok = hasGuard && hasMinNotice && faqArray;
-      return { ok, details: { autopilot_guardrails_keys: hasGuard ? keys.length : 0, min_notice_hours: hasMinNotice, faq_items_is_array: faqArray } };
     }),
 
     run("route_setup_status", async () => {
