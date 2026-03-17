@@ -617,6 +617,69 @@ IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
         }
       }
 
+      // ── BLOC 1 OVERRIDE : forcer LOCATION si PJ ou mots-clés document ──────
+      // RÈGLE ABSOLUE : avant toute classification finale, si email porte des
+      // pièces jointes physiques OU des mots-clés d'envoi de documents, on force
+      // category=LOCATION + etape=DOSSIER_RECU, quelle que soit l'intention IA.
+      {
+        const docForcedKeywords = [
+          "ci-joint", "ci joint", "en pièce jointe", "en pj",
+          "voici ma", "voici mon", "voici mes", "voici le dossier",
+          "pièce d'identité", "carte d'identité", "carte nationale d'identité", "CNI",
+          "fiche de paie", "fiches de paie", "bulletin de salaire", "bulletin de paie",
+          "contrat de travail", "contrat cdi", "contrat cdd",
+          "avis d'imposition", "avis fiscal", "déclaration fiscale",
+          "mes documents", "mon dossier", "le dossier",
+          "vous trouverez", "je vous envoie", "je vous joins", "je joins",
+          "j'envoie", "j'ai joint", "en annexe", "je vous transmets",
+          "je vous adresse", "je vous fais parvenir", "je vous fais suivre",
+          "pièces jointes", "documents joints", "scan", "justificatif",
+        ];
+        const bodyLower = content.toLowerCase();
+        const emailHasPhysicalAtts = ((email as any).attachments as any[] ?? []).length > 0;
+        const emailHasDocKeywords = docForcedKeywords.some(k => bodyLower.includes(k.toLowerCase()));
+
+        if ((emailHasPhysicalAtts || emailHasDocKeywords) && result.intention !== "LOCATION") {
+          console.log(`[ANALYZE-INBOX][BLOC1-OVERRIDE] Forçage LOCATION: physicalAtts=${emailHasPhysicalAtts} docKeywords=${emailHasDocKeywords} | intention originale=${result.intention}`);
+          result.intention = "LOCATION";
+          result.decision = "TRAITER";
+          result.priority = "IMPORTANT";
+          if (!classificationReason.includes("RDV")) {
+            classificationReason = emailHasPhysicalAtts
+              ? "Reclassifié LOCATION — pièces jointes physiques détectées"
+              : "Reclassifié LOCATION — mots-clés envoi de documents détectés";
+          }
+        }
+
+        // Thread link : si l'email appartient à un thread avec un email LOCATION,
+        // et que threadProspectData est null, chercher le prospect_data du thread LOCATION
+        if (!threadProspectData && (email as any).thread_id) {
+          try {
+            const { data: locationThreadEmails } = await supabaseAdmin
+              .from("emails")
+              .select("id, prospect_data, received_at")
+              .eq("user_id", email.user_id)
+              .eq("thread_id", (email as any).thread_id)
+              .eq("category", "LOCATION")
+              .neq("id", email.id)
+              .not("prospect_data", "is", null)
+              .order("received_at", { ascending: true });
+
+            if (locationThreadEmails && locationThreadEmails.length > 0) {
+              let accumulated: Record<string, unknown> = {};
+              for (const t of locationThreadEmails) {
+                accumulated = mergeProspect(accumulated, t.prospect_data as Record<string, unknown>);
+              }
+              threadProspectData = accumulated;
+              isFollowUp = true;
+              console.log(`[ANALYZE-INBOX][BLOC1-OVERRIDE] Thread LOCATION trouvé: ${locationThreadEmails.length} email(s), etape=${accumulated.etape_process ?? "NEW"}`);
+            }
+          } catch (e) {
+            console.warn("[ANALYZE-INBOX][BLOC1-OVERRIDE] Thread LOCATION check échoué:", e);
+          }
+        }
+      }
+
       // ── Extraction IA données prospect (LOCATION uniquement) ─────────────
       let prospectData: Record<string, unknown> | null = null;
       let matchedPropertyId: string | null = null; // BLOC 3
@@ -735,11 +798,17 @@ JSON attendu:
         // BLOC 4 : PJ physiques OU mention textuelle d'envoi de documents
         physicalAttachments = ((email as any).attachments as any[] ?? []).length > 0;
         const docSentKeywords = [
-          "ci-joint", "ci joint", "pièce jointe", "pièces jointes",
+          "ci-joint", "ci joint", "en pièce jointe", "pièce jointe", "pièces jointes", "en pj",
+          "voici ma", "voici mon", "voici mes", "voici le dossier",
+          "pièce d'identité", "carte d'identité", "carte nationale", "CNI",
+          "fiche de paie", "fiches de paie", "bulletin de salaire", "bulletin de paie",
+          "contrat de travail", "contrat cdi", "contrat cdd",
+          "avis d'imposition", "avis fiscal",
           "vous trouverez", "je vous envoie", "je vous joins", "je joins",
-          "j'envoie", "j'ai joint", "en annexe", "en pièce", "vous faire parvenir",
-          "je vous transmets", "je vous fais parvenir", "voici mes documents",
-          "mes documents", "mon dossier", "je vous adresse",
+          "j'envoie", "j'ai joint", "en annexe", "vous faire parvenir",
+          "je vous transmets", "je vous fais parvenir", "je vous adresse",
+          "mes documents", "mon dossier", "le dossier", "documents joints",
+          "scan", "justificatif", "je vous fais suivre",
         ];
         const textMentionsDocsSent = docSentKeywords.some(k => content.toLowerCase().includes(k));
         const hasAttachments = physicalAttachments || textMentionsDocsSent;
@@ -820,8 +889,10 @@ JSON attendu:
         decision: decisionMap[result.decision] ?? "traiter",
         estimated_time: result.estimated_time ?? 5,
         recommended_action: actionMap[result.recommended_action] ?? "reply",
+        // BLOC 1 : emails reclassifiés LOCATION par doc override → score ≥ 8 (is_important)
         is_urgent: result.priority === "URGENT",
-        is_important: rdvConfirmed ? true : result.priority === "IMPORTANT",
+        is_important: rdvConfirmed ? true : result.priority === "IMPORTANT" ||
+          (isLocationEmail && classificationReason.includes("Reclassifié LOCATION")),
         category: intentionMap[result.intention] ?? "INFO",
         classification_reason: classificationReason,
       };

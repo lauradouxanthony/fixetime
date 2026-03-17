@@ -21,6 +21,7 @@ type Lead = {
   is_important: boolean | null;
   classification_reason: string | null;
   property_id?: string | null;
+  attachments?: unknown[] | null;
   prospect_data: {
     nom?: string | null;
     situation_pro?: string | null;
@@ -149,6 +150,37 @@ function LeadCard({
           {lead.summary}
         </div>
       )}
+
+      {/* ── BLOC 4 : Barre progression dossier (DOSSIER_DEMANDE / DOSSIER_RECU) ── */}
+      {(etape === "DOSSIER_DEMANDE" || etape === "DOSSIER_RECU") && (() => {
+        const atts = (lead.attachments ?? []) as any[];
+        const totalDocs = 4;
+        const docsFound = new Set<string>();
+        atts.forEach(att => {
+          const dt = att.docTypes as Record<string, boolean> | undefined;
+          if (dt) { for (const [k, v] of Object.entries(dt)) { if (v) docsFound.add(k); } }
+        });
+        if (docsFound.has("contrat_travail")) docsFound.add("contrat");
+        const count = Math.min(docsFound.size, totalDocs);
+        const pct = Math.round((count / totalDocs) * 100);
+        const barColor = pct >= 100 ? "rgb(22,163,74)" : pct >= 50 ? "rgb(234,88,12)" : "rgb(220,38,38)";
+        return (
+          <div className="pt-1">
+            <div className="flex items-center justify-between mb-1">
+              <span className="text-xs" style={{ color: "rgb(100 116 139)" }}>Dossier</span>
+              <span className="text-xs font-medium" style={{ color: barColor }}>
+                {count}/{totalDocs} docs
+              </span>
+            </div>
+            <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: "rgb(226 232 240)" }}>
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{ width: `${pct}%`, background: barColor }}
+              />
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── BLOC 5 : Boutons visite effectuée / annulée ─────────────── */}
       {etape === "VISITE_CONFIRMEE" && (
@@ -397,6 +429,27 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
                     {statusStyle.label}
                   </span>
                 </div>
+                {/* Barre de progression dossier */}
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between text-xs" style={{ color: "rgb(100 116 139)" }}>
+                    <span>{receivedCount}/{total} documents validés</span>
+                    <span>{Math.round((receivedCount / Math.max(total, 1)) * 100)}%</span>
+                  </div>
+                  <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: "rgba(226,232,240,0.6)" }}>
+                    <div
+                      className="h-full rounded-full transition-all duration-500"
+                      style={{
+                        width: `${Math.round((receivedCount / Math.max(total, 1)) * 100)}%`,
+                        background: dossierStatus === "COMPLET"
+                          ? "rgb(22 163 74)"
+                          : dossierStatus === "PARTIEL"
+                          ? "rgb(234 88 12)"
+                          : "rgb(220 38 38)",
+                      }}
+                    />
+                  </div>
+                </div>
+
                 <div className="space-y-1">
                   {docs.map(doc => {
                     const received = receivedKeys.has(doc.key);
@@ -532,7 +585,7 @@ export default function LeadsPage() {
     since.setDate(since.getDate() - 30);
 
     // Tenter de récupérer property_id (graceful si colonne manquante)
-    let selectFields = "id, sender, subject, summary, body, received_at, category, is_urgent, is_important, classification_reason, prospect_data";
+    let selectFields = "id, sender, subject, summary, body, received_at, category, is_urgent, is_important, classification_reason, prospect_data, attachments";
     const { data } = await supabase
       .from("emails")
       .select(selectFields)
