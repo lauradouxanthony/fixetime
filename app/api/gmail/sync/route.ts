@@ -91,28 +91,42 @@ export async function POST(req: NextRequest) {
       .not("gmail_message_id", "is", null);
 
     // Tous les IDs connus
-    // Fonction helper : extraire les pièces jointes (récursif)
-    // Accepte aussi les payloads sans parts (fichier direct en pièce jointe)
-    function extractAttachments(payload: any): { filename: string; mimeType: string; attachmentId: string | null; size: number }[] {
-      const result: { filename: string; mimeType: string; attachmentId: string | null; size: number }[] = [];
+    // Fonction helper : extraire les pièces jointes (récursif, version robuste)
+    // RÈGLE : on ne garde que les parts avec attachmentId (vraies PJ, pas les images inline)
+    function extractAttachments(payload: any): { filename: string; mimeType: string; attachmentId: string; size: number }[] {
+      const result: { filename: string; mimeType: string; attachmentId: string; size: number }[] = [];
+      const seen = new Set<string>();
+
       const scan = (part: any) => {
-        if (part?.filename && part.filename.length > 0) {
-          result.push({
-            filename: part.filename,
-            mimeType: part.mimeType ?? "application/octet-stream",
-            attachmentId: part.body?.attachmentId ?? null,
-            size: part.body?.size ?? 0,
-          });
+        if (!part) return;
+        // PJ réelle : doit avoir un attachmentId ET un nom de fichier non-vide
+        if (part.body?.attachmentId && part.filename && part.filename.trim().length > 0) {
+          const key = `${part.body.attachmentId}:${part.filename}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            result.push({
+              filename: part.filename.trim(),
+              mimeType: part.mimeType ?? "application/octet-stream",
+              attachmentId: part.body.attachmentId,
+              size: part.body.size ?? 0,
+            });
+          }
         }
-        if (part?.parts) {
+        // Scanner récursivement les sous-parties
+        if (Array.isArray(part.parts)) {
           part.parts.forEach(scan);
         }
       };
-      if (payload?.parts) {
-        payload.parts.forEach(scan);
-      } else if (payload) {
+
+      // Scanner le payload lui-même (cas extrême : payload = PJ directe)
+      if (payload) {
         scan(payload);
+        // Scanner aussi payload.parts directement (cas standard multipart)
+        if (Array.isArray(payload.parts)) {
+          payload.parts.forEach(scan);
+        }
       }
+
       return result;
     }
 
@@ -259,9 +273,20 @@ export async function POST(req: NextRequest) {
         }
         const emailBody = getBody(detail.payload);
 
-        // Extraire les pièces jointes (récursif, depuis le payload complet)
+        // ── DIAGNOSTIC PJ ──────────────────────────────────────────────────
+        const payloadMimeType = detail.payload?.mimeType ?? "unknown";
+        const partsCount = (detail.payload?.parts ?? []).length;
+        console.log(`[GMAIL SYNC][PJ] msg=${msg.id} mimeType=${payloadMimeType} parts=${partsCount}`);
+        if (partsCount > 0) {
+          const partsLog = (detail.payload.parts as any[]).map((p: any) => ({
+            mime: p.mimeType, filename: p.filename || "", hasData: !!p.body?.data, hasAttId: !!p.body?.attachmentId,
+          }));
+          console.log(`[GMAIL SYNC][PJ] parts=`, JSON.stringify(partsLog));
+        }
+
+        // Extraire les pièces jointes (récursif, version robuste avec attachmentId requis)
         const attachments = extractAttachments(detail.payload);
-        console.log(`[GMAIL SYNC][PJ] msg=${msg.id} → ${attachments.length} PJ détectée(s)${attachments.length > 0 ? ": " + attachments.map((a: any) => a.filename).join(", ") : ""}`);
+        console.log(`[GMAIL SYNC][PJ] msg=${msg.id} → ${attachments.length} PJ réelle(s)${attachments.length > 0 ? ": " + attachments.map((a: any) => a.filename).join(", ") : " (aucune PJ avec attachmentId)"}`);
 
         // Approche simplifiée : lien Gmail direct + auto-détection du type de document
         const gmailLink = buildGmailLink(msg.id);

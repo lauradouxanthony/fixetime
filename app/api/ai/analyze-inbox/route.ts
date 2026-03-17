@@ -763,13 +763,60 @@ JSON attendu:
         prospectData.etape_process = newEtape;
       }
 
+      // ── BLOC 2F : Résumé IA enrichi pour les emails LOCATION ─────────────
+      function buildEnrichedSummary(): string | null {
+        if (!isLocationEmail) return typeof result.summary === "string" ? result.summary : null;
+        if (rdvConfirmed) return `✅ RDV de visite confirmé par ${email.sender?.split("@")[0] || "le prospect"}`;
+
+        const parts: string[] = [];
+        const pd = prospectData ?? {};
+
+        // Nom prospect
+        const nom = (pd.nom_prenom as string) || (pd.nom as string) || null;
+        if (nom) parts.push(nom);
+
+        // Situation professionnelle
+        const sit = (pd.situation_pro as string) || null;
+        if (sit) parts.push(sit);
+
+        // Revenus + loyer + ratio
+        const rev = parseFloat(String(pd.revenus ?? "")) || null;
+        const loy = parseFloat(String(pd.loyer ?? "")) || null;
+        if (rev && loy && loy > 0) {
+          const ratio = (rev / loy).toFixed(1);
+          parts.push(`${rev.toLocaleString("fr-FR")}€/mois — loyer ${loy.toLocaleString("fr-FR")}€ — Ratio ${ratio}x`);
+        } else if (rev) {
+          parts.push(`${rev.toLocaleString("fr-FR")}€/mois`);
+        }
+
+        // Étape
+        const etapeLabelMap: Record<string, string> = {
+          NEW: "Nouveau",
+          QUALIFICATION: "En qualification",
+          VISITE_PROPOSEE: "Visite proposée",
+          VISITE_CONFIRMEE: "Visite confirmée",
+          DOSSIER_DEMANDE: "Dossier demandé",
+          DOSSIER_RECU: "Dossier reçu",
+          VALIDE: "Validé",
+          REFUSE: "Refusé",
+        };
+        const etapeLabel = etapeLabelMap[(pd.etape_process as string) ?? ""] ?? null;
+        if (etapeLabel && etapeLabel !== "Nouveau") parts.push(etapeLabel);
+
+        // Fallback: résumé IA si pas assez d'infos
+        if (parts.length === 0) {
+          return isFollowUp
+            ? `↩️ Réponse — ${typeof result.summary === "string" ? result.summary : "nouvelles informations"}`
+            : typeof result.summary === "string" ? result.summary : null;
+        }
+
+        const prefix = isFollowUp ? "↩️ " : "";
+        return prefix + parts.join(" — ");
+      }
+
       // ── Mise à jour DB principale ─────────────────────────────────────────
       const mainUpdate: Record<string, unknown> = {
-        summary: rdvConfirmed
-          ? `✅ RDV de visite confirmé par ${email.sender?.split("@")[0] || "le prospect"}`
-          : isFollowUp
-          ? `↩️ Réponse — ${typeof result.summary === "string" ? result.summary : "nouvelles informations du prospect"}`
-          : typeof result.summary === "string" ? result.summary : null,
+        summary: buildEnrichedSummary(),
         decision: decisionMap[result.decision] ?? "traiter",
         estimated_time: result.estimated_time ?? 5,
         recommended_action: actionMap[result.recommended_action] ?? "reply",

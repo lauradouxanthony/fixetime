@@ -41,6 +41,8 @@ export default function PipelinePage() {
   const [now, setNow] = useState(new Date());
   const [search, setSearch] = useState("");
   const [syncNotif, setSyncNotif] = useState<string | null>(null);
+  const [showHorsSujet, setShowHorsSujet] = useState(false);
+  const [realtimeNotif, setRealtimeNotif] = useState<string | null>(null);
 
   // Tick toutes les 10s pour mettre à jour "il y a Xs"
   useEffect(() => {
@@ -162,6 +164,34 @@ export default function PipelinePage() {
     return () => clearInterval(interval);
   }, [fetchEmailsSilent]);
 
+  // Realtime — notification quand un nouvel email arrive (BLOC 2G)
+  useEffect(() => {
+    let userId: string | null = null;
+    supabase.auth.getUser().then(({ data }) => {
+      userId = data?.user?.id ?? null;
+      if (!userId) return;
+
+      const channel = supabase
+        .channel("emails-realtime")
+        .on(
+          "postgres_changes",
+          { event: "INSERT", schema: "public", table: "emails", filter: `user_id=eq.${userId}` },
+          (payload) => {
+            const newEmail = payload.new as { sender?: string; category?: string };
+            const senderRaw = newEmail?.sender ?? "";
+            const senderName = senderRaw.replace(/<.*>/, "").trim() || senderRaw;
+            setRealtimeNotif(`🔔 Nouvel email de ${senderName}`);
+            setTimeout(() => setRealtimeNotif(null), 5000);
+            // Re-fetch silencieux pour afficher le nouvel email
+            fetchEmailsSilent();
+          }
+        )
+        .subscribe();
+
+      return () => { supabase.removeChannel(channel); };
+    });
+  }, [fetchEmailsSilent]);
+
   // Refresh manuel
   const handleRefresh = async () => {
     if (refreshing) return;
@@ -221,15 +251,20 @@ export default function PipelinePage() {
   }, [emails]);
 
   const filteredEmails = useMemo(() => {
-    if (!search.trim()) return emails;
+    let list = emails;
+    // BLOC 3C : masquer HORS_SUJET par défaut (sauf si filtre explicite ou showHorsSujet)
+    if (!showHorsSujet && intentionFilter === "all") {
+      list = list.filter((e) => e.category !== "HORS_SUJET");
+    }
+    if (!search.trim()) return list;
     const q = search.toLowerCase();
-    return emails.filter(
+    return list.filter(
       (e) =>
         e.subject?.toLowerCase().includes(q) ||
         e.sender?.toLowerCase().includes(q) ||
         e.summary?.toLowerCase().includes(q)
     );
-  }, [emails, search]);
+  }, [emails, search, showHorsSujet, intentionFilter]);
 
   return (
     <AppShell>
@@ -305,6 +340,16 @@ export default function PipelinePage() {
                   }}
                 >
                   {syncNotif}
+                </span>
+              )}
+
+              {/* Notification Realtime (BLOC 2G) */}
+              {realtimeNotif && (
+                <span
+                  className="text-xs px-2.5 py-1 rounded-lg font-medium animate-pulse"
+                  style={{ background: "rgba(79,70,229,0.1)", color: "rgb(79,70,229)" }}
+                >
+                  {realtimeNotif}
                 </span>
               )}
             </div>
@@ -401,15 +446,51 @@ export default function PipelinePage() {
         <div className="flex flex-1 overflow-hidden">
           {/* Liste emails */}
           <div
-            className="w-80 border-r overflow-y-auto flex-shrink-0"
+            className="w-80 border-r overflow-y-auto flex-shrink-0 flex flex-col"
             style={{ borderColor: "rgb(226 232 240)", background: "white" }}
           >
-            <EmailsList
-              emails={filteredEmails}
-              selectedEmailId={selectedEmail?.id || null}
-              onSelect={(email) => setSelectedEmail(email as Email)}
-              loading={loading}
-            />
+            <div className="flex-1 overflow-y-auto">
+              <EmailsList
+                emails={filteredEmails}
+                selectedEmailId={selectedEmail?.id || null}
+                onSelect={(email) => setSelectedEmail(email as Email)}
+                loading={loading}
+              />
+            </div>
+
+            {/* BLOC 3C : Bouton "Voir hors sujet" */}
+            {!showHorsSujet && intentionFilter === "all" && stats.horssujet > 0 && (
+              <div
+                className="px-4 py-2 border-t flex-shrink-0"
+                style={{ borderColor: "rgb(226 232 240)" }}
+              >
+                <button
+                  onClick={() => setShowHorsSujet(true)}
+                  className="w-full text-xs py-1.5 rounded-lg transition-colors"
+                  style={{ color: "rgb(148 163 184)" }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgb(248 250 252)"; (e.currentTarget as HTMLElement).style.color = "rgb(100 116 139)"; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; (e.currentTarget as HTMLElement).style.color = "rgb(148 163 184)"; }}
+                >
+                  Voir {stats.horssujet} hors sujet masqué{stats.horssujet > 1 ? "s" : ""}
+                </button>
+              </div>
+            )}
+            {showHorsSujet && intentionFilter === "all" && stats.horssujet > 0 && (
+              <div
+                className="px-4 py-2 border-t flex-shrink-0"
+                style={{ borderColor: "rgb(226 232 240)" }}
+              >
+                <button
+                  onClick={() => setShowHorsSujet(false)}
+                  className="w-full text-xs py-1.5 rounded-lg transition-colors"
+                  style={{ color: "rgb(148 163 184)" }}
+                  onMouseEnter={(e) => { (e.currentTarget as HTMLElement).style.background = "rgb(248 250 252)"; }}
+                  onMouseLeave={(e) => { (e.currentTarget as HTMLElement).style.background = "transparent"; }}
+                >
+                  Masquer les hors sujet
+                </button>
+              </div>
+            )}
           </div>
 
           {/* Détail email */}
