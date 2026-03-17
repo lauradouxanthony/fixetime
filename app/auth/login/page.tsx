@@ -41,8 +41,8 @@ export default function LoginPage() {
         style={{ background: "linear-gradient(135deg, rgb(79 70 229) 0%, rgb(55 48 163) 100%)" }}
       >
         {/* Logo dans conteneur blanc */}
-        <div className="flex items-center">
-          <div className="h-16 flex items-center rounded-2xl overflow-hidden" style={{ background: "rgba(255,255,255,0.96)", padding: "10px 18px" }}>
+        <div className="flex items-center gap-3">
+          <div className="h-20 flex items-center rounded-2xl overflow-hidden" style={{ background: "rgba(255,255,255,0.96)", padding: "12px 20px" }}>
             <img src="/logo-fixtime.png" alt="FixTime" className="h-full w-auto object-contain" />
           </div>
         </div>
@@ -90,11 +90,6 @@ export default function LoginPage() {
       {/* ── Colonne droite — formulaire ── */}
       <div className="flex-1 flex flex-col items-center justify-center px-8 bg-white">
         <div className="w-full max-w-sm space-y-7">
-          {/* Logo couleur */}
-          <div className="flex flex-col items-center gap-2">
-            <img src="/logo-fixtime.png" alt="FixTime" className="h-14 w-auto object-contain" />
-          </div>
-
           {/* Titre */}
           <div className="text-center">
             <h2 className="text-2xl font-bold" style={{ color: "rgb(30 41 59)" }}>Accéder à mon espace</h2>

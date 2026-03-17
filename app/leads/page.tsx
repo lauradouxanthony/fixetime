@@ -85,11 +85,13 @@ function LeadCard({
   onVisiteEffectuee,
   onVisiteAnnulee,
   onMoveToStage,
+  onSelect,
 }: {
   lead: Lead;
   onVisiteEffectuee: (id: string) => void;
   onVisiteAnnulee: (id: string) => void;
   onMoveToStage: (id: string, etape: EtapeProcess) => void;
+  onSelect: (lead: Lead) => void;
 }) {
   const etape = getEtapeFromLead(lead);
   const config = ETAPE_CONFIG[etape];
@@ -102,10 +104,11 @@ function LeadCard({
 
   return (
     <div
-      className="rounded-xl border p-3 space-y-2 bg-white transition-shadow hover:shadow-sm"
+      className="rounded-xl border p-3 space-y-2 bg-white transition-shadow hover:shadow-md cursor-pointer"
       style={{
         borderColor: tooOld ? "rgba(220,38,38,0.3)" : "rgb(226 232 240)",
       }}
+      onClick={() => onSelect(lead)}
     >
       {/* Nom + badge étape */}
       <div className="flex items-center justify-between gap-2">
@@ -151,14 +154,14 @@ function LeadCard({
       {etape === "VISITE_CONFIRMEE" && (
         <div className="grid grid-cols-2 gap-1.5 pt-1">
           <button
-            onClick={() => onVisiteEffectuee(lead.id)}
+            onClick={(e) => { e.stopPropagation(); onVisiteEffectuee(lead.id); }}
             className="text-xs py-1.5 rounded-lg font-medium text-center"
             style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22 163 74)" }}
           >
             ✅ Visite effectuée
           </button>
           <button
-            onClick={() => onVisiteAnnulee(lead.id)}
+            onClick={(e) => { e.stopPropagation(); onVisiteAnnulee(lead.id); }}
             className="text-xs py-1.5 rounded-lg font-medium text-center"
             style={{ background: "rgba(220,38,38,0.08)", color: "rgb(220 38 38)" }}
           >
@@ -175,7 +178,7 @@ function LeadCard({
           .map(s => (
             <button
               key={s}
-              onClick={() => onMoveToStage(lead.id, s)}
+              onClick={(e) => { e.stopPropagation(); onMoveToStage(lead.id, s); }}
               className="text-xs px-1.5 py-0.5 rounded-md"
               style={{
                 background: ETAPE_CONFIG[s].bg,
@@ -191,6 +194,233 @@ function LeadCard({
   );
 }
 
+/* ─── ProspectDrawer ─── */
+function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVisiteAnnulee }: {
+  lead: Lead;
+  onClose: () => void;
+  onMoveToStage: (id: string, etape: EtapeProcess) => void;
+  onVisiteEffectuee: (id: string) => void;
+  onVisiteAnnulee: (id: string) => void;
+}) {
+  const pd = lead.prospect_data;
+  const etape = getEtapeFromLead(lead);
+  const config = ETAPE_CONFIG[etape];
+  const nom = pd?.nom || (lead.sender || "Inconnu").replace(/<.*>/, "").trim();
+  const revenus = pd?.revenus_mensuels ?? null;
+  const loyer = pd?.loyer_max ?? null;
+  const ratio = revenus && loyer ? (revenus / loyer) : null;
+  const solvable = ratio ? ratio >= 3 : null;
+
+  const [timeline, setTimeline] = useState<Array<{ id: string; action_type: string; description: string | null; created_at: string }>>([]);
+  const [noteText, setNoteText] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+  const { toast } = useToast();
+
+  const ACTION_ICONS: Record<string, string> = {
+    EMAIL_RECU: "📧", IA_REPONDU: "🤖", PROSPECT_REPONDU: "📧",
+    VISITE_PROPOSEE: "📅", VISITE_CONFIRMEE: "✅", VISITE_EFFECTUEE: "🏠",
+    DOSSIER_DEMANDE: "📋", DOCUMENT_RECU: "📎", VALIDE: "🎉",
+    REFUSE: "❌", RELANCE: "🔁", NOTE_INTERNE: "📝",
+  };
+
+  useEffect(() => {
+    fetch(`/api/leads/${lead.id}/timeline`)
+      .then(r => r.json())
+      .then(d => setTimeline(d.timeline ?? []))
+      .catch(() => {});
+  }, [lead.id]);
+
+  const saveNote = async () => {
+    if (!noteText.trim() || savingNote) return;
+    setSavingNote(true);
+    try {
+      await fetch(`/api/leads/${lead.id}/timeline`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action_type: "NOTE_INTERNE", description: noteText.trim(), metadata: { internal: true } }),
+      });
+      setNoteText("");
+      toast("Note sauvegardée ✅", "success");
+      const r = await fetch(`/api/leads/${lead.id}/timeline`);
+      const d = await r.json();
+      setTimeline(d.timeline ?? []);
+    } finally {
+      setSavingNote(false);
+    }
+  };
+
+  const spMap: Record<string, string> = { CDI: "CDI", CDD: "CDD", AUTO_ENTREPRENEUR: "Auto-entrepreneur", ETUDIANT: "Étudiant", RETRAITE: "Retraité" };
+
+  return (
+    <div className="fixed inset-0 z-50 flex justify-end" style={{ background: "rgba(15,23,42,0.4)" }} onClick={onClose}>
+      <div
+        className="h-full w-full max-w-lg bg-white shadow-2xl overflow-y-auto flex flex-col"
+        onClick={e => e.stopPropagation()}
+      >
+        {/* Header */}
+        <div className="px-6 py-4 border-b flex items-center justify-between sticky top-0 bg-white z-10" style={{ borderColor: "rgb(226 232 240)" }}>
+          <div>
+            <div className="font-semibold text-base" style={{ color: "rgb(30 41 59)" }}>{nom}</div>
+            <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: config.bg, color: config.color, border: `1px solid ${config.border}` }}>
+              {config.label}
+            </span>
+          </div>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+        </div>
+
+        <div className="p-6 space-y-6 flex-1">
+
+          {/* IDENTITÉ */}
+          <div className="space-y-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>Identité</h3>
+            <div className="grid grid-cols-2 gap-3">
+              {pd?.telephone && (
+                <div>
+                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Téléphone</div>
+                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>📞 {pd.telephone}</div>
+                </div>
+              )}
+              {lead.sender && (
+                <div>
+                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Email</div>
+                  <div className="text-sm truncate" style={{ color: "rgb(71 85 105)" }}>{lead.sender.replace(/<.*>/, "").trim()}</div>
+                </div>
+              )}
+              {pd?.situation_pro && (
+                <div>
+                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Situation pro</div>
+                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>{spMap[pd.situation_pro] ?? pd.situation_pro}</div>
+                </div>
+              )}
+              {revenus && (
+                <div>
+                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Revenus nets/mois</div>
+                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>{revenus.toLocaleString("fr-FR")} €</div>
+                </div>
+              )}
+              {loyer && (
+                <div>
+                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Loyer visé</div>
+                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>{loyer.toLocaleString("fr-FR")} €/mois</div>
+                </div>
+              )}
+              {pd?.garant && (
+                <div>
+                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Garant</div>
+                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>{pd.garant}</div>
+                </div>
+              )}
+            </div>
+
+            {/* Ratio solvabilité */}
+            {ratio !== null && (
+              <div className="rounded-lg px-3 py-2 flex items-center gap-2" style={{
+                background: solvable ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.08)",
+                border: `1px solid ${solvable ? "rgba(22,163,74,0.2)" : "rgba(220,38,38,0.2)"}`,
+              }}>
+                <span className="font-bold" style={{ color: solvable ? "rgb(22 163 74)" : "rgb(220 38 38)" }}>
+                  {ratio.toFixed(1)}x
+                </span>
+                <span className="text-sm" style={{ color: solvable ? "rgb(22 163 74)" : "rgb(220 38 38)" }}>
+                  {solvable ? "✓ Solvable (≥ 3x)" : "⚠ Risque — revenus insuffisants"}
+                </span>
+              </div>
+            )}
+          </div>
+
+          {/* ÉTAPE + ACTIONS */}
+          <div className="space-y-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>Étape & Actions</h3>
+            <div className="flex flex-wrap gap-2">
+              {etape === "VISITE_CONFIRMEE" && (
+                <>
+                  <button onClick={() => { onVisiteEffectuee(lead.id); onClose(); }}
+                    className="text-xs px-3 py-1.5 rounded-lg font-medium"
+                    style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22 163 74)" }}>
+                    ✅ Visite effectuée
+                  </button>
+                  <button onClick={() => { onVisiteAnnulee(lead.id); onClose(); }}
+                    className="text-xs px-3 py-1.5 rounded-lg font-medium"
+                    style={{ background: "rgba(220,38,38,0.08)", color: "rgb(220 38 38)" }}>
+                    ❌ Visite annulée
+                  </button>
+                </>
+              )}
+              {(["QUALIFICATION", "VISITE_PROPOSEE", "VISITE_CONFIRMEE", "DOSSIER_DEMANDE", "VALIDE", "REFUSE"] as EtapeProcess[])
+                .filter(s => s !== etape)
+                .map(s => (
+                  <button key={s} onClick={() => { onMoveToStage(lead.id, s); onClose(); }}
+                    className="text-xs px-2.5 py-1 rounded-lg"
+                    style={{ background: ETAPE_CONFIG[s].bg, color: ETAPE_CONFIG[s].color, border: `1px solid ${ETAPE_CONFIG[s].border}` }}>
+                    → {ETAPE_CONFIG[s].label}
+                  </button>
+                ))}
+            </div>
+          </div>
+
+          {/* TIMELINE */}
+          <div className="space-y-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>Historique</h3>
+            {timeline.length === 0 ? (
+              <div className="text-xs py-2" style={{ color: "rgb(148 163 184)" }}>Aucun historique enregistré</div>
+            ) : (
+              <div className="space-y-1">
+                {timeline.slice().reverse().map(entry => {
+                  const icon = ACTION_ICONS[entry.action_type] ?? "•";
+                  const date = new Date(entry.created_at);
+                  const dateStr = date.toLocaleDateString("fr-FR", { day: "numeric", month: "short" });
+                  const timeStr = date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+                  return (
+                    <div key={entry.id} className="flex items-start gap-2 py-1.5 border-b" style={{ borderColor: "rgb(241 245 249)" }}>
+                      <span className="text-sm flex-shrink-0">{icon}</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs" style={{ color: "rgb(30 41 59)" }}>{entry.description ?? entry.action_type}</div>
+                      </div>
+                      <div className="text-xs flex-shrink-0" style={{ color: "rgb(148 163 184)" }}>{dateStr} {timeStr}</div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+
+          {/* NOTES INTERNES */}
+          <div className="space-y-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>📝 Notes internes</h3>
+            {timeline.filter(e => e.action_type === "NOTE_INTERNE").map(note => (
+              <div key={note.id} className="rounded-lg p-3 text-sm" style={{ background: "rgb(250 250 252)", border: "1px solid rgb(226 232 240)" }}>
+                <div style={{ color: "rgb(30 41 59)" }}>{note.description}</div>
+                <div className="text-xs mt-1" style={{ color: "rgb(148 163 184)" }}>
+                  {new Date(note.created_at).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
+                  {" "}
+                  {new Date(note.created_at).toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                </div>
+              </div>
+            ))}
+            <textarea
+              value={noteText}
+              onChange={e => setNoteText(e.target.value)}
+              placeholder="Ajouter une note interne…"
+              rows={3}
+              className="w-full rounded-lg border px-3 py-2 text-sm resize-none outline-none focus:ring-2 focus:ring-indigo-300"
+              style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+            />
+            <button
+              onClick={saveNote}
+              disabled={savingNote || !noteText.trim()}
+              className="px-4 py-2 rounded-lg text-sm font-medium text-white disabled:opacity-50"
+              style={{ background: "rgb(79 70 229)" }}
+            >
+              {savingNote ? "Sauvegarde…" : "💾 Sauvegarder"}
+            </button>
+          </div>
+
+        </div>
+      </div>
+    </div>
+  );
+}
+
 export default function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
@@ -201,6 +431,7 @@ export default function LeadsPage() {
   const [filterEtape, setFilterEtape] = useState<EtapeProcess | "">("");
   const [filterProperty, setFilterProperty] = useState<string>("");
   const [filterSolvable, setFilterSolvable] = useState<"" | "oui" | "non">("");
+  const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const { toast } = useToast();
 
   const fetchLeads = useCallback(async () => {
@@ -451,6 +682,8 @@ export default function LeadsPage() {
                       return (
                         <tr
                           key={lead.id}
+                          className="cursor-pointer"
+                          onClick={() => setSelectedLead(lead)}
                           style={{
                             borderBottom: i < filteredListLeads.length - 1 ? "1px solid rgb(241 245 249)" : undefined,
                             background: "white",
@@ -603,6 +836,7 @@ export default function LeadsPage() {
                             onVisiteEffectuee={handleVisiteEffectuee}
                             onVisiteAnnulee={handleVisiteAnnulee}
                             onMoveToStage={handleMoveToStage}
+                            onSelect={(lead) => setSelectedLead(lead)}
                           />
                         ))
                       )}
@@ -627,6 +861,7 @@ export default function LeadsPage() {
                         onVisiteEffectuee={handleVisiteEffectuee}
                         onVisiteAnnulee={handleVisiteAnnulee}
                         onMoveToStage={handleMoveToStage}
+                        onSelect={(lead) => setSelectedLead(lead)}
                       />
                     ))}
                   </div>
@@ -636,6 +871,17 @@ export default function LeadsPage() {
           )}
         </div>
       </div>
+
+        {/* Drawer prospect */}
+        {selectedLead && (
+          <ProspectDrawer
+            lead={selectedLead}
+            onClose={() => setSelectedLead(null)}
+            onMoveToStage={handleMoveToStage}
+            onVisiteEffectuee={handleVisiteEffectuee}
+            onVisiteAnnulee={handleVisiteAnnulee}
+          />
+        )}
     </AppShell>
   );
 }

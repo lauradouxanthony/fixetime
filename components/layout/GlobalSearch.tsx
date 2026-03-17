@@ -4,7 +4,7 @@ import { useEffect, useRef, useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 
 type SearchResult = {
-  prospects: Array<{ id: string; sender: string | null; subject: string | null; received_at: string | null; prospect_data?: { nom?: string | null } | null }>;
+  prospects: Array<{ id: string; sender: string | null; subject: string | null; received_at: string | null; prospect_data?: { nom?: string | null; etape_process?: string | null; telephone?: string | null } | null }>;
   emails: Array<{ id: string; sender: string | null; subject: string | null; received_at: string | null; category?: string | null }>;
   biens: Array<{ id: string; title: string; address: string | null; rent: number; available: boolean }>;
 };
@@ -114,8 +114,13 @@ export default function GlobalSearch() {
                         {p.prospect_data?.nom ?? p.sender ?? "(Inconnu)"}
                       </div>
                       <div className="text-xs truncate" style={{ color: "rgb(148 163 184)" }}>
-                        {p.subject}
+                        {p.sender} — {p.subject}
                       </div>
+                      {p.prospect_data?.etape_process && (
+                        <span className="text-xs px-1.5 py-0.5 rounded-full" style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}>
+                          {p.prospect_data.etape_process.replace(/_/g, " ")}
+                        </span>
+                      )}
                     </div>
                   </button>
                 ))}

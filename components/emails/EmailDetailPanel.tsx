@@ -676,7 +676,7 @@ const ACTION_ICONS: Record<string, string> = {
   NOTE_INTERNE: "📝",
 };
 
-function TimelineWidget({ emailId }: { emailId: string }) {
+function TimelineWidget({ emailId, emailReceivedAt }: { emailId: string; emailReceivedAt?: string | null }) {
   const [timeline, setTimeline] = useState<Array<{
     id: string;
     action_type: string;
@@ -686,17 +686,43 @@ function TimelineWidget({ emailId }: { emailId: string }) {
   }>>([]);
   const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
+  const loadTimeline = useCallback(async () => {
     if (!emailId) return;
-    fetch(`/api/leads/${emailId}/timeline`)
-      .then(r => r.json())
-      .then(data => setTimeline(data.timeline ?? []))
-      .catch(() => {})
-      .finally(() => setLoading(false));
-  }, [emailId]);
+    try {
+      const res = await fetch(`/api/leads/${emailId}/timeline`);
+      const data = await res.json();
+      const tl: typeof timeline = data.timeline ?? [];
+      if (tl.length === 0 && emailId) {
+        // Auto-créer l'entrée EMAIL_RECU si timeline vide
+        try {
+          await fetch(`/api/leads/${emailId}/timeline`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              action_type: "EMAIL_RECU",
+              description: "Email reçu",
+              metadata: { auto_created: true, email_received_at: emailReceivedAt ?? null },
+            }),
+          });
+          const res2 = await fetch(`/api/leads/${emailId}/timeline`);
+          const data2 = await res2.json();
+          setTimeline(data2.timeline ?? []);
+        } catch {
+          setTimeline([]);
+        }
+      } else {
+        setTimeline(tl);
+      }
+    } catch {
+      setTimeline([]);
+    } finally {
+      setLoading(false);
+    }
+  }, [emailId, emailReceivedAt]);
+
+  useEffect(() => { loadTimeline(); }, [loadTimeline]);
 
   if (loading) return null;
-  if (timeline.length === 0) return null;
 
   return (
     <div className="rounded-xl border bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
@@ -1060,7 +1086,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
           />
           <DocumentsTemplateWidget email={email} mode={mode} />
           <BookingWidget email={email} mode={mode} onApprove={handleBookingApprove} />
-          <TimelineWidget emailId={email.id} />
+          <TimelineWidget emailId={email.id} emailReceivedAt={email.received_at} />
           <NotesWidget emailId={email.id} />
 
           {/* BLOC 4 — Export dossier PDF */}

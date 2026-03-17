@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { supabaseServer } from "@/lib/supabaseServer";
 
 export const dynamic = "force-dynamic";
@@ -16,18 +17,28 @@ export async function GET(req: Request) {
   const userId = authData.user.id;
   const like = `%${q}%`;
 
-  const [prospectsRes, emailsRes, biensRes] = await Promise.all([
-    // Prospects : chercher dans prospect_data (nom, téléphone) — via emails LOCATION
-    supabase
+  // Run all queries in parallel: 2 prospect queries (sender/subject + JSONB nom), emails, biens
+  const [prospectsQ1, prospectsQ2, emailsRes, biensRes] = await Promise.all([
+    // Prospects query 1: sender/subject text search
+    supabaseAdmin
       .from("emails")
       .select("id, sender, subject, prospect_data, received_at")
       .eq("user_id", userId)
       .eq("category", "LOCATION")
       .or(`sender.ilike.${like},subject.ilike.${like}`)
-      .limit(5),
+      .limit(8),
 
-    // Emails : chercher dans sujet ou expéditeur
-    supabase
+    // Prospects query 2: JSONB prospect_data->>'nom' and 'telephone' search
+    supabaseAdmin
+      .from("emails")
+      .select("id, sender, subject, prospect_data, received_at")
+      .eq("user_id", userId)
+      .eq("category", "LOCATION")
+      .or(`prospect_data->>nom.ilike.${like},prospect_data->>telephone.ilike.${like}`)
+      .limit(8),
+
+    // Non-LOCATION emails: subject/sender
+    supabaseAdmin
       .from("emails")
       .select("id, sender, subject, received_at, category")
       .eq("user_id", userId)
@@ -35,8 +46,8 @@ export async function GET(req: Request) {
       .neq("category", "LOCATION")
       .limit(5),
 
-    // Biens : chercher dans title/address
-    supabase
+    // Biens: title/address
+    supabaseAdmin
       .from("properties")
       .select("id, title, address, rent, type, available")
       .eq("user_id", userId)
@@ -44,8 +55,16 @@ export async function GET(req: Request) {
       .limit(5),
   ]);
 
+  // Merge and deduplicate prospects by id
+  const prospectMap = new Map<string, unknown>();
+  for (const p of [...(prospectsQ1.data ?? []), ...(prospectsQ2.data ?? [])]) {
+    const item = p as { id: string };
+    if (!prospectMap.has(item.id)) prospectMap.set(item.id, p);
+  }
+  const prospects = Array.from(prospectMap.values()).slice(0, 10);
+
   return NextResponse.json({
-    prospects: prospectsRes.data ?? [],
+    prospects,
     emails: emailsRes.data ?? [],
     biens: biensRes.data ?? [],
   });

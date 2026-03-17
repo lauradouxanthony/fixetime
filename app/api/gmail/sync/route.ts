@@ -61,6 +61,7 @@ export async function POST(req: NextRequest) {
       att: { filename: string; mimeType: string; attachmentId: string; size: number },
       token: string
     ): Promise<string | null> {
+      console.log(`[GMAIL SYNC][PJ] Téléchargement: ${att.filename} (${Math.round(att.size/1024)}Ko) msgId=${gmailMsgId}`);
       try {
         const res = await fetch(
           `https://gmail.googleapis.com/gmail/v1/users/me/messages/${gmailMsgId}/attachments/${att.attachmentId}`,
@@ -74,8 +75,12 @@ export async function POST(req: NextRequest) {
         const { error: uploadErr } = await supabaseAdmin.storage
           .from("documents")
           .upload(storagePath, buffer, { contentType: att.mimeType, upsert: true });
-        if (uploadErr) return null;
+        if (uploadErr) {
+          console.error(`[GMAIL SYNC][PJ] Upload échoué: ${att.filename}`, uploadErr.message);
+          return null;
+        }
         const { data: urlData } = supabaseAdmin.storage.from("documents").getPublicUrl(storagePath);
+        console.log(`[GMAIL SYNC][PJ] ✅ Upload OK: ${att.filename} → ${urlData.publicUrl}`);
         return urlData.publicUrl;
       } catch {
         return null;
@@ -205,6 +210,7 @@ export async function POST(req: NextRequest) {
           return result;
         }
         const attachments = extractAttachments(detail.payload?.parts ?? []);
+        console.log(`[GMAIL SYNC][PJ] msg=${msg.id} → ${attachments.length} pièce(s) jointe(s) détectée(s)${attachments.length > 0 ? ": " + attachments.map(a => a.filename).join(", ") : ""}`);
 
         // Upload attachments to Supabase Storage and enrich with storage_url
         const enrichedAttachments: typeof attachments & { storage_url?: string }[] = [];
