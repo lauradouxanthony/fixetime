@@ -328,6 +328,96 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
             )}
           </div>
 
+          {/* DOCUMENTS REQUIS — selon situation_pro */}
+          {pd?.situation_pro && (() => {
+            type DocItem = { key: string; label: string };
+            const DOC_PROFILES: Record<string, DocItem[]> = {
+              CDI: [
+                { key: "fiches_paie",     label: "Fiches de paie (3 mois)" },
+                { key: "contrat",         label: "Contrat de travail" },
+                { key: "avis_imposition", label: "Avis d'imposition" },
+                { key: "piece_identite",  label: "Pièce d'identité" },
+              ],
+              CDD: [
+                { key: "fiches_paie",     label: "Fiches de paie (3 mois)" },
+                { key: "contrat",         label: "Contrat de travail (+ durée)" },
+                { key: "avis_imposition", label: "Avis d'imposition" },
+                { key: "piece_identite",  label: "Pièce d'identité" },
+              ],
+              ETUDIANT: [
+                { key: "carte_etudiant",  label: "Carte étudiante" },
+                { key: "scolarite",       label: "Certificat de scolarité" },
+                { key: "piece_identite",  label: "Pièce d'identité" },
+                { key: "garant_id",       label: "Garant : pièce identité" },
+                { key: "garant_paie",     label: "Garant : fiches de paie" },
+                { key: "garant_impos",    label: "Garant : avis d'imposition" },
+              ],
+              AUTO_ENTREPRENEUR: [
+                { key: "kbis",            label: "Kbis (< 3 mois)" },
+                { key: "bilan",           label: "Bilans (3 dernières années)" },
+                { key: "releves",         label: "Relevés bancaires (3 mois)" },
+                { key: "piece_identite",  label: "Pièce d'identité" },
+              ],
+              RETRAITE: [
+                { key: "pension",         label: "Relevés de pension (3 mois)" },
+                { key: "avis_imposition", label: "Avis d'imposition" },
+                { key: "piece_identite",  label: "Pièce d'identité" },
+              ],
+            };
+            const spKey = pd.situation_pro as string;
+            const docs = DOC_PROFILES[spKey] ?? DOC_PROFILES.CDI;
+
+            // Calculer les docs reçus à partir des PJ (depuis lead.attachments si disponible)
+            const attachments: any[] = (lead as any).attachments ?? [];
+            const receivedKeys = new Set<string>();
+            attachments.forEach((att: any) => {
+              const docTypes = att.docTypes as Record<string, boolean> | undefined;
+              if (docTypes) {
+                Object.entries(docTypes).forEach(([k, v]) => { if (v) receivedKeys.add(k); });
+              }
+            });
+
+            const receivedCount = docs.filter(d => receivedKeys.has(d.key)).length;
+            const total = docs.length;
+            const dossierStatus = receivedCount >= total ? "COMPLET" : receivedCount >= 2 ? "PARTIEL" : "INCOMPLET";
+            const statusStyle = dossierStatus === "COMPLET"
+              ? { bg: "rgba(22,163,74,0.1)", color: "rgb(22 163 74)", label: "✅ Dossier complet" }
+              : dossierStatus === "PARTIEL"
+              ? { bg: "rgba(234,88,12,0.1)", color: "rgb(234 88 12)", label: `📋 Partiel (${receivedCount}/${total})` }
+              : { bg: "rgba(220,38,38,0.08)", color: "rgb(220 38 38)", label: `⚠️ Incomplet (${receivedCount}/${total})` };
+
+            return (
+              <div className="space-y-2">
+                <div className="flex items-center justify-between">
+                  <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>
+                    📋 Documents requis
+                  </h3>
+                  <span className="text-xs px-2 py-0.5 rounded-full font-semibold"
+                    style={{ background: statusStyle.bg, color: statusStyle.color }}>
+                    {statusStyle.label}
+                  </span>
+                </div>
+                <div className="space-y-1">
+                  {docs.map(doc => {
+                    const received = receivedKeys.has(doc.key);
+                    return (
+                      <div key={doc.key} className="flex items-center gap-2 px-2 py-1.5 rounded-lg"
+                        style={{ background: received ? "rgba(22,163,74,0.06)" : "rgba(226,232,240,0.4)" }}>
+                        <span className="text-sm flex-shrink-0">{received ? "✅" : "❌"}</span>
+                        <span className="text-xs flex-1" style={{ color: received ? "rgb(22 163 74)" : "rgb(100 116 139)" }}>
+                          {doc.label}
+                        </span>
+                        <span className="text-xs flex-shrink-0" style={{ color: received ? "rgb(22 163 74)" : "rgb(148 163 184)" }}>
+                          {received ? "Reçu" : "Manquant"}
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })()}
+
           {/* ÉTAPE + ACTIONS */}
           <div className="space-y-3">
             <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>Étape & Actions</h3>

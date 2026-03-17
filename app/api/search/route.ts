@@ -17,27 +17,47 @@ export async function GET(req: Request) {
   const userId = authData.user.id;
   const like = `%${q}%`;
 
-  // Run all queries in parallel: 2 prospect queries (sender/subject + JSONB nom), emails, biens
-  const [prospectsQ1, prospectsQ2, emailsRes, biensRes] = await Promise.all([
-    // Prospects query 1: sender/subject text search
-    supabaseAdmin
+  // ── Recherche prospects : essayer RPC d'abord (cherche dans JSONB) ──
+  let prospects: unknown[] = [];
+
+  try {
+    const { data: rpcData, error: rpcErr } = await supabaseAdmin.rpc("search_prospects", {
+      search_query: like,
+      user_id_param: userId,
+    });
+
+    if (!rpcErr && rpcData && (rpcData as any[]).length > 0) {
+      // RPC disponible → utiliser les résultats
+      prospects = rpcData as unknown[];
+    } else if (rpcErr) {
+      console.log("[SEARCH] RPC non disponible, fallback requête directe:", rpcErr.message);
+    }
+  } catch {
+    // RPC pas encore créée → fallback
+  }
+
+  // Fallback : si RPC n'a rien retourné, chercher directement (sender + subject)
+  if (prospects.length === 0) {
+    const { data: fallbackData } = await supabaseAdmin
       .from("emails")
-      .select("id, sender, subject, prospect_data, received_at")
+      .select("id, sender, subject, prospect_data, received_at, category, ai_score")
       .eq("user_id", userId)
       .eq("category", "LOCATION")
       .or(`sender.ilike.${like},subject.ilike.${like}`)
-      .limit(8),
+      .limit(10);
 
-    // Prospects query 2: JSONB prospect_data->>'nom' and 'telephone' search
-    supabaseAdmin
-      .from("emails")
-      .select("id, sender, subject, prospect_data, received_at")
-      .eq("user_id", userId)
-      .eq("category", "LOCATION")
-      .or(`prospect_data->>nom.ilike.${like},prospect_data->>telephone.ilike.${like}`)
-      .limit(8),
+    prospects = fallbackData ?? [];
+  }
 
-    // Non-LOCATION emails: subject/sender
+  // Normaliser le nom prospect pour l'affichage (RPC retourne prospect_name, requête directe retourne prospect_data)
+  const normalizedProspects = prospects.map((p: any) => ({
+    ...p,
+    prospect_name: p.prospect_name ?? p.prospect_data?.nom_prenom ?? p.prospect_data?.nom ?? null,
+    etape: p.etape ?? p.prospect_data?.etape_process ?? null,
+  }));
+
+  // Emails non-LOCATION + Biens en parallèle
+  const [emailsRes, biensRes] = await Promise.all([
     supabaseAdmin
       .from("emails")
       .select("id, sender, subject, received_at, category")
@@ -46,7 +66,6 @@ export async function GET(req: Request) {
       .neq("category", "LOCATION")
       .limit(5),
 
-    // Biens: title/address
     supabaseAdmin
       .from("properties")
       .select("id, title, address, rent, type, available")
@@ -55,16 +74,8 @@ export async function GET(req: Request) {
       .limit(5),
   ]);
 
-  // Merge and deduplicate prospects by id
-  const prospectMap = new Map<string, unknown>();
-  for (const p of [...(prospectsQ1.data ?? []), ...(prospectsQ2.data ?? [])]) {
-    const item = p as { id: string };
-    if (!prospectMap.has(item.id)) prospectMap.set(item.id, p);
-  }
-  const prospects = Array.from(prospectMap.values()).slice(0, 10);
-
   return NextResponse.json({
-    prospects,
+    prospects: normalizedProspects.slice(0, 10),
     emails: emailsRes.data ?? [],
     biens: biensRes.data ?? [],
   });

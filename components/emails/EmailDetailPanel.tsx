@@ -213,24 +213,29 @@ function DossierWidget({ body, attachments, gmailMessageId }: {
   );
 
   // BLOC 3 : auto-marquer depuis les noms de fichiers des pièces jointes
+  // Priorité : att.docTypes (pré-calculé par le sync) > détection locale
   useEffect(() => {
     if (!attachments || attachments.length === 0) return;
     const updates: Record<string, DocStatus> = {};
     for (const att of attachments) {
-      const fname = att.filename.toLowerCase()
-        .normalize("NFD").replace(/[\u0300-\u036f]/g, ""); // remove accents
-      if (fname.includes("fiche") || fname.includes("paie") || fname.includes("bulletin")) {
-        updates.fiches_paie = "recu";
-      }
-      if (fname.includes("contrat")) {
-        updates.contrat = "recu";
-      }
-      if (fname.includes("imposition") || fname.includes("avis") || fname.includes("impot")) {
-        updates.avis_imposition = "recu";
-      }
-      if (fname.includes("identite") || fname.includes("identity") || fname.includes("cni")
-        || fname.includes("passeport") || fname.includes("carte")) {
-        updates.piece_identite = "recu";
+      // Utiliser docTypes pré-calculé s'il est disponible
+      const docTypes = (att as any).docTypes as Record<string, boolean> | undefined;
+      if (docTypes) {
+        for (const [key, val] of Object.entries(docTypes)) {
+          if (val) updates[key] = "recu";
+        }
+      } else {
+        // Fallback : détection locale par nom de fichier
+        const fname = att.filename.toLowerCase()
+          .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+        if (fname.includes("fiche") || fname.includes("paie") || fname.includes("bulletin"))
+          updates.fiches_paie = "recu";
+        if (fname.includes("contrat") || fname.includes("cdi") || fname.includes("cdd"))
+          updates.contrat = "recu";
+        if (fname.includes("imposition") || fname.includes("avis") || fname.includes("impot"))
+          updates.avis_imposition = "recu";
+        if (fname.includes("identite") || fname.includes("cni") || fname.includes("passeport") || fname.includes("carte"))
+          updates.piece_identite = "recu";
       }
     }
     if (Object.keys(updates).length > 0) {
@@ -337,7 +342,8 @@ function DossierWidget({ body, attachments, gmailMessageId }: {
           </div>
           <div className="space-y-1.5">
             {attachments.map((att, i) => {
-              const storageUrl = (att as any).storage_url ?? null;
+              // Utiliser gmailLink (nouveau format) ou storage_url (ancien) ou gmailUrl fallback
+              const linkUrl: string | null = (att as any).gmailLink ?? (att as any).storage_url ?? gmailUrl;
               const isPdf = att.mimeType?.includes("pdf");
               const isImage = att.mimeType?.startsWith("image/");
               const icon = isPdf ? "📄" : isImage ? "🖼️" : "📎";
@@ -351,26 +357,13 @@ function DossierWidget({ body, attachments, gmailMessageId }: {
                   <span className="text-xs flex-shrink-0" style={{ color: "rgb(148 163 184)" }}>
                     {att.size > 0 ? `${Math.round(att.size / 1024)} Ko` : ""}
                   </span>
-                  {storageUrl ? (
-                    <div className="flex gap-1 flex-shrink-0">
-                      <a href={storageUrl} target="_blank" rel="noopener noreferrer"
-                        className="text-xs px-2 py-0.5 rounded font-medium"
-                        style={{ background: "rgba(79,70,229,0.1)", color: "rgb(79 70 229)" }}>
-                        Voir
-                      </a>
-                      <a href={storageUrl} download={att.filename}
-                        className="text-xs px-2 py-0.5 rounded font-medium"
-                        style={{ background: "rgba(22,163,74,0.1)", color: "rgb(22 163 74)" }}>
-                        ↓
-                      </a>
-                    </div>
-                  ) : gmailUrl ? (
-                    <a href={gmailUrl} target="_blank" rel="noopener noreferrer"
+                  {linkUrl && (
+                    <a href={linkUrl} target="_blank" rel="noopener noreferrer"
                       className="text-xs px-2 py-0.5 rounded font-medium flex-shrink-0"
                       style={{ background: "rgba(79,70,229,0.1)", color: "rgb(79 70 229)" }}>
-                      Voir Gmail
+                      Voir dans Gmail →
                     </a>
-                  ) : null}
+                  )}
                 </div>
               );
             })}

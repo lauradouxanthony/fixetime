@@ -73,6 +73,54 @@ CREATE POLICY "Users can manage their timeline"
   USING (auth.uid() = user_id)
   WITH CHECK (auth.uid() = user_id);
 
+-- Step 7: Backfill EMAIL_RECU pour les emails LOCATION sans timeline
+INSERT INTO public.prospect_timeline (user_id, email_id, action_type, description, created_at)
+SELECT e.user_id, e.id, 'EMAIL_RECU', 'Email reçu (migration)', e.created_at
+FROM public.emails e
+WHERE e.category = 'LOCATION'
+AND e.id NOT IN (
+  SELECT DISTINCT pt.email_id
+  FROM public.prospect_timeline pt
+  WHERE pt.email_id IS NOT NULL
+  AND pt.action_type = 'EMAIL_RECU'
+)
+ON CONFLICT DO NOTHING;
+
+-- Step 8: Fonction SQL pour la recherche dans les champs JSONB
+CREATE OR REPLACE FUNCTION search_prospects(
+  search_query TEXT,
+  user_id_param UUID
+)
+RETURNS TABLE (
+  id UUID, subject TEXT, sender TEXT,
+  prospect_name TEXT, category TEXT,
+  ai_score INT, etape TEXT
+) AS $$
+BEGIN
+  RETURN QUERY
+  SELECT
+    e.id,
+    e.subject,
+    e.sender,
+    (e.prospect_data->>'nom_prenom')::TEXT AS prospect_name,
+    e.category,
+    e.ai_score,
+    (e.prospect_data->>'etape_process')::TEXT AS etape
+  FROM public.emails e
+  WHERE e.user_id = user_id_param
+  AND e.category = 'LOCATION'
+  AND (
+    e.sender ILIKE search_query
+    OR e.subject ILIKE search_query
+    OR (e.prospect_data->>'nom_prenom') ILIKE search_query
+    OR (e.prospect_data->>'nom') ILIKE search_query
+    OR (e.prospect_data->>'telephone') ILIKE search_query
+  )
+  ORDER BY e.created_at DESC
+  LIMIT 10;
+END;
+$$ LANGUAGE plpgsql SECURITY DEFINER;
+
 SELECT 'Migration applied successfully' AS result;
 `;
 

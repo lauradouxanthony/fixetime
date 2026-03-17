@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useRouter } from "next/navigation";
+import { FixTimeLogo } from "@/components/ui/FixTimeLogo";
 
 export default function LoginPage() {
   const router = useRouter();
@@ -40,16 +41,8 @@ export default function LoginPage() {
         className="hidden lg:flex lg:w-1/2 flex-col justify-between p-12"
         style={{ background: "linear-gradient(135deg, rgb(79 70 229) 0%, rgb(55 48 163) 100%)" }}
       >
-        {/* Logo texte */}
-        <div className="flex items-center gap-3">
-          <div
-            className="w-11 h-11 flex items-center justify-center rounded-xl"
-            style={{ background: "rgba(255,255,255,0.18)", border: "1.5px solid rgba(255,255,255,0.3)" }}
-          >
-            <span className="text-white font-bold text-xl">F</span>
-          </div>
-          <span className="text-white font-bold text-2xl tracking-tight">FixTime</span>
-        </div>
+        {/* Logo */}
+        <FixTimeLogo size="lg" variant="light" />
 
         {/* Tagline + bullets */}
         <div className="space-y-8">
@@ -96,15 +89,7 @@ export default function LoginPage() {
         <div className="w-full max-w-sm space-y-7">
           {/* Logo + Titre */}
           <div className="flex flex-col items-center gap-3">
-            <div className="flex items-center gap-2.5">
-              <div
-                className="w-9 h-9 flex items-center justify-center rounded-xl"
-                style={{ background: "rgb(79 70 229)" }}
-              >
-                <span className="text-white font-bold text-base">F</span>
-              </div>
-              <span className="font-bold text-xl tracking-tight" style={{ color: "rgb(30 41 59)" }}>FixTime</span>
-            </div>
+            <FixTimeLogo size="md" variant="dark" />
             <div className="text-center">
               <h2 className="text-2xl font-bold" style={{ color: "rgb(30 41 59)" }}>Accéder à mon espace</h2>
               <p className="text-sm mt-1" style={{ color: "rgb(100 116 139)" }}>

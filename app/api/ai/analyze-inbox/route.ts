@@ -224,8 +224,9 @@ function detectEtapeProcess(params: {
 }): EtapeProcess {
   const { hasAttachments, rdvConfirmed, isFollowUp, bodyText, situation, revenus, loyer, multiplicateur, currentEtape } = params;
 
-  // ÉTAPE DOSSIER_RECU : pièces jointes reçues APRÈS que l'agent a demandé le dossier
-  if (hasAttachments && currentEtape === "DOSSIER_DEMANDE") {
+  // ÉTAPE DOSSIER_RECU : pièces jointes reçues (quelle que soit l'étape actuelle)
+  // RÈGLE ABSOLUE : email avec PJ → toujours traiter comme envoi de documents
+  if (hasAttachments && currentEtape !== "VALIDE" && currentEtape !== "REFUSE") {
     return "DOSSIER_RECU";
   }
 
@@ -620,6 +621,8 @@ IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
       let prospectData: Record<string, unknown> | null = null;
       let matchedPropertyId: string | null = null; // BLOC 3
       const isLocationEmail = (intentionMap[result.intention] ?? "INFO") === "LOCATION";
+      // BLOC 4 : déclaré ici pour être accessible dans le bloc timeline (hors if isLocationEmail)
+      let physicalAttachments = false;
 
       if (isLocationEmail && content && content.length > 10) {
         try {
@@ -729,7 +732,18 @@ JSON attendu:
         // Priorité : loyer du bien matché > loyer extrait par l'IA de l'email
         const loyer = matchedRent ?? (prospectData?.loyer_max as number | null) ?? null;
         const currentEtape = (prospectData?.etape_process as string | null) ?? (threadProspectData?.etape_process as string | null) ?? null;
-        const hasAttachments = ((email as any).attachments as any[] ?? []).length > 0;
+        // BLOC 4 : PJ physiques OU mention textuelle d'envoi de documents
+        physicalAttachments = ((email as any).attachments as any[] ?? []).length > 0;
+        const docSentKeywords = [
+          "ci-joint", "ci joint", "pièce jointe", "pièces jointes",
+          "vous trouverez", "je vous envoie", "je vous joins", "je joins",
+          "j'envoie", "j'ai joint", "en annexe", "en pièce", "vous faire parvenir",
+          "je vous transmets", "je vous fais parvenir", "voici mes documents",
+          "mes documents", "mon dossier", "je vous adresse",
+        ];
+        const textMentionsDocsSent = docSentKeywords.some(k => content.toLowerCase().includes(k));
+        const hasAttachments = physicalAttachments || textMentionsDocsSent;
+        if (physicalAttachments) console.log(`[ANALYZE-INBOX][PJ] ${physicalAttachments ? "PJ physiques" : ""} | Texte envoi docs: ${textMentionsDocsSent} → hasAttachments=${hasAttachments}`);
 
         const newEtape = detectEtapeProcess({
           hasAttachments,
@@ -787,6 +801,58 @@ JSON attendu:
       } catch {
         delete (mainUpdate as any).prospect_data;
         await supabaseAdmin.from("emails").update(mainUpdate).eq("id", email.id);
+      }
+
+      // ── BLOC 3 : Logs timeline automatiques ──────────────────────────────
+      // On wrappe en try/catch pour ne pas bloquer l'analyse si la table n'existe pas encore
+      try {
+        const category = intentionMap[result.intention] ?? "INFO";
+
+        // EMAIL_RECU — pour les emails LOCATION seulement
+        if (category === "LOCATION") {
+          // Vérifier si l'entrée EMAIL_RECU existe déjà
+          const { count } = await supabaseAdmin
+            .from("prospect_timeline")
+            .select("id", { count: "exact", head: true })
+            .eq("email_id", email.id)
+            .eq("action_type", "EMAIL_RECU");
+
+          if (!count || count === 0) {
+            await supabaseAdmin.from("prospect_timeline").insert({
+              user_id: email.user_id,
+              email_id: email.id,
+              action_type: "EMAIL_RECU",
+              description: `Email reçu de ${email.sender?.replace(/<.*>/, "").trim() ?? "inconnu"}`,
+              created_at: email.received_at ?? new Date().toISOString(),
+            });
+          }
+
+          // DOCUMENT_RECU — si PJ physiques détectées
+          if (physicalAttachments) {
+            const attList = ((email as any).attachments as any[] ?? []).map((a: any) => a.filename).join(", ");
+            await supabaseAdmin.from("prospect_timeline").insert({
+              user_id: email.user_id,
+              email_id: email.id,
+              action_type: "DOCUMENT_RECU",
+              description: `Document(s) reçu(s) : ${attList || "fichier joint"}`,
+            });
+          }
+
+          // VISITE_CONFIRMEE — si visite détectée
+          if (rdvConfirmed) {
+            await supabaseAdmin.from("prospect_timeline").insert({
+              user_id: email.user_id,
+              email_id: email.id,
+              action_type: "VISITE_CONFIRMEE",
+              description: "Visite confirmée par le prospect",
+            });
+          }
+        }
+      } catch (timelineErr: any) {
+        // Table prospect_timeline peut ne pas exister encore → ignorer silencieusement
+        if (!timelineErr?.message?.includes("does not exist")) {
+          console.warn("[ANALYZE-INBOX][TIMELINE] Erreur log:", timelineErr?.message);
+        }
       }
 
       // ── AUTOPILOTE ────────────────────────────────────────────────────────
@@ -967,6 +1033,17 @@ Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}, Contenu: ${
               ai_reply: autoReply,
               is_archived: true,
             }).eq("id", email.id);
+
+            // Log timeline IA_REPONDU
+            try {
+              const etapeForLog = (prospectData?.etape_process as string) ?? "?";
+              await supabaseAdmin.from("prospect_timeline").insert({
+                user_id: email.user_id,
+                email_id: email.id,
+                action_type: "IA_REPONDU",
+                description: `IA a répondu automatiquement — étape: ${etapeForLog}`,
+              });
+            } catch { /* silencieux si table manquante */ }
           }
         } catch (autoErr) {
           console.error("AUTOPILOTE_SEND_ERROR", autoErr);

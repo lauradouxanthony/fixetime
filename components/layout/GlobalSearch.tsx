@@ -105,25 +105,36 @@ export default function GlobalSearch() {
                 <div className="px-4 py-2 text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)", background: "rgb(250 250 250)" }}>
                   🏠 Prospects
                 </div>
-                {results!.prospects.map((p) => (
-                  <button key={p.id} onClick={() => { router.push("/emails"); setOpen(false); }}
-                    className="w-full px-4 py-2.5 flex items-center gap-3 hover:bg-slate-50 transition-colors text-left">
-                    <span className="text-lg">👤</span>
-                    <div className="flex-1 min-w-0">
-                      <div className="text-sm font-medium truncate" style={{ color: "rgb(30 41 59)" }}>
-                        {p.prospect_data?.nom ?? p.sender ?? "(Inconnu)"}
+                {results!.prospects.map((p) => {
+                  // Normaliser : la route retourne prospect_name (RPC) ou prospect_data (fallback)
+                  const nomAff: string = (p as any).prospect_name
+                    ?? (p as any).prospect_data?.nom_prenom
+                    ?? (p as any).prospect_data?.nom
+                    ?? p.sender
+                    ?? "(Inconnu)";
+                  const etapeAff: string | null = (p as any).etape
+                    ?? (p as any).prospect_data?.etape_process
+                    ?? null;
+                  return (
+                    <button key={p.id} onClick={() => { router.push("/emails"); setOpen(false); }}
+                      className="w-full px-4 py-2.5 flex items-center gap-3 hover:bg-slate-50 transition-colors text-left">
+                      <span className="text-lg">👤</span>
+                      <div className="flex-1 min-w-0">
+                        <div className="text-sm font-medium truncate" style={{ color: "rgb(30 41 59)" }}>
+                          {nomAff}
+                        </div>
+                        <div className="text-xs truncate" style={{ color: "rgb(148 163 184)" }}>
+                          {p.sender} — {p.subject}
+                        </div>
+                        {etapeAff && (
+                          <span className="text-xs px-1.5 py-0.5 rounded-full" style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}>
+                            {etapeAff.replace(/_/g, " ")}
+                          </span>
+                        )}
                       </div>
-                      <div className="text-xs truncate" style={{ color: "rgb(148 163 184)" }}>
-                        {p.sender} — {p.subject}
-                      </div>
-                      {p.prospect_data?.etape_process && (
-                        <span className="text-xs px-1.5 py-0.5 rounded-full" style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}>
-                          {p.prospect_data.etape_process.replace(/_/g, " ")}
-                        </span>
-                      )}
-                    </div>
-                  </button>
-                ))}
+                    </button>
+                  );
+                })}
               </div>
             )}
 

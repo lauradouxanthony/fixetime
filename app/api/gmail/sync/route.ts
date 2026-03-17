@@ -53,38 +53,31 @@ export async function POST(req: NextRequest) {
       return fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
     };
 
-    // Try to ensure the bucket exists (idempotent — ignore error if already exists)
-    await supabaseAdmin.storage.createBucket("documents", { public: true }).catch(() => {});
+    // Approche simplifiée : stocker le lien Gmail direct (pas de Supabase Storage)
+    // L'utilisateur peut ouvrir la PJ depuis Gmail en un clic
+    function buildGmailLink(gmailMsgId: string): string {
+      return `https://mail.google.com/mail/u/0/#inbox/${gmailMsgId}`;
+    }
 
-    async function downloadAndUploadAttachment(
-      gmailMsgId: string,
-      att: { filename: string; mimeType: string; attachmentId: string; size: number },
-      token: string
-    ): Promise<string | null> {
-      console.log(`[GMAIL SYNC][PJ] Téléchargement: ${att.filename} (${Math.round(att.size/1024)}Ko) msgId=${gmailMsgId}`);
-      try {
-        const res = await fetch(
-          `https://gmail.googleapis.com/gmail/v1/users/me/messages/${gmailMsgId}/attachments/${att.attachmentId}`,
-          { headers: { Authorization: `Bearer ${token}` } }
-        );
-        if (!res.ok) return null;
-        const json = await res.json();
-        if (!json.data) return null;
-        const buffer = Buffer.from(json.data, "base64url");
-        const storagePath = `${userId}/${gmailMsgId}/${att.filename}`;
-        const { error: uploadErr } = await supabaseAdmin.storage
-          .from("documents")
-          .upload(storagePath, buffer, { contentType: att.mimeType, upsert: true });
-        if (uploadErr) {
-          console.error(`[GMAIL SYNC][PJ] Upload échoué: ${att.filename}`, uploadErr.message);
-          return null;
-        }
-        const { data: urlData } = supabaseAdmin.storage.from("documents").getPublicUrl(storagePath);
-        console.log(`[GMAIL SYNC][PJ] ✅ Upload OK: ${att.filename} → ${urlData.publicUrl}`);
-        return urlData.publicUrl;
-      } catch {
-        return null;
-      }
+    // Auto-détection du type de document selon le nom du fichier
+    function autoCheckDoc(filename: string): Record<string, boolean> {
+      const name = filename.toLowerCase();
+      const docs: Record<string, boolean> = {};
+      if (name.includes("paie") || name.includes("salaire") || name.includes("bulletin"))
+        docs.fiches_paie = true;
+      if (name.includes("contrat") || name.includes("cdi") || name.includes("cdd") || name.includes("travail"))
+        docs.contrat_travail = true;
+      if (name.includes("impos") || name.includes("avis") || name.includes("impot") || name.includes("fiscal"))
+        docs.avis_imposition = true;
+      if (name.includes("identit") || name.includes("cni") || name.includes("passeport") || name.includes("carte"))
+        docs.piece_identite = true;
+      if (name.includes("etudiant") || name.includes("scolarit") || name.includes("universite") || name.includes("carte_etud"))
+        docs.carte_etudiant = true;
+      if (name.includes("kbis") || name.includes("siren") || name.includes("extrait"))
+        docs.kbis = true;
+      if (name.includes("bilan") || name.includes("comptable"))
+        docs.bilan = true;
+      return docs;
     }
 
     // ── Récupérer les gmail_message_id déjà en DB ──
@@ -98,21 +91,27 @@ export async function POST(req: NextRequest) {
       .not("gmail_message_id", "is", null);
 
     // Tous les IDs connus
-    // Fonction helper : extraire les pièces jointes (récursif) — définie ici pour être accessible partout
-    function extractAttachments(parts: any[]): { filename: string; mimeType: string; attachmentId: string; size: number }[] {
-      const result: { filename: string; mimeType: string; attachmentId: string; size: number }[] = [];
-      for (const part of parts ?? []) {
-        if (part.filename && part.filename.length > 0 && part.body?.attachmentId) {
+    // Fonction helper : extraire les pièces jointes (récursif)
+    // Accepte aussi les payloads sans parts (fichier direct en pièce jointe)
+    function extractAttachments(payload: any): { filename: string; mimeType: string; attachmentId: string | null; size: number }[] {
+      const result: { filename: string; mimeType: string; attachmentId: string | null; size: number }[] = [];
+      const scan = (part: any) => {
+        if (part?.filename && part.filename.length > 0) {
           result.push({
             filename: part.filename,
             mimeType: part.mimeType ?? "application/octet-stream",
-            attachmentId: part.body.attachmentId,
-            size: part.body.size ?? 0,
+            attachmentId: part.body?.attachmentId ?? null,
+            size: part.body?.size ?? 0,
           });
         }
-        if (part.parts) {
-          result.push(...extractAttachments(part.parts));
+        if (part?.parts) {
+          part.parts.forEach(scan);
         }
+      };
+      if (payload?.parts) {
+        payload.parts.forEach(scan);
+      } else if (payload) {
+        scan(payload);
       }
       return result;
     }
@@ -166,7 +165,7 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        // Email en DB sans PJ : re-traiter uniquement les attachments
+        // Email en DB sans PJ : re-traiter uniquement les attachments (lien Gmail direct)
         if (knownIds.has(msg.id)) {
           const dbId = gmailIdToDbId.get(msg.id);
           if (dbId) {
@@ -177,23 +176,20 @@ export async function POST(req: NextRequest) {
               );
               if (detailResAtt.ok) {
                 const detailAtt = await detailResAtt.json();
-                const attsRaw = extractAttachments(detailAtt.payload?.parts ?? []);
+                const attsRaw = extractAttachments(detailAtt.payload);
                 console.log(`[GMAIL SYNC][PJ] Re-scan msg=${msg.id} → ${attsRaw.length} PJ détectée(s)`);
                 if (attsRaw.length > 0) {
-                  const enriched: typeof attsRaw & { storage_url?: string }[] = [];
-                  for (const att of attsRaw) {
-                    if (att.size < 20 * 1024 * 1024) {
-                      const url = await downloadAndUploadAttachment(msg.id, att, accessToken);
-                      enriched.push({ ...att, storage_url: url ?? undefined });
-                    } else {
-                      enriched.push(att);
-                    }
-                  }
+                  const gmailLink = buildGmailLink(msg.id);
+                  const enriched = attsRaw.map(att => ({
+                    ...att,
+                    gmailLink,
+                    docTypes: autoCheckDoc(att.filename),
+                  }));
                   await supabaseAdmin
                     .from("emails")
                     .update({ attachments: enriched })
                     .eq("id", dbId);
-                  console.log(`[GMAIL SYNC][PJ] ✅ Mis à jour: ${enriched.length} PJ sur email ${dbId}`);
+                  console.log(`[GMAIL SYNC][PJ] ✅ Re-scan mis à jour: ${enriched.length} PJ sur email ${dbId}`);
                 }
               }
             } catch (e: any) {
@@ -263,20 +259,17 @@ export async function POST(req: NextRequest) {
         }
         const emailBody = getBody(detail.payload);
 
-        // Extraire les pièces jointes (extractAttachments définie au-dessus de la boucle)
-        const attachments = extractAttachments(detail.payload?.parts ?? []);
-        console.log(`[GMAIL SYNC][PJ] msg=${msg.id} → ${attachments.length} pièce(s) jointe(s) détectée(s)${attachments.length > 0 ? ": " + attachments.map(a => a.filename).join(", ") : ""}`);
+        // Extraire les pièces jointes (récursif, depuis le payload complet)
+        const attachments = extractAttachments(detail.payload);
+        console.log(`[GMAIL SYNC][PJ] msg=${msg.id} → ${attachments.length} PJ détectée(s)${attachments.length > 0 ? ": " + attachments.map((a: any) => a.filename).join(", ") : ""}`);
 
-        // Upload attachments to Supabase Storage and enrich with storage_url
-        const enrichedAttachments: typeof attachments & { storage_url?: string }[] = [];
-        for (const att of attachments) {
-          if (att.attachmentId && att.size < 20 * 1024 * 1024) { // max 20MB
-            const storageUrl = await downloadAndUploadAttachment(msg.id, att, accessToken);
-            enrichedAttachments.push({ ...att, storage_url: storageUrl ?? undefined });
-          } else {
-            enrichedAttachments.push(att);
-          }
-        }
+        // Approche simplifiée : lien Gmail direct + auto-détection du type de document
+        const gmailLink = buildGmailLink(msg.id);
+        const enrichedAttachments = attachments.map((att: any) => ({
+          ...att,
+          gmailLink,
+          docTypes: autoCheckDoc(att.filename),
+        }));
 
         // PROBLÈME 1 : thread_id pour la détection des fils de conversation
         const threadId: string | null = detail.threadId ?? null;
