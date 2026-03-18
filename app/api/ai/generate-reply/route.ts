@@ -451,7 +451,7 @@ export async function POST(req: Request) {
         .eq("thread_id", threadId)
         .neq("id", emailId) // exclure l'email courant (il sera ajouté en dernier)
         .order("received_at", { ascending: true })
-        .limit(5);
+        .limit(6);
 
       if (threadRows && threadRows.length > 0) {
         threadEmails = threadRows.map((r: any) => ({
@@ -471,7 +471,7 @@ export async function POST(req: Request) {
     if (propertyId) {
       const { data: propRow } = await supabaseAdmin
         .from("properties")
-        .select("title, address, rent, required_docs")
+        .select("title, address, rent, required_docs, description")
         .eq("id", propertyId)
         .maybeSingle();
       if (propRow) {
@@ -645,8 +645,48 @@ Réponse (française, professionnelle, directement envoyable) :`;
     // 9. Sauvegarde
     await supabaseAdmin.from("emails").update({ ai_reply: reply }).eq("id", email.id);
 
-    // 10. Timeline : logguer la génération
+    // 10. Timeline : logs spécifiques par cas + log général
     if (isLocation) {
+      // CAS A — changement créneau : log spécifique
+      if (intention === "changement_creneau") {
+        try {
+          await supabaseAdmin.from("prospect_timeline").insert({
+            user_id: user.id,
+            email_id: emailId,
+            action_type: "changement_creneau",
+            description: "Prospect demande un autre créneau",
+            metadata: { etape_avant: etapeAvant, etape_apres: "VISITE_PROPOSEE" },
+          });
+        } catch { /* non bloquant */ }
+      }
+
+      // CAS B — docs reçus hors étape : log spécifique
+      if (intention === "docs_hors_etape") {
+        try {
+          await supabaseAdmin.from("prospect_timeline").insert({
+            user_id: user.id,
+            email_id: emailId,
+            action_type: "docs_recus_hors_etape",
+            description: "Documents reçus avant demande formelle",
+            metadata: { etape_process: etapeAvant },
+          });
+        } catch { /* non bloquant */ }
+      }
+
+      // CAS C — refus visite provisoire : log spécifique
+      if (intention === "refus_visite_provisoire") {
+        try {
+          await supabaseAdmin.from("prospect_timeline").insert({
+            user_id: user.id,
+            email_id: emailId,
+            action_type: "refus_visite_provisoire",
+            description: "Prospect ne peut pas se rendre à la visite — en attente de replanification",
+            metadata: { etape_process: etapeAvant },
+          });
+        } catch { /* non bloquant */ }
+      }
+
+      // Log général
       try {
         await supabaseAdmin.from("prospect_timeline").insert({
           user_id: user.id,
