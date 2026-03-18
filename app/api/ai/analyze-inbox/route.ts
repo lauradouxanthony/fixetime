@@ -1244,6 +1244,45 @@ JSON attendu:
         await supabaseAdmin.from("emails").update(mainUpdate).eq("id", email.id);
       }
 
+      // ── ÉTAPE 3 : upsertProspect — créer/mettre à jour le prospect ────────
+      if (isLocationEmail) {
+        try {
+          const { upsertProspect } = await import("@/lib/prospects/upsertProspect");
+          const senderEmail = extractEmailAddress(email.sender);
+          if (senderEmail) {
+            const pd = (prospectData ?? {}) as Record<string, unknown>;
+            const garant = (() => {
+              const g = pd.garant;
+              if (typeof g === "boolean") return g;
+              if (g === "OUI") return true;
+              if (g === "NON") return false;
+              return null;
+            })();
+            const animaux = (() => {
+              const a = pd.animaux;
+              if (typeof a === "boolean") return a;
+              if (a === "OUI") return true;
+              if (a === "NON") return false;
+              return null;
+            })();
+            await upsertProspect(email.user_id, email.id, {
+              email: senderEmail,
+              nom: (pd.nom as string | null) ?? null,
+              telephone: (pd.telephone as string | null) ?? null,
+              situation_pro: (pd.situation_pro as string | null) ?? null,
+              revenus_mensuels: typeof pd.revenus_mensuels === "number" ? pd.revenus_mensuels : null,
+              garant,
+              nb_personnes: typeof pd.nb_personnes === "number" ? pd.nb_personnes : null,
+              animaux,
+              property_id: ((mainUpdate as any).property_id as string | null) ?? null,
+              etape_process: (pd.etape_process as string | null) ?? null,
+            });
+          }
+        } catch (prospectErr: any) {
+          console.warn("[ANALYZE-INBOX][PROSPECT] upsertProspect échoué:", prospectErr?.message);
+        }
+      }
+
       // ── BLOC 3 : Logs timeline automatiques ──────────────────────────────
       // On wrappe en try/catch pour ne pas bloquer l'analyse si la table n'existe pas encore
       try {
