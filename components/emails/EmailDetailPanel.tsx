@@ -11,7 +11,6 @@ import {
 } from "@/components/calendar/getOptimalSlotForEmail";
 import ProspectFiche from "@/components/emails/ProspectFiche";
 import type { ProspectData } from "@/types/email";
-import type { GeneratePdfParams } from "@/lib/pdf/generateProspectPdf";
 
 type PipelineMode = "DRAFT" | "AUTOPILOTE";
 
@@ -1217,59 +1216,22 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
     if (!email || exportingPdf) return;
     setExportingPdf(true);
     try {
-      // Fetch timeline
-      let timeline: GeneratePdfParams["timeline"] = [];
-      try {
-        const tlRes = await fetch(`/api/leads/${email.id}/timeline`);
-        if (tlRes.ok) {
-          const tlData = await tlRes.json();
-          timeline = tlData.timeline ?? [];
-        }
-      } catch {}
-
-      // Fetch property if linked
-      let property: GeneratePdfParams["property"] = null;
-      const propertyId = (email as any).property_id ?? (email as any).prospect_data?.property_id;
-      if (propertyId) {
-        try {
-          const propRes = await fetch("/api/properties");
-          if (propRes.ok) {
-            const propData = await propRes.json();
-            const props: Array<{ id: string; title: string; rent: number; type: string | null }> =
-              propData.properties ?? [];
-            property = props.find((p) => p.id === propertyId) ?? null;
-          }
-        } catch {}
-      }
-
-      // Fetch agency name from settings
-      let agenceName = "Votre agence";
-      try {
-        const sRes = await fetch("/api/settings", { cache: "no-store" });
-        if (sRes.ok) {
-          const sData = await sRes.json();
-          agenceName = (sData?.email_rules?.ft_locatif as any)?.nomAgence ?? agenceName;
-        }
-      } catch {}
-
-      const { generateProspectPdf } = await import("@/lib/pdf/generateProspectPdf");
-      await generateProspectPdf({
-        email: {
-          id: email.id,
-          sender: email.sender,
-          subject: email.subject,
-          received_at: email.received_at,
-          prospect_data: (email as any).prospect_data ?? null,
-          attachments: (email as any).attachments ?? [],
-        },
-        property,
-        timeline,
-        agenceName,
-      });
+      const res = await fetch(`/api/prospects/${email.id}/export-pdf`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const today = new Date().toISOString().split("T")[0];
+      a.href = url;
+      a.download = `Dossier_${today}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
       notify("PDF exporté ✅", "success");
     } catch (e) {
       console.error("[exportPdf] erreur:", e);
-      notify("Erreur lors de l'export PDF", "error");
+      notify("Erreur lors de la génération du PDF", "error");
     } finally {
       setExportingPdf(false);
     }
@@ -1373,29 +1335,31 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
           <TimelineWidget emailId={email.id} emailReceivedAt={email.received_at} />
           <NotesWidget emailId={email.id} />
 
-          {/* BLOC 4 — Export dossier PDF */}
-          <div className="flex justify-end">
-            <button
-              onClick={exportPdf}
-              disabled={exportingPdf}
-              className="flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-xl transition-opacity disabled:opacity-60"
-              style={{
-                background: "rgb(79 70 229)",
-                color: "white",
-              }}
-            >
-              {exportingPdf ? (
-                <>
-                  <span className="animate-spin">⏳</span>
-                  Génération en cours…
-                </>
-              ) : (
-                <>
-                  📄 Exporter dossier PDF
-                </>
-              )}
-            </button>
-          </div>
+          {/* BLOC 4 — Export dossier PDF (visible si au moins 1 document reçu) */}
+          {((email as any).attachments ?? []).length > 0 && (
+            <div className="flex justify-end">
+              <button
+                onClick={exportPdf}
+                disabled={exportingPdf}
+                className="flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-xl transition-opacity disabled:opacity-60"
+                style={{
+                  background: "rgb(79 70 229)",
+                  color: "white",
+                }}
+              >
+                {exportingPdf ? (
+                  <>
+                    <span className="animate-spin">⏳</span>
+                    Génération en cours…
+                  </>
+                ) : (
+                  <>
+                    📄 Exporter dossier PDF
+                  </>
+                )}
+              </button>
+            </div>
+          )}
         </>
       )}
 
