@@ -3,11 +3,12 @@ import { supabaseServer } from "@/lib/supabaseServer";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { derivePipelineRow } from "@/lib/pipeline/derivePipelineRow";
 import type { PipelineRow } from "@/lib/pipeline/derivePipelineRow";
+import { ETAPE_PROCESS_META, LEGACY_STATUS_TO_ETAPE, type EtapeProcess } from "@/lib/pipeline/constants";
 
 export const runtime = "nodejs";
 
 const SELECT_COLS =
-  "id, provider, provider_message_id, open_url, gmail_message_id, gmail_thread_id, sender, subject, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply, lead_score, lead_status, lead_json, analyzed_at, property_id, candidate_name, monthly_income, employment_type, guarantor_present, income_ratio, lead_profile, lead_property_address, lead_missing_fields, lead_is_qualified, lead_last_action, lead_last_action_at";
+  "id, provider, provider_message_id, open_url, gmail_message_id, gmail_thread_id, sender, subject, summary, received_at, estimated_time, recommended_action, decision, category, is_archived, classification_reason, is_urgent, is_important, ai_reply, lead_score, lead_status, lead_json, analyzed_at, property_id, candidate_name, monthly_income, employment_type, guarantor_present, income_ratio, lead_profile, lead_property_address, lead_missing_fields, lead_is_qualified, lead_last_action, lead_last_action_at, prospect_data";
 
 function normalizeForSearch(s: string): string {
   return s
@@ -166,21 +167,16 @@ export async function GET(req: Request) {
           ? "ignored"
           : "principal";
 
-      // --- ui_status ---
+      // --- ui_status : EtapeProcess en priorité, fallback legacy ---
+      const prospectEtape = (e.prospect_data as any)?.etape_process as string | null | undefined;
+      const resolvedEtape: EtapeProcess =
+        prospectEtape && prospectEtape in ETAPE_PROCESS_META
+          ? (prospectEtape as EtapeProcess)
+          : LEGACY_STATUS_TO_ETAPE[e.lead_status ?? "raw"] ?? "NEW";
       const ui_status: string | null =
-        e.lead_status === "new_lead" || e.lead_status === "raw"
-          ? "new"
-          : e.lead_status === "qualifying"
-          ? "qualifying"
-          : e.lead_status === "slots_proposed"
-          ? "slots_proposed"
-          : e.lead_status === "booked"
-          ? "confirmed"
-          : e.lead_status === "unqualified"
-          ? "rejected"
-          : e.decision === "ignorer"
+        e.decision === "ignorer"
           ? "ignored"
-          : null;
+          : ETAPE_PROCESS_META[resolvedEtape]?.uiStatus ?? null;
 
       // --- ui_panel ---
       const ui_panel: string =

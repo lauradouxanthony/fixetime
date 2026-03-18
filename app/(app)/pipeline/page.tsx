@@ -38,7 +38,7 @@ type EmailRow = {
   // Canonical UI contract (computed by /api/pipeline/list)
   ui_bucket?: "principal" | "ignored" | null;
   ui_intent?: "LOCATION_REQUEST" | "FAQ_QUESTION" | "IGNORED" | "ADMIN" | null;
-  ui_status?: "new" | "qualifying" | "slots_proposed" | "confirmed" | "rejected" | "ignored" | null;
+  ui_status?: "new" | "qualifying" | "visite_proposee" | "confirmed" | "dossier_demande" | "dossier_recu" | "dossier_complet" | "valide" | "rejected" | "ignored" | null;
   ui_panel?: "unanalyzed" | "out_of_scope" | "faq" | "location" | "none" | null;
   ui_next_action?: "ask_income" | "ask_documents" | "generate_draft" | "propose_slots" | null;
 };
@@ -132,13 +132,24 @@ function statusBadge(status: string | null): { label: string; className: string 
       return { label: "Nouveau", className: "bg-blue-500/20 text-blue-200 border border-blue-500/40" };
     case "qualifying":
       return { label: "En qualification", className: "bg-amber-500/20 text-amber-200 border border-amber-500/40" };
+    // legacy alias (old lead_status)
     case "slots_proposed":
-      return { label: "RDV proposé", className: "bg-emerald-500/20 text-emerald-200 border border-emerald-500/40" };
+    case "visite_proposee":
+      return { label: "Visite proposée", className: "bg-emerald-500/20 text-emerald-200 border border-emerald-500/40" };
     case "confirmed":
-      return { label: "✓ Confirmé", className: "bg-zinc-900 text-emerald-300 border border-emerald-500/40" };
+      return { label: "✓ Visite confirmée", className: "bg-zinc-900 text-emerald-300 border border-emerald-500/40" };
+    case "dossier_demande":
+      return { label: "Dossier demandé", className: "bg-purple-500/20 text-purple-200 border border-purple-500/40" };
+    case "dossier_recu":
+      return { label: "Dossier reçu", className: "bg-indigo-500/20 text-indigo-200 border border-indigo-500/40" };
+    case "dossier_complet":
+      return { label: "Dossier complet", className: "bg-teal-500/20 text-teal-200 border border-teal-500/40" };
+    case "valide":
+      return { label: "✓ Validé", className: "bg-green-600/20 text-green-200 border border-green-500/40" };
     case "rejected":
+      return { label: "Refusé", className: "bg-red-500/20 text-red-200 border border-red-500/40" };
     case "ignored":
-      return { label: "Non éligible", className: "bg-red-500/20 text-red-200 border border-red-500/40" };
+      return { label: "Ignoré", className: "bg-slate-700/70 text-slate-400 border border-slate-600" };
     default:
       return { label: status || "—", className: "bg-slate-700 text-slate-200 border border-slate-600" };
   }
@@ -495,9 +506,13 @@ export default function PipelinePage() {
               <option value="">Statut : Tous</option>
               <option value="new">Nouveau</option>
               <option value="qualifying">En qualification</option>
-              <option value="slots_proposed">RDV proposé</option>
-              <option value="confirmed">Confirmé</option>
-              <option value="rejected">Non éligible</option>
+              <option value="visite_proposee">Visite proposée</option>
+              <option value="confirmed">Visite confirmée</option>
+              <option value="dossier_demande">Dossier demandé</option>
+              <option value="dossier_recu">Dossier reçu</option>
+              <option value="dossier_complet">Dossier complet</option>
+              <option value="valide">Validé</option>
+              <option value="rejected">Refusé</option>
             </select>
 
             <div className="relative">
