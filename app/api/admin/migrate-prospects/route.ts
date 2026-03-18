@@ -11,6 +11,7 @@ import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { upsertProspect } from "@/lib/prospects/upsertProspect";
+import { isSpamSender } from "@/lib/prospects/isSpamSender";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -80,6 +81,8 @@ export async function GET(req: Request) {
     for (const email of emails) {
       const addr = extractEmailAddress(email.sender as string | null);
       if (!addr) continue;
+      // Exclure les expéditeurs automatiques/spam
+      if (isSpamSender(email.sender as string | null, email.subject as string | null)) continue;
       if (!groups.has(addr)) groups.set(addr, []);
       groups.get(addr)!.push(email);
     }

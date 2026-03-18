@@ -1248,8 +1248,12 @@ JSON attendu:
       if (isLocationEmail) {
         try {
           const { upsertProspect } = await import("@/lib/prospects/upsertProspect");
+          const { isSpamSender } = await import("@/lib/prospects/isSpamSender");
           const senderEmail = extractEmailAddress(email.sender);
-          if (senderEmail) {
+          // Exclure les expéditeurs automatiques/spam avant de créer un prospect
+          if (senderEmail && isSpamSender(email.sender, email.subject)) {
+            console.log(`[ANALYZE-INBOX][PROSPECT] Sender exclu (spam/auto): ${email.sender}`);
+          } else if (senderEmail) {
             const pd = (prospectData ?? {}) as Record<string, unknown>;
             const garant = (() => {
               const g = pd.garant;
