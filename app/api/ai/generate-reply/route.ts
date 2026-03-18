@@ -2,8 +2,6 @@ import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { supabaseServer } from "@/lib/supabaseServer";
 import OpenAI from "openai";
-import { getAvailabilitySlots } from "@/lib/calendar/availability";
-import { matchFaq, type FaqItem } from "@/lib/faq/matchFaq";
 import { setLastAction } from "@/lib/lead/lastAction";
 
 export const runtime = "nodejs";
@@ -11,7 +9,8 @@ export const maxDuration = 60;
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-/* ── Extraction heuristique depuis le corps (fallback si prospect_data absent) ── */
+/* ── Helpers heuristiques ── */
+
 function detectSituation(body: string): string | null {
   const l = body.toLowerCase();
   if (l.includes("étudiant") || l.includes("etudiante") || l.includes("école") || l.includes("université")) return "etudiant";
@@ -57,15 +56,37 @@ function extractNom(body: string): string {
   return "";
 }
 
+/* ── Détection intentions edge cases ── */
+
+function detectChangementCreneau(body: string): boolean {
+  const l = body.toLowerCase();
+  return (
+    (l.includes("changer") && (l.includes("créneau") || l.includes("rendez-vous") || l.includes("rdv") || l.includes("date") || l.includes("visite"))) ||
+    l.includes("annuler le rdv") || l.includes("annuler le rendez-vous") ||
+    (l.includes("pas disponible") && (l.includes("créneau") || l.includes("date") || l.includes("visite"))) ||
+    l.includes("autre créneau") || l.includes("autre date") || l.includes("changer la date")
+  );
+}
+
+function detectRefusVisite(body: string): boolean {
+  const l = body.toLowerCase();
+  return (
+    (l.includes("ne peux pas") || l.includes("impossible") || l.includes("finalement non") || l.includes("je refuse") || l.includes("non merci")) &&
+    (l.includes("visite") || l.includes("rdv") || l.includes("rendez-vous"))
+  );
+}
+
 /* ── Cas de réponse selon l'étape du process ── */
 type ReplyCase =
-  | "qualification"      // QUALIFICATION → demander situation + revenus SEULEMENT
-  | "visite_proposee"    // VISITE_PROPOSEE → proposer créneaux, PAS de docs
-  | "etudiant"           // VISITE_PROPOSEE (étudiant) → garant + créneaux, PAS de docs
-  | "refuse"             // REFUSE → refus poli + suggestion garant
-  | "visite_confirmee"   // VISITE_CONFIRMEE → confirmer RDV + attendre visite
-  | "dossier_demande"    // DOSSIER_DEMANDE → envoyer liste de documents
-  | "dossier_recu";      // DOSSIER_RECU → accusé réception
+  | "qualification"
+  | "visite_proposee"
+  | "etudiant"
+  | "refuse"
+  | "visite_confirmee"
+  | "dossier_demande"
+  | "dossier_recu"
+  | "docs_hors_etape"      // CAS B — docs reçus sans demande préalable
+  | "refus_visite_provisoire"; // CAS C — prospect refuse un créneau
 
 function determineCase(params: {
   situation: string | null;
@@ -73,28 +94,115 @@ function determineCase(params: {
   loyer: number | null;
   multiplicateur: number;
   etapeProcess: string | null;
-}): ReplyCase {
-  const { situation, revenus, loyer, multiplicateur, etapeProcess } = params;
+  body: string;
+  hasAttachments: boolean;
+}): { cas: ReplyCase; intention: string } {
+  const { situation, revenus, loyer, multiplicateur, etapeProcess, body, hasAttachments } = params;
 
-  // Les étapes avancées et manuelles priment toujours
-  if (etapeProcess === "DOSSIER_RECU")    return "dossier_recu";
-  if (etapeProcess === "DOSSIER_DEMANDE") return "dossier_demande";
-  if (etapeProcess === "VISITE_CONFIRMEE") return "visite_confirmee";
-  if (etapeProcess === "REFUSE")          return "refuse";
+  // CAS B — documents reçus hors étape DOSSIER
+  if (hasAttachments && etapeProcess !== "DOSSIER_DEMANDE" && etapeProcess !== "DOSSIER_RECU") {
+    return { cas: "docs_hors_etape", intention: "docs_hors_etape" };
+  }
 
-  // Étape VISITE_PROPOSEE
+  // CAS C — refus d'une visite proposée/confirmée
+  if (
+    (etapeProcess === "VISITE_PROPOSEE" || etapeProcess === "VISITE_CONFIRMEE") &&
+    detectRefusVisite(body)
+  ) {
+    return { cas: "refus_visite_provisoire", intention: "refus_visite_provisoire" };
+  }
+
+  // CAS A — changement de créneau (re-propose des créneaux)
+  if (
+    (etapeProcess === "VISITE_CONFIRMEE" || etapeProcess === "VISITE_PROPOSEE") &&
+    detectChangementCreneau(body)
+  ) {
+    return { cas: situation === "etudiant" ? "etudiant" : "visite_proposee", intention: "changement_creneau" };
+  }
+
+  // Étapes avancées et manuelles
+  if (etapeProcess === "DOSSIER_RECU")     return { cas: "dossier_recu",     intention: "dossier_recu" };
+  if (etapeProcess === "DOSSIER_DEMANDE")  return { cas: "dossier_demande",  intention: "dossier_demande" };
+  if (etapeProcess === "VISITE_CONFIRMEE") return { cas: "visite_confirmee", intention: "visite_confirmee" };
+  if (etapeProcess === "REFUSE")           return { cas: "refuse",           intention: "refuse" };
   if (etapeProcess === "VISITE_PROPOSEE") {
-    return situation === "etudiant" ? "etudiant" : "visite_proposee";
+    return { cas: situation === "etudiant" ? "etudiant" : "visite_proposee", intention: "visite_proposee" };
   }
 
   // Pas d'étape renseignée → déterminer depuis le profil
-  if (situation === "etudiant") return "etudiant";
-  if (revenus !== null && loyer !== null && loyer > 0 && revenus / loyer < multiplicateur) return "refuse";
-  if (!revenus || !loyer || !situation) return "qualification";
-  return "visite_proposee";
+  if (situation === "etudiant") return { cas: "etudiant", intention: "qualification" };
+  if (revenus !== null && loyer !== null && loyer > 0 && revenus / loyer < multiplicateur)
+    return { cas: "refuse", intention: "refuse_solvabilite" };
+  if (!revenus || !loyer || !situation) return { cas: "qualification", intention: "qualification" };
+  return { cas: "visite_proposee", intention: "visite_proposee" };
 }
 
-/* ── Builders de prompt selon le cas ── */
+/* ── Contexte système structuré (toujours injecté) ── */
+function buildSystemContext(params: {
+  nomAgence: string;
+  instructions: string;
+  prospect: {
+    nom: string;
+    etapeProcess: string | null;
+    situationPro: string | null;
+    revenus: number | null;
+    loyer: number | null;
+    garant: boolean | null;
+    multiplicateur: number;
+  };
+  property: { title: string; address: string | null; rent: number; required_docs: string[] } | null;
+  attachments: { filename: string; docType?: string; status?: string }[];
+  threadEmails: { received_at: string | null; sender: string | null; body: string | null; ai_reply: string | null }[];
+}): string {
+  const { nomAgence, instructions, prospect, property, attachments, threadEmails } = params;
+  const { revenus, loyer, multiplicateur } = prospect;
+  const ratio = revenus && loyer ? revenus / loyer : null;
+  const solvabilite = ratio
+    ? `ratio ${ratio.toFixed(1)}x — ${ratio >= multiplicateur ? "solvable" : "insolvable"}`
+    : "non calculée";
+
+  const docsRecus = attachments
+    .filter((a) => a.filename && a.filename.trim().length > 0)
+    .map((a) => a.docType && a.docType !== "autre" ? a.docType : a.filename);
+
+  const docsRequis = property?.required_docs ?? [];
+  const docsMissing = docsRequis.filter(
+    (d) => !docsRecus.some((r) => r.toLowerCase().includes(d.toLowerCase().slice(0, 5)))
+  );
+
+  const historyLines = threadEmails.map((e) => {
+    const ts = e.received_at ? new Date(e.received_at).toLocaleDateString("fr-FR") : "?";
+    const senderShort = (e.sender ?? "Prospect").replace(/<[^>]+>/, "").trim();
+    const bodyShort = (e.body ?? "").slice(0, 300).replace(/\n+/g, " ");
+    const lines = [`[${ts}] ${senderShort} : ${bodyShort}`];
+    if (e.ai_reply) {
+      lines.push(`[${ts}] IA : ${e.ai_reply.slice(0, 300).replace(/\n+/g, " ")}`);
+    }
+    return lines.join("\n");
+  }).join("\n");
+
+  return `Tu es l'assistant IA de ${nomAgence || "l'agence immobilière"}.
+Réponds toujours en français, ton professionnel et humain.
+Tu ne décides jamais si un dossier est valide — c'est le rôle de l'agent.${instructions ? `\nINSTRUCTIONS SPÉCIALES : ${instructions}` : ""}
+
+CONTEXTE PROSPECT :
+- Nom : ${prospect.nom || "non renseigné"}
+- Étape actuelle : ${prospect.etapeProcess ?? "NEW"}
+- Situation pro : ${prospect.situationPro ?? "non renseignée"}
+- Revenus nets/mois : ${revenus ? `${revenus}€` : "non renseignés"}
+- Solvabilité : ${solvabilite}
+- Garant : ${prospect.garant === true ? "oui" : prospect.garant === false ? "non" : "non précisé"}
+- Documents reçus : ${docsRecus.length > 0 ? docsRecus.join(", ") : "aucun"}
+- Documents manquants : ${docsMissing.length > 0 ? docsMissing.join(", ") : "aucun"}
+
+${property ? `BIEN CONCERNÉ :
+- ${property.title}${property.address ? ` — ${property.address}` : ""}
+- Loyer : ${property.rent}€/mois
+` : ""}HISTORIQUE DE LA CONVERSATION :
+${historyLines || "(Premier contact — aucun historique disponible)"}`;
+}
+
+/* ── Builders de prompt par cas ── */
 function buildPrompt(params: {
   cas: ReplyCase;
   email: { sender: string | null; subject: string | null; body: string | null };
@@ -118,19 +226,15 @@ function buildPrompt(params: {
   };
 }): string {
   const { cas, email, settings, prospect } = params;
-  const { nomAgence, multiplicateur, garantObligatoire, docsProfiles, instructions, heureDebut, heureFin, dureeVisite } = settings;
+  const { nomAgence, multiplicateur, garantObligatoire, docsProfiles, heureDebut, heureFin, dureeVisite } = settings;
 
   const agenceLine = nomAgence ? `Agence : ${nomAgence}` : "Agence immobilière";
   const nomProspect = prospect.nom || "Madame, Monsieur";
-  const instructLine = instructions ? `\nINSTRUCTIONS SPÉCIALES : ${instructions}` : "";
   const emailCtx = `Email reçu :\nExpéditeur : ${email.sender}\nSujet : ${email.subject}\nContenu : ${email.body}`;
   const sig = `Cordialement, L'équipe ${nomAgence || "de l'agence"}`;
 
-  // ── DOSSIER_RECU — accusé réception ────────────────────────────────────────
   if (cas === "dossier_recu") {
-    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
-
-Rédige un email bref et professionnel pour accuser réception des documents de ${nomProspect}.
+    return `Rédige un email bref et professionnel pour accuser réception des documents de ${nomProspect}.
 
 Contenu :
 - Remercier chaleureusement pour l'envoi du dossier
@@ -144,19 +248,46 @@ ${emailCtx}
 Réponse (française, professionnelle, directement envoyable) :`;
   }
 
-  // ── DOSSIER_DEMANDE — envoyer liste de documents ──────────────────────────
+  if (cas === "docs_hors_etape") {
+    return `Rédige un email professionnel et chaleureux pour accuser réception de documents envoyés par ${nomProspect}.
+
+Contenu :
+- Remercier sincèrement pour l'envoi
+- Indiquer que les documents ont bien été reçus et conservés dans le dossier
+- Expliquer qu'un retour sera fait prochainement selon l'avancement du process
+- NE PAS prendre d'engagement ferme sur la suite
+- Signature : ${sig}
+
+${emailCtx}
+
+Réponse (française, professionnelle, directement envoyable) :`;
+  }
+
+  if (cas === "refus_visite_provisoire") {
+    return `Rédige un email compréhensif et professionnel pour répondre à ${nomProspect} qui ne peut pas se rendre à la visite proposée.
+
+Contenu :
+- Comprendre et remercier ${nomProspect} de nous avoir informé
+- Demander brièvement la raison si elle n'est pas précisée
+- Proposer de trouver une autre disponibilité et demander ses créneaux préférés
+- Rester positif et disponible
+- NE PAS passer en statut refus définitif
+- Signature : ${sig}
+
+${emailCtx}
+
+Réponse (française, professionnelle, directement envoyable) :`;
+  }
+
   if (cas === "dossier_demande") {
     const sitKeyMap: Record<string, keyof typeof docsProfiles> = {
       cdi: "cdi", cdd: "cdd", auto: "auto", retraite: "retraite", etudiant: "etudiant",
     };
-    const sitKey: keyof typeof docsProfiles =
-      (prospect.situation ? (sitKeyMap[prospect.situation] ?? "cdi") : "cdi");
-    const docsList = (docsProfiles[sitKey] ?? docsProfiles.cdi).map(d => `• ${d}`).join("\n");
+    const sitKey: keyof typeof docsProfiles = prospect.situation ? (sitKeyMap[prospect.situation] ?? "cdi") : "cdi";
+    const docsList = (docsProfiles[sitKey] ?? docsProfiles.cdi).map((d) => `• ${d}`).join("\n");
     const needsGarant = prospect.situation && garantObligatoire[prospect.situation];
     const garantLine = needsGarant ? "\n• Pour votre profil, un garant sera également requis (mêmes documents)." : "";
-    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
-
-Rédige un email chaleureux pour demander le dossier locataire à ${nomProspect}, suite à la visite.
+    return `Rédige un email chaleureux pour demander le dossier locataire à ${nomProspect}, suite à la visite.
 
 Contenu :
 - Remercier ${nomProspect} pour la visite et l'intérêt pour le bien
@@ -171,11 +302,8 @@ ${emailCtx}
 Réponse (française, professionnelle, directement envoyable) :`;
   }
 
-  // ── VISITE_CONFIRMEE — confirmer RDV (pas de docs, attendre visite) ────────
   if (cas === "visite_confirmee") {
-    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
-
-Rédige un email de confirmation de visite pour ${nomProspect}.
+    return `Rédige un email de confirmation de visite pour ${nomProspect}.
 
 Contenu :
 - Confirmer chaleureusement la visite (date/heure telles que mentionnées dans l'email reçu)
@@ -189,14 +317,11 @@ ${emailCtx}
 Réponse (française, professionnelle, directement envoyable) :`;
   }
 
-  // ── REFUSE — refus poli + suggestion garant ────────────────────────────────
   if (cas === "refuse") {
     const ratio = prospect.revenus && prospect.loyer
       ? (prospect.revenus / prospect.loyer).toFixed(1)
       : "insuffisant";
-    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
-
-Rédige un email professionnel, poli et respectueux pour décliner cette candidature.
+    return `Rédige un email professionnel, poli et respectueux pour décliner cette candidature.
 
 Contenu :
 - Remercier ${nomProspect} pour sa candidature et son intérêt
@@ -212,12 +337,9 @@ ${emailCtx}
 Réponse (française, professionnelle, directement envoyable) :`;
   }
 
-  // ── ETUDIANT — garant + créneaux, PAS de documents ────────────────────────
   if (cas === "etudiant") {
     const needsGarant = garantObligatoire["etudiant"] !== false;
-    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
-
-Rédige un email professionnel et bienveillant pour un candidat étudiant.
+    return `Rédige un email professionnel et bienveillant pour un candidat étudiant.
 
 Contenu :
 - Remercier ${nomProspect} pour son intérêt pour le bien
@@ -232,15 +354,12 @@ ${emailCtx}
 Réponse (française, professionnelle, directement envoyable) :`;
   }
 
-  // ── QUALIFICATION — demander situation + revenus SEULEMENT ────────────────
   if (cas === "qualification") {
     const missingList: string[] = [];
     if (!prospect.situation) missingList.push("votre situation professionnelle (CDI, CDD, étudiant, indépendant, retraité…)");
     if (!prospect.revenus) missingList.push("vos revenus nets mensuels (en €)");
     const missingStr = missingList.map((m, i) => `${i + 1}. ${m}`).join("\n");
-    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
-
-Rédige un email chaleureux pour demander les informations manquantes.
+    return `Rédige un email chaleureux pour demander les informations manquantes.
 
 Contenu :
 - Remercier ${nomProspect} pour son intérêt pour le bien
@@ -256,17 +375,13 @@ ${emailCtx}
 Réponse (française, professionnelle, directement envoyable) :`;
   }
 
-  // ── VISITE_PROPOSEE — solvable, proposer créneaux, PAS de documents ────────
+  // visite_proposee (default)
   const ratio = prospect.revenus && prospect.loyer
     ? (prospect.revenus / prospect.loyer).toFixed(1)
     : null;
-  const solvLine = ratio
-    ? ` Son profil présente un ratio de ${ratio}x (critère : ${multiplicateur}x).`
-    : "";
+  const solvLine = ratio ? ` Son profil présente un ratio de ${ratio}x (critère : ${multiplicateur}x).` : "";
 
-  return `Tu es l'assistant de l'${agenceLine}.${instructLine}
-
-Rédige un email professionnel et enthousiaste pour proposer une visite à ce candidat solvable.${solvLine}
+  return `Rédige un email professionnel et enthousiaste pour proposer une visite à ce candidat solvable.${solvLine}
 
 Contenu :
 - Accueillir chaleureusement ${nomProspect}
@@ -290,26 +405,87 @@ export async function POST(req: Request) {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
 
-    // 2. Email
+    // 2. Email ID
     const { emailId } = await req.json();
     if (!emailId) return NextResponse.json({ error: "EMAIL_ID_REQUIRED" }, { status: 400 });
 
-    // 3) Charger email
+    // 3. Charger email + champs nécessaires (thread, property, attachments)
     const { data: email, error: emailErr } = await supabaseAdmin
       .from("emails")
-      .select("id, sender, subject, body, ai_reply, category, prospect_data")
+      .select("id, sender, subject, body, ai_reply, category, prospect_data, thread_id, gmail_thread_id, property_id, attachments")
       .eq("id", emailId)
       .eq("user_id", user.id)
       .single();
 
     if (emailErr || !email) return NextResponse.json({ error: "EMAIL_NOT_FOUND" }, { status: 404 });
 
-    // 3. Anti-coût : réponse déjà générée
+    // CAS D — HORS_SUJET : ne pas générer de réponse
+    if ((email.category ?? "").toUpperCase() === "HORS_SUJET") {
+      try {
+        await supabaseAdmin.from("activity_log").insert({
+          user_id: user.id,
+          actor: "ai",
+          type: "skipped_hors_sujet",
+          title: "Email HORS_SUJET — réponse IA non générée",
+          email_id: emailId,
+          meta: { subject: email.subject, sender: email.sender },
+        });
+      } catch { /* non bloquant */ }
+      return NextResponse.json({ error: "HORS_SUJET", message: "Email hors sujet — aucune réponse générée." }, { status: 400 });
+    }
+
+    // Anti-coût : réponse déjà générée
     if (email.ai_reply && email.ai_reply.trim().length > 0) {
       return NextResponse.json({ reply: email.ai_reply });
     }
 
-    // 4. Charger les settings
+    // 4. Charger l'historique du thread (5 emails précédents + email courant)
+    const threadId = (email as any).thread_id ?? (email as any).gmail_thread_id ?? null;
+    let threadEmails: { received_at: string | null; sender: string | null; body: string | null; ai_reply: string | null }[] = [];
+
+    if (threadId) {
+      const { data: threadRows } = await supabaseAdmin
+        .from("emails")
+        .select("id, sender, subject, body, received_at, prospect_data, category, ai_reply")
+        .eq("user_id", user.id)
+        .eq("thread_id", threadId)
+        .neq("id", emailId) // exclure l'email courant (il sera ajouté en dernier)
+        .order("received_at", { ascending: true })
+        .limit(5);
+
+      if (threadRows && threadRows.length > 0) {
+        threadEmails = threadRows.map((r: any) => ({
+          received_at: r.received_at,
+          sender: r.sender,
+          body: r.body,
+          ai_reply: r.ai_reply,
+        }));
+        console.log(`[generate-reply] Thread ${threadId} → ${threadEmails.length} email(s) précédent(s) chargé(s)`);
+      }
+    }
+
+    // 5. Charger le bien associé (property_id)
+    const propertyId = (email as any).property_id ?? null;
+    let property: { title: string; address: string | null; rent: number; required_docs: string[] } | null = null;
+
+    if (propertyId) {
+      const { data: propRow } = await supabaseAdmin
+        .from("properties")
+        .select("title, address, rent, required_docs")
+        .eq("id", propertyId)
+        .maybeSingle();
+      if (propRow) {
+        property = {
+          title: propRow.title,
+          address: propRow.address ?? null,
+          rent: propRow.rent ?? 0,
+          required_docs: Array.isArray(propRow.required_docs) ? propRow.required_docs : [],
+        };
+        console.log(`[generate-reply] Property chargée: ${property.title}`);
+      }
+    }
+
+    // 6. Charger les settings
     const { data: settingsRow } = await supabaseAdmin
       .from("settings_v1")
       .select("email_rules")
@@ -344,11 +520,15 @@ export async function POST(req: Request) {
       dureeVisite: (calSection.dureeVisite as number) ?? 60,
     };
 
-    // 5. Construction du prompt selon l'intention et l'étape
+    // 7. Construction du prompt
     const body = email.body ?? "";
     const isLocation = (email.category || "").toUpperCase() === "LOCATION";
+    const attachments = Array.isArray((email as any).attachments) ? (email as any).attachments as { filename: string; docType?: string; status?: string }[] : [];
 
     let prompt: string;
+    let intention = "non_location";
+    let etapeAvant: string = "unknown";
+    let etapeApres: string = "unknown";
 
     if (isLocation) {
       const pd = (email as any).prospect_data as Record<string, unknown> | null;
@@ -371,20 +551,54 @@ export async function POST(req: Request) {
         ? pd.nom.trim()
         : extractNom(body);
 
-      // ← BLOC 2 : lire l'étape depuis prospect_data
       const etapeProcess = (pd?.etape_process as string | null) ?? null;
+      etapeAvant = etapeProcess ?? "NEW";
 
-      const cas = determineCase({
+      const { cas, intention: detectedIntention } = determineCase({
         situation,
         revenus,
         loyer,
         multiplicateur: settings.multiplicateur,
         etapeProcess,
+        body,
+        hasAttachments: attachments.length > 0,
+      });
+      intention = detectedIntention;
+
+      // CAS A — changement créneau : update etape_process en DB
+      if (intention === "changement_creneau") {
+        etapeApres = "VISITE_PROPOSEE";
+        try {
+          await supabaseAdmin
+            .from("emails")
+            .update({ prospect_data: { ...(pd ?? {}), etape_process: "VISITE_PROPOSEE" } })
+            .eq("id", emailId);
+        } catch { /* non bloquant */ }
+      } else {
+        etapeApres = etapeAvant;
+      }
+
+      console.log(`[generate-reply] emailId=${emailId} thread_emails=${threadEmails.length} etape=${etapeProcess ?? "null"} cas=${cas} intention=${intention}`);
+
+      // Contexte système structuré
+      const systemContext = buildSystemContext({
+        nomAgence: settings.nomAgence,
+        instructions: settings.instructions,
+        prospect: {
+          nom,
+          etapeProcess: etapeAvant,
+          situationPro: situation,
+          revenus,
+          loyer,
+          garant: pd?.garant as boolean | null ?? null,
+          multiplicateur: settings.multiplicateur,
+        },
+        property,
+        attachments,
+        threadEmails,
       });
 
-      console.log(`[generate-reply] emailId=${emailId} etape=${etapeProcess ?? "null"} cas=${cas} situation=${situation} revenus=${revenus} loyer=${loyer} nom="${nom}"`);
-
-      prompt = buildPrompt({
+      prompt = `${systemContext}\n\n---\n\n` + buildPrompt({
         cas,
         email: { sender: email.sender, subject: email.subject, body: email.body },
         settings,
@@ -392,7 +606,7 @@ export async function POST(req: Request) {
       });
     } else {
       // Email non-LOCATION : prompt générique professionnel
-      const contextLine = settings.nomAgence ? `Tu es l'assistant de l'${settings.nomAgence}.` : "Tu es l'assistant personnel d'un dirigeant très occupé.";
+      const contextLine = settings.nomAgence ? `Tu es l'assistant de l'agence ${settings.nomAgence}.` : "Tu es l'assistant personnel d'un dirigeant très occupé.";
       const instructLine = settings.instructions ? `\nINSTRUCTIONS SPÉCIALES : ${settings.instructions}` : "";
       const faqContext = settings.faq.length > 0
         ? `\nFAQ AGENCE (utilise ces réponses si pertinent) :\n${settings.faq.slice(0, 5).map((f) => `Q: ${f.question}\nR: ${f.reponse}`).join("\n\n")}`
@@ -407,7 +621,7 @@ Règles :
 - Ton humain, poli, efficace
 - Pas trop long
 - Adapté au CONTENU réel
-- Signature neutre : Cordialement, L’équipe ${settings.nomAgence || "de l’agence"}
+- Signature neutre : Cordialement, L'équipe ${settings.nomAgence || "de l'agence"}
 
 Email reçu :
 Expéditeur : ${email.sender}
@@ -418,7 +632,7 @@ ${email.body}
 Réponse (française, professionnelle, directement envoyable) :`;
     }
 
-    // 6. Appel OpenAI
+    // 8. Appel OpenAI
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [{ role: "user", content: prompt }],
@@ -428,8 +642,27 @@ Réponse (française, professionnelle, directement envoyable) :`;
     const reply = completion.choices[0]?.message?.content?.trim() || null;
     if (!reply) return NextResponse.json({ error: "AI_NO_REPLY" }, { status: 500 });
 
-    // 7. Sauvegarde (anti-surcoût)
+    // 9. Sauvegarde
     await supabaseAdmin.from("emails").update({ ai_reply: reply }).eq("id", email.id);
+
+    // 10. Timeline : logguer la génération
+    if (isLocation) {
+      try {
+        await supabaseAdmin.from("prospect_timeline").insert({
+          user_id: user.id,
+          email_id: emailId,
+          action_type: "ai_reply_generated",
+          description: "Réponse IA générée",
+          metadata: {
+            intention_detectee: intention,
+            etape_avant: etapeAvant,
+            etape_apres: etapeApres,
+            confiance: intention !== "qualification" ? 0.85 : 0.6,
+            thread_emails_loaded: threadEmails.length,
+          },
+        });
+      } catch { /* non bloquant */ }
+    }
 
     return NextResponse.json({ reply });
   } catch (err) {

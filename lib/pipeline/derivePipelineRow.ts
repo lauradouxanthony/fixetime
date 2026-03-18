@@ -2,8 +2,12 @@
  * Dérive une ligne Pipeline normalisée depuis un row email (DB).
  * Utilisé côté serveur (API list) et côté client si besoin.
  * Pas de valeurs hardcodées : intent depuis lead_json.intent, fallback logique.
+ *
+ * Ordre de priorité statut :
+ *   1. prospect_data.etape_process (EtapeProcess officiel)
+ *   2. lead_status legacy (converti via LEGACY_STATUS_TO_ETAPE)
  */
-import { LEAD_STATUS_TO_LABEL } from "./constants";
+import { LEAD_STATUS_TO_LABEL, ETAPE_PROCESS_META, LEGACY_STATUS_TO_ETAPE, type EtapeProcess } from "./constants";
 
 export type PipelineRow = {
   id: string;
@@ -26,6 +30,11 @@ type EmailLike = {
   lead_score?: number | null;
   lead_last_action?: string | null;
   lead_last_action_at?: string | null;
+  prospect_data?: {
+    etape_process?: string | null;
+    nom_prenom?: string | null;
+    nom?: string | null;
+  } | null;
   lead_json?: {
     intent?: string | null;
     last_action?: { type?: string; at?: string; label?: string };
@@ -64,9 +73,23 @@ function deriveIntent(email: EmailLike): "LOCATION" | "INFORMATION" {
   return "LOCATION";
 }
 
-function statusLabel(status: string | null | undefined): string {
-  if (!status) return LEAD_STATUS_TO_LABEL.raw ?? "New";
-  return LEAD_STATUS_TO_LABEL[status] ?? status;
+/**
+ * Résout le statut effectif d'un email :
+ * 1. prospect_data.etape_process (EtapeProcess officiel) → priorité absolue
+ * 2. lead_status legacy → converti via LEGACY_STATUS_TO_ETAPE
+ */
+function resolveEtapeProcess(email: EmailLike): EtapeProcess {
+  const etape = email.prospect_data?.etape_process;
+  if (etape && etape in ETAPE_PROCESS_META) {
+    return etape as EtapeProcess;
+  }
+  const legacy = email.lead_status ?? "raw";
+  return LEGACY_STATUS_TO_ETAPE[legacy] ?? "NEW";
+}
+
+function statusLabel(email: EmailLike): string {
+  const etape = resolveEtapeProcess(email);
+  return ETAPE_PROCESS_META[etape]?.label ?? LEAD_STATUS_TO_LABEL[email.lead_status ?? "raw"] ?? "New";
 }
 
 const LAST_ACTION_LABELS: Record<string, string> = {
@@ -75,7 +98,7 @@ const LAST_ACTION_LABELS: Record<string, string> = {
   proposal_sent: "Proposition envoyée",
   slots_generated: "Créneaux générés",
   booked: "Visite confirmée",
-  asked_missing_info: "Demande d’infos manquantes",
+  asked_missing_info: "Demande d'infos manquantes",
   asked_docs: "Demande de documents",
   info_answered: "Réponse FAQ envoyée",
   draft_info_reply: "Brouillon réponse FAQ",
@@ -113,13 +136,14 @@ function propertyRent(email: EmailLike): number | null {
 
 export function derivePipelineRow(email: EmailLike): PipelineRow {
   const intent = deriveIntent(email);
-  const status = email.lead_status ?? "raw";
+  const etape = resolveEtapeProcess(email);
+  const uiStatus = ETAPE_PROCESS_META[etape]?.uiStatus ?? (email.lead_status ?? "raw");
   return {
     id: email.id,
     candidate_name: candidateName(email),
     lead_score: typeof email.lead_score === "number" ? Math.min(10, Math.max(0, email.lead_score)) : 0,
-    lead_status: status,
-    status_label: statusLabel(status),
+    lead_status: uiStatus, // expose ui_status key for backward compat filters
+    status_label: statusLabel(email),
     intent,
     last_action_label: lastActionLabel(email),
     last_action_at: lastActionAt(email),
