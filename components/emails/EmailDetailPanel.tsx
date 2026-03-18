@@ -230,30 +230,45 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
   const [rejectReason, setRejectReason] = useState(REJECTION_REASONS[0]);
 
   // BLOC 3 : auto-marquer depuis les noms de fichiers des pièces jointes
-  // Priorité : att.docTypes (pré-calculé par le sync) > détection locale
+  // Priorité : att.docType (nouveau, string) > att.docTypes (ancien, Record) > détection locale
   useEffect(() => {
     if (!attachments || attachments.length === 0) return;
+    // Map nouveau docType string → clé DOCS
+    const toDocsKey = (dt: string): string | null => {
+      if (dt === "fiche_paie" || dt === "fiches_paie") return "fiches_paie";
+      if (dt === "contrat_travail" || dt === "contrat") return "contrat";
+      if (dt === "avis_imposition") return "avis_imposition";
+      if (dt === "piece_identite") return "piece_identite";
+      return null;
+    };
     const updates: Record<string, DocStatus> = {};
     for (const att of attachments) {
-      // Utiliser docTypes pré-calculé s'il est disponible
+      // Nouveau format : docType string
+      const docType = (att as any).docType as string | undefined;
+      if (docType && docType !== "autre") {
+        const key = toDocsKey(docType);
+        if (key) updates[key] = "recu";
+        continue;
+      }
+      // Ancien format : docTypes Record<string, boolean>
       const docTypes = (att as any).docTypes as Record<string, boolean> | undefined;
       if (docTypes) {
         for (const [key, val] of Object.entries(docTypes)) {
-          if (val) updates[key] = "recu";
+          if (val) { const k = toDocsKey(key) ?? key; updates[k] = "recu"; }
         }
-      } else {
-        // Fallback : détection locale par nom de fichier
-        const fname = att.filename.toLowerCase()
-          .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-        if (fname.includes("fiche") || fname.includes("paie") || fname.includes("bulletin"))
-          updates.fiches_paie = "recu";
-        if (fname.includes("contrat") || fname.includes("cdi") || fname.includes("cdd"))
-          updates.contrat = "recu";
-        if (fname.includes("imposition") || fname.includes("avis") || fname.includes("impot"))
-          updates.avis_imposition = "recu";
-        if (fname.includes("identite") || fname.includes("cni") || fname.includes("passeport") || fname.includes("carte"))
-          updates.piece_identite = "recu";
+        continue;
       }
+      // Fallback : détection locale par nom de fichier
+      const fname = att.filename.toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      if (fname.includes("fiche") || fname.includes("paie") || fname.includes("bulletin"))
+        updates.fiches_paie = "recu";
+      if (fname.includes("contrat") || fname.includes("cdi") || fname.includes("cdd"))
+        updates.contrat = "recu";
+      if (fname.includes("imposition") || fname.includes("avis") || fname.includes("impot"))
+        updates.avis_imposition = "recu";
+      if (fname.includes("identite") || fname.includes("cni") || fname.includes("passeport") || fname.includes("carte"))
+        updates.piece_identite = "recu";
     }
     if (Object.keys(updates).length > 0) {
       setDocs((prev) => ({ ...prev, ...updates }));
@@ -303,16 +318,20 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
 
   // ── BLOC 3 : Validation / Rejet ─────────────────────────────────────────
 
-  // Détermine le docType d'une attachment
+  // Détermine le docType d'une attachment — supporte nouveau format (string) et ancien (Record)
   function getAttDocType(att: AttachmentInfo): string | null {
+    // Nouveau format : docType string direct
+    const docType = (att as any).docType as string | undefined;
+    if (docType && docType !== "autre") return docType;
+    // Ancien format : docTypes Record<string, boolean>
     const dt = (att as any).docTypes as Record<string, boolean> | undefined;
     if (dt) {
       for (const [k, v] of Object.entries(dt)) { if (v) return k; }
     }
     // Fallback par nom de fichier
     const fname = att.filename.toLowerCase();
-    if (fname.includes("paie") || fname.includes("bulletin")) return "fiches_paie";
-    if (fname.includes("contrat")) return "contrat";
+    if (fname.includes("paie") || fname.includes("bulletin")) return "fiche_paie";
+    if (fname.includes("contrat")) return "contrat_travail";
     if (fname.includes("imposition") || fname.includes("impot")) return "avis_imposition";
     if (fname.includes("identite") || fname.includes("cni") || fname.includes("passeport") || fname.includes("carte")) return "piece_identite";
     return null;
@@ -331,11 +350,18 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
         .map(a => getAttDocType(a))
         .filter(Boolean)
     );
-    // Map docType variants to DOCS keys
-    const normalize = (k: string | null) => k === "contrat_travail" ? "contrat" : k;
-    const docsComplet = DOCS.every(d => validatedDocTypes.has(d.key) || validatedDocTypes.has(
-      d.key === "contrat" ? "contrat_travail" : d.key
-    ));
+    // Map docType variants to DOCS keys (supporte nouveau format fiche_paie/contrat_travail et ancien)
+    const normalize = (k: string | null) => {
+      if (k === "contrat_travail") return "contrat";
+      if (k === "fiche_paie" || k === "fiches_paie") return "fiches_paie";
+      return k;
+    };
+    const docsComplet = DOCS.every(d => {
+      const normalized = normalize(d.key);
+      return validatedDocTypes.has(d.key) || validatedDocTypes.has(normalized ?? d.key)
+        || (d.key === "contrat" && validatedDocTypes.has("contrat_travail"))
+        || (d.key === "fiches_paie" && validatedDocTypes.has("fiche_paie"));
+    });
 
     try {
       const res = await fetch("/api/emails/validate-doc", {
@@ -519,6 +545,16 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
                         className="text-xs px-2 py-1 rounded-lg font-medium flex-shrink-0"
                         style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}>
                         Voir →
+                      </a>
+                    )}
+                    {att.attachmentId && gmailMessageId && (
+                      <a
+                        href={`/api/emails/download-attachment?gmailMessageId=${encodeURIComponent(gmailMessageId)}&attachmentId=${encodeURIComponent(att.attachmentId)}&filename=${encodeURIComponent(att.filename)}&mimeType=${encodeURIComponent(att.mimeType ?? "")}`}
+                        download={att.filename}
+                        className="text-xs px-2 py-1 rounded-lg font-medium flex-shrink-0"
+                        style={{ background: "rgba(100,116,139,0.08)", color: "rgb(71 85 105)" }}
+                      >
+                        ⬇️
                       </a>
                     )}
                   </div>

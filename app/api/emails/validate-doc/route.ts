@@ -11,13 +11,16 @@ import { getValidGoogleAccessToken } from "@/lib/google/getValidAccessToken";
 
 export const runtime = "nodejs";
 
-// Map nom de fichier / docType → label lisible
+// Map nom de fichier / docType → label lisible (supporte nouveau format fiche_paie et ancien fiches_paie)
 function docTypeLabel(docType: string | null, filename: string): string {
-  if (docType === "fiches_paie") return "fiches de paie";
+  if (docType === "fiche_paie" || docType === "fiches_paie") return "fiches de paie";
   if (docType === "contrat_travail" || docType === "contrat") return "contrat de travail";
   if (docType === "avis_imposition") return "avis d'imposition";
   if (docType === "piece_identite") return "pièce d'identité";
+  if (docType === "releve_bancaire") return "relevé bancaire";
+  if (docType === "carte_etudiant") return "carte étudiante";
   if (docType === "kbis") return "K-bis";
+  if (docType === "document_garant") return "document garant";
   if (docType === "bilan") return "bilan comptable";
   return filename;
 }
@@ -104,6 +107,19 @@ export async function POST(req: Request) {
     ?? (emailRow.prospect_data as any)?.nom
     ?? "le candidat";
   const docLabel = docTypeLabel(docType, filename);
+
+  // ── Si dossier complet → etape_process = DOSSIER_COMPLET ─────────────────
+  if (action === "validate" && dossierComplet) {
+    try {
+      await supabaseAdmin
+        .from("emails")
+        .update({ etape_process: "DOSSIER_COMPLET" })
+        .eq("id", emailId);
+      console.log(`[VALIDATE-DOC] ✅ etape_process → DOSSIER_COMPLET pour email ${emailId}`);
+    } catch (e) {
+      console.warn("[VALIDATE-DOC] etape_process update échoué:", e);
+    }
+  }
 
   // ── Insérer dans prospect_timeline ────────────────────────────────────────
   const timelineEntry = {
