@@ -5,6 +5,34 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
+// ── 5a. Détection mécontentement ────────────────────────────────────────────
+const MECONTENTEMENT_KEYWORDS = [
+  "n'importe quoi", "scandale", "honte", "inadmissible",
+  "parler à quelqu'un", "parler a quelqu'un", "responsable", "inacceptable",
+  "avocat", "plainte",
+];
+
+function detectMecontentement(body: string): boolean {
+  const lower = body.toLowerCase();
+  return MECONTENTEMENT_KEYWORDS.some((kw) => lower.includes(kw));
+}
+
+// ── 5b. Questions déjà posées dans le thread ────────────────────────────────
+type AlreadyAsked = {
+  situation: boolean;
+  revenus: boolean;
+  garant: boolean;
+};
+
+function detectAlreadyAsked(threadBodies: string[]): AlreadyAsked {
+  const all = threadBodies.join(" ").toLowerCase();
+  return {
+    situation: /situation\s*pro|situation\s*profess|cdi|cdd|étudiant|indépendant|freelance/i.test(all),
+    revenus: /revenu|salaire|gagne[sz]|touche[sz]/i.test(all),
+    garant: /garant|caution\s*solidaire/i.test(all),
+  };
+}
+
 /* ── Extraction heuristique depuis le corps (fallback si prospect_data absent) ── */
 function detectSituation(body: string): string | null {
   const l = body.toLowerCase();
@@ -110,8 +138,9 @@ function buildPrompt(params: {
     revenus: number | null;
     loyer: number | null;
   };
+  alreadyAsked?: { situation: boolean; revenus: boolean; garant: boolean };
 }): string {
-  const { cas, email, settings, prospect } = params;
+  const { cas, email, settings, prospect, alreadyAsked } = params;
   const { nomAgence, multiplicateur, garantObligatoire, docsProfiles, instructions, heureDebut, heureFin, dureeVisite } = settings;
 
   const agenceLine = nomAgence ? `Agence : ${nomAgence}` : "Agence immobilière";
@@ -226,23 +255,29 @@ ${emailCtx}
 Réponse (française, professionnelle, directement envoyable) :`;
   }
 
-  // ── QUALIFICATION — demander situation + revenus SEULEMENT ────────────────
+  // ── QUALIFICATION — demander UNE SEULE info manquante, ne pas répéter ─────
   if (cas === "qualification") {
+    // 5b : ne pas re-poser une question déjà posée dans le thread
     const missingList: string[] = [];
-    if (!prospect.situation) missingList.push("votre situation professionnelle (CDI, CDD, étudiant, indépendant, retraité…)");
-    if (!prospect.revenus) missingList.push("vos revenus nets mensuels (en €)");
-    const missingStr = missingList.map((m, i) => `${i + 1}. ${m}`).join("\n");
+    if (!prospect.situation && !alreadyAsked?.situation)
+      missingList.push("votre situation professionnelle (CDI, CDD, étudiant, indépendant, retraité…)");
+    if (!prospect.revenus && !alreadyAsked?.revenus)
+      missingList.push("vos revenus nets mensuels (en €)");
+
+    // 5c : CTA obligatoire — poser UNE seule question
+    const questionCTA = missingList.length > 0
+      ? `Poser EXACTEMENT cette question (une seule) : "${missingList[0]}"`
+      : `Confirmer que la candidature sera étudiée dès que possible et demander si ${nomProspect} a des questions`;
+
     return `Tu es l'assistant de l'${agenceLine}.${instructLine}
 
-Rédige un email chaleureux pour demander les informations manquantes.
+Rédige un email chaleureux et court.
 
 Contenu :
-- Remercier ${nomProspect} pour son intérêt pour le bien
-- Expliquer qu'avant d'étudier sa candidature, il manque quelques informations :
-${missingStr}
-- Préciser que ces informations permettront de traiter rapidement sa candidature
-- Rester encourageant et disponible pour toute question
+- Remercier ${nomProspect} pour son intérêt
+- ${questionCTA}
 - NE PAS demander de documents à ce stade
+- Terminer par une question claire et une seule (pas deux questions à la fois)
 - Signature : ${sig}
 
 ${emailCtx}
@@ -258,17 +293,30 @@ Réponse (française, professionnelle, directement envoyable) :`;
     ? ` Son profil présente un ratio de ${ratio}x (critère : ${multiplicateur}x).`
     : "";
 
+  // 5d : ton adapté au profil
+  let tonLine = "professionnel et enthousiaste";
+  let extraInstructions = "";
+  if (prospect.situation === "cdi" && prospect.revenus && prospect.loyer && prospect.revenus / prospect.loyer >= 4) {
+    tonLine = "direct, concis et professionnel (profil très solvable)";
+  } else if (prospect.situation === "etudiant") {
+    tonLine = "bienveillant et rassurant";
+    extraInstructions = `\n- Mentionner qu'un garant sera nécessaire si ce n'est pas encore précisé`;
+  } else if (prospect.situation === "auto") {
+    tonLine = "professionnel";
+    extraInstructions = `\n- Mentionner qu'un dossier comptable complet sera requis (3 derniers bilans) en plus des pièces habituelles`;
+  }
+
   return `Tu es l'assistant de l'${agenceLine}.${instructLine}
 
-Rédige un email professionnel et enthousiaste pour proposer une visite à ce candidat solvable.${solvLine}
+Rédige un email ${tonLine} pour proposer une visite à ce candidat solvable.${solvLine}
 
 Contenu :
 - Accueillir chaleureusement ${nomProspect}
 - Confirmer que son profil correspond à nos critères (sans rentrer dans les détails chiffrés)
 - Proposer 3 créneaux de visite concrets et réalistes à court terme (jours ouvrés, entre ${heureDebut}h et ${heureFin}h, durée ${dureeVisite}min)
-- Demander de confirmer le créneau préféré ou de proposer une autre disponibilité
+- Demander de confirmer le créneau préféré ou de proposer une autre disponibilité${extraInstructions}
 - NE PAS demander de documents — les documents seront demandés après la visite
-- Rester enthousiaste et professionnel
+- Terminer par UNE seule question ou action claire (confirmation du créneau)
 - Signature : ${sig}
 
 ${emailCtx}
@@ -297,10 +345,53 @@ export async function POST(req: Request) {
 
     if (error || !email) return NextResponse.json({ error: "EMAIL_NOT_FOUND" }, { status: 404 });
 
+    // 5a. Détection mécontentement — avant tout
+    const emailBody = email.body ?? "";
+    if (detectMecontentement(emailBody)) {
+      // Marquer is_urgent = true + log activity
+      await supabaseAdmin
+        .from("emails")
+        .update({ is_urgent: true })
+        .eq("id", email.id);
+
+      // Logger dans activity_log si la table existe (graceful)
+      try {
+        await supabaseAdmin.from("activity_log").insert({
+          email_id: email.id,
+          user_id: user.id,
+          type: "alerte_mecontentement",
+          actor: "ai",
+          metadata: { reason: "mecontentement_detected" },
+        });
+      } catch { /* table optionnelle */ }
+
+      console.log(`[generate-reply] MÉCONTENTEMENT détecté emailId=${emailId} → human_required`);
+      return NextResponse.json({
+        action: "human_required",
+        reason: "mecontentement",
+        is_urgent: true,
+      });
+    }
+
     // 3. Anti-coût : réponse déjà générée
     if (email.ai_reply && email.ai_reply.trim().length > 0) {
       return NextResponse.json({ reply: email.ai_reply });
     }
+
+    // 5b. Récupérer les 6 derniers emails du thread (même sender)
+    const senderKey = (email.sender ?? "").replace(/.*<(.+)>.*/, "$1").trim().toLowerCase();
+    let threadBodies: string[] = [];
+    if (senderKey) {
+      const { data: threadEmails } = await supabaseAdmin
+        .from("emails")
+        .select("body, ai_reply")
+        .eq("user_id", user.id)
+        .ilike("sender", `%${senderKey}%`)
+        .order("received_at", { ascending: false })
+        .limit(6);
+      threadBodies = (threadEmails ?? []).flatMap((e: any) => [e.body ?? "", e.ai_reply ?? ""].filter(Boolean));
+    }
+    const alreadyAsked = detectAlreadyAsked(threadBodies);
 
     // 4. Charger les settings
     const { data: settingsRow } = await supabaseAdmin
@@ -382,6 +473,7 @@ export async function POST(req: Request) {
         email: { sender: email.sender, subject: email.subject, body: email.body },
         settings,
         prospect: { nom, situation, revenus, loyer },
+        alreadyAsked,
       });
     } else {
       // Email non-LOCATION : prompt générique professionnel
