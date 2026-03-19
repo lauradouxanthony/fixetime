@@ -82,7 +82,7 @@ function ProspectCard({
 
   return (
     <button
-      onClick={() => onClick(prospect.last_email_id ?? prospect.id)}
+      onClick={() => onClick(prospect.id)}
       className="w-full text-left bg-white rounded-xl border border-slate-200 p-3 shadow-sm hover:shadow-md hover:border-indigo-300 transition-all duration-150 group"
     >
       {/* Header row */}
@@ -240,9 +240,9 @@ export default function PipelinePage() {
     return () => document.removeEventListener("mousedown", handleClick);
   }, []);
 
-  // Navigate to email detail
-  const handleCardClick = (emailId: string) => {
-    window.location.href = `/pipeline?emailId=${emailId}`;
+  // Navigate to prospect detail page
+  const handleCardClick = (prospectId: string) => {
+    window.location.href = `/prospects/${prospectId}`;
   };
 
   // Client-side filter: multiple etapes + minRatio + urgentOnly
