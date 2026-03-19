@@ -24,6 +24,12 @@ export default function SettingsClient() {
         income_multiplier: c?.rental_rules?.income_multiplier ?? 3,
         accepted_employment_status: Array.isArray(c?.rental_rules?.accepted_employment_status) ? c.rental_rules.accepted_employment_status : ["CDI", "CDD", "Indépendant", "Étudiant", "Retraite", "Autre"],
         required_documents: c?.rental_rules?.required_documents ?? [],
+        docs_per_profile: {
+          CDI: Array.isArray(c?.rental_rules?.docs_per_profile?.CDI) ? c.rental_rules.docs_per_profile.CDI : ["piece_identite", "fiche_paie", "contrat_travail", "avis_imposition"],
+          CDD: Array.isArray(c?.rental_rules?.docs_per_profile?.CDD) ? c.rental_rules.docs_per_profile.CDD : ["piece_identite", "fiche_paie", "contrat_travail"],
+          ETUDIANT: Array.isArray(c?.rental_rules?.docs_per_profile?.ETUDIANT) ? c.rental_rules.docs_per_profile.ETUDIANT : ["piece_identite", "avis_imposition"],
+          AUTO_ENTREPRENEUR: Array.isArray(c?.rental_rules?.docs_per_profile?.AUTO_ENTREPRENEUR) ? c.rental_rules.docs_per_profile.AUTO_ENTREPRENEUR : ["piece_identite", "avis_imposition", "rib"],
+        },
         allow_guarantor: c?.rental_rules?.allow_guarantor ?? true,
         guarantor_required_for_status: Array.isArray(c?.rental_rules?.guarantor_required_for_status) ? c.rental_rules.guarantor_required_for_status : [],
       },
@@ -106,6 +112,15 @@ export default function SettingsClient() {
 
   const patchRentalRules = (partial: any) => {
     patchConfig({ rental_rules: { ...cfg.rental_rules, ...partial } });
+  };
+
+  const patchDocsPerProfile = (profile: string, docs: string[]) => {
+    patchRentalRules({
+      docs_per_profile: {
+        ...(cfg.rental_rules.docs_per_profile as any),
+        [profile]: docs,
+      },
+    });
   };
 
   const patchSchedulingRules = (partial: any) => {
@@ -360,6 +375,55 @@ export default function SettingsClient() {
             />
           </div>
         </div>
+      </section>
+
+      {/* Section 2 : Documents requis par profil */}
+      <section className="rounded-xl border border-slate-800 bg-slate-900/50 p-4">
+        <h2 className="text-sm font-semibold text-white mb-1">2. Documents requis par profil</h2>
+        <p className="text-xs text-slate-500 mb-3">Définissez les pièces obligatoires selon la situation professionnelle du candidat. L’IA utilisera ces règles pour évaluer la complétude d’un dossier.</p>
+        {([
+          { key: "CDI", label: "CDI" },
+          { key: "CDD", label: "CDD" },
+          { key: "ETUDIANT", label: "Étudiant" },
+          { key: "AUTO_ENTREPRENEUR", label: "Auto-entrepreneur / Indépendant" },
+        ] as { key: "CDI" | "CDD" | "ETUDIANT" | "AUTO_ENTREPRENEUR"; label: string }[]).map(({ key, label }) => {
+          const currentDocs: string[] = (cfg.rental_rules.docs_per_profile as any)?.[key] ?? [];
+          return (
+            <div key={key} className="mb-4">
+              <p className="text-xs font-medium text-slate-300 mb-1">{label}</p>
+              <div className="flex flex-wrap gap-2">
+                {([
+                  { id: "piece_identite", label: "Pièce d’identité" },
+                  { id: "fiche_paie", label: "Fiche de paie" },
+                  { id: "contrat_travail", label: "Contrat de travail" },
+                  { id: "avis_imposition", label: "Avis d’imposition" },
+                  { id: "rib", label: "RIB" },
+                  { id: "quittance_loyer", label: "Quittance loyer" },
+                  { id: "garant_fiche_paie", label: "Garant – fiche de paie" },
+                  { id: "garant_contrat", label: "Garant – contrat" },
+                ] as { id: string; label: string }[]).map(({ id, label: docLabel }) => {
+                  const checked = currentDocs.includes(id);
+                  return (
+                    <label key={id} className="flex items-center gap-1.5 cursor-pointer bg-slate-800/60 rounded-lg px-2 py-1">
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        onChange={() => {
+                          const next = checked
+                            ? currentDocs.filter((d) => d !== id)
+                            : [...currentDocs, id];
+                          patchDocsPerProfile(key, next);
+                        }}
+                        className="rounded border-slate-600 bg-slate-900 text-blue-600"
+                      />
+                      <span className="text-xs text-slate-300">{docLabel}</span>
+                    </label>
+                  );
+                })}
+              </div>
+            </div>
+          );
+        })}
       </section>
 
       {/* IA */}

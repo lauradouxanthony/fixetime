@@ -393,6 +393,9 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
   const [timeline, setTimeline] = useState<Array<{ id: string; action_type: string; description: string | null; created_at: string }>>([]);
   const [noteText, setNoteText] = useState("");
   const [savingNote, setSavingNote] = useState(false);
+  const [summaryNote, setSummaryNote] = useState<string | null>(null);
+  const [generatingSummary, setGeneratingSummary] = useState(false);
+  const [exportingZip, setExportingZip] = useState(false);
   const { toast } = useToast();
 
   const ACTION_ICONS: Record<string, string> = {
@@ -425,6 +428,55 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
       setTimeline(d.timeline ?? []);
     } finally {
       setSavingNote(false);
+    }
+  };
+
+  const generateSummary = async () => {
+    if (generatingSummary) return;
+    setGeneratingSummary(true);
+    setSummaryNote(null);
+    try {
+      const res = await fetch(`/api/prospects/${lead.id}/generate-summary`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setSummaryNote(data.summary ?? null);
+        toast("Note de synthèse générée ✅", "success");
+      } else {
+        toast("Erreur lors de la génération", "error");
+      }
+    } catch {
+      toast("Erreur réseau", "error");
+    } finally {
+      setGeneratingSummary(false);
+    }
+  };
+
+  const exportZip = async () => {
+    if (exportingZip) return;
+    setExportingZip(true);
+    try {
+      const res = await fetch(`/api/prospects/${lead.id}/export-zip`);
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        const cd = res.headers.get("Content-Disposition") ?? "";
+        const fnMatch = cd.match(/filename="([^"]+)"/);
+        a.download = fnMatch?.[1] ?? `Dossier_${lead.id}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast("Dossier ZIP téléchargé 📦", "success");
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast(err.error === "NO_ATTACHMENTS" ? "Aucune pièce jointe à exporter" : "Erreur lors de l'export", "error");
+      }
+    } catch {
+      toast("Erreur réseau", "error");
+    } finally {
+      setExportingZip(false);
     }
   };
 
@@ -663,6 +715,42 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
                     );
                   })}
                 </div>
+
+                {/* Boutons IA synthèse + ZIP export */}
+                <div className="flex flex-wrap gap-2 pt-2">
+                  {validatedCount >= 2 && (
+                    <button
+                      onClick={generateSummary}
+                      disabled={generatingSummary}
+                      className="text-xs px-3 py-1.5 rounded-lg font-medium disabled:opacity-50"
+                      style={{ background: "rgba(79,70,229,0.1)", color: "rgb(79 70 229)" }}
+                    >
+                      {generatingSummary ? "🤖 Génération…" : "🤖 Générer note de synthèse"}
+                    </button>
+                  )}
+                  {attachments.length > 0 && (
+                    <button
+                      onClick={exportZip}
+                      disabled={exportingZip}
+                      className="text-xs px-3 py-1.5 rounded-lg font-medium disabled:opacity-50"
+                      style={{ background: "rgba(100,116,139,0.1)", color: "rgb(100 116 139)" }}
+                    >
+                      {exportingZip ? "📦 Export…" : "📦 Exporter dossier complet"}
+                    </button>
+                  )}
+                </div>
+
+                {/* Note de synthèse IA */}
+                {summaryNote && (
+                  <div className="mt-3 rounded-xl border p-4 text-xs whitespace-pre-wrap"
+                    style={{ borderColor: "rgba(79,70,229,0.2)", background: "rgba(79,70,229,0.04)", color: "rgb(30 41 59)" }}>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold" style={{ color: "rgb(79 70 229)" }}>🤖 Note de synthèse IA</span>
+                      <button onClick={() => setSummaryNote(null)} className="text-slate-400 hover:text-slate-600 text-xs">✕</button>
+                    </div>
+                    {summaryNote}
+                  </div>
+                )}
               </div>
             </div>
           )}
