@@ -1384,9 +1384,38 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
                 )}
               </div>
             </div>
-            <div className="text-sm mb-0.5" style={{ color: "rgb(100 116 139)" }}>
-              {email.sender || "Expéditeur inconnu"}
-            </div>
+            {(() => {
+              const senderStr = email.sender ?? "";
+              const pdNom = ((email as any).prospect_data as Record<string, unknown> | null)?.nom as string | null ?? null;
+              // Nom : priorité prospect_data.nom (si pas un email), sinon extraire du format Gmail
+              const nameFromSender = senderStr.match(/^(.+?)\s*<[^>]+>$/)?.[1]?.trim().replace(/^["']|["']$/g, "") ?? null;
+              const displayName =
+                pdNom && !pdNom.includes("@")
+                  ? pdNom
+                  : nameFromSender && nameFromSender.length >= 2 && !nameFromSender.includes("@")
+                  ? nameFromSender
+                  : null;
+              // Email : extraire l'adresse entre <> ou utiliser le sender brut s'il est déjà une adresse
+              const emailAddr =
+                senderStr.match(/<([^>]+)>/)?.[1] ??
+                (senderStr.includes("@") ? senderStr.trim() : null);
+              return (
+                <>
+                  {displayName && (
+                    <div className="text-sm font-medium mb-0.5" style={{ color: "rgb(30 41 59)" }}>
+                      {displayName}
+                    </div>
+                  )}
+                  <div className="text-sm mb-0.5" style={{ color: "rgb(100 116 139)" }}>
+                    {emailAddr ? (
+                      <a href={`mailto:${emailAddr}`} className="hover:underline">{emailAddr}</a>
+                    ) : (
+                      senderStr || "Expéditeur inconnu"
+                    )}
+                  </div>
+                </>
+              );
+            })()}
             <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
               {email.received_at ? new Date(email.received_at).toLocaleString("fr-FR") : ""}
             </div>

@@ -91,11 +91,34 @@ export async function GET() {
     }
 
     // 5. Enrichir chaque lead avec thread_count
-    const leads = Array.from(bySender.values()).map((row) => {
+    const rawLeads = Array.from(bySender.values()).map((row) => {
       const senderKey = (row.sender ?? "").toLowerCase().replace(/.*<(.+)>.*/, "$1").trim();
       return {
         ...row,
         thread_count: senderCounts.get(senderKey) ?? 1,
+      };
+    });
+
+    // 5.5. Normaliser les clés revenus/loyer dans prospect_data
+    // L'IA peut stocker les données sous différents noms de clés selon le prompt
+    const leads = rawLeads.map((row) => {
+      const pd = (row.prospect_data as Record<string, unknown>) ?? {};
+      const revenus_mensuels =
+        (pd.revenus_mensuels as number | null) ??
+        (pd.revenus as number | null) ??
+        (pd.salary as number | null) ??
+        (pd.income as number | null) ??
+        null;
+      const property = pd.property as Record<string, unknown> | null;
+      const loyer_max =
+        (pd.loyer_max as number | null) ??
+        (pd.loyer as number | null) ??
+        (pd.rent as number | null) ??
+        (property?.rent as number | null) ??
+        null;
+      return {
+        ...row,
+        prospect_data: { ...pd, revenus_mensuels, loyer_max },
       };
     });
 

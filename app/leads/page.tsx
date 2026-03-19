@@ -168,6 +168,42 @@ function SolvabilityBadge({ revenus, loyer, multiplicateur = 3 }: { revenus: num
   );
 }
 
+// ── Extraction intelligente du nom d'affichage ────────────────────────────
+function extractDisplayName(lead: Lead): string {
+  const pd = lead.prospect_data;
+  const sender = lead.sender ?? "";
+
+  // 1. Données IA : prenom + nom séparés (si l'IA les a distingués)
+  const prenom = (pd as Record<string, unknown> | null)?.prenom as string | null | undefined;
+  if (pd?.nom && prenom) return `${prenom} ${pd.nom}`;
+
+  // 2. Données IA : nom seul (ignorer si ça ressemble à un email)
+  if (pd?.nom && !pd.nom.includes("@")) return pd.nom;
+
+  // 3. Extraire le nom depuis le format Gmail "Name <email@domain.com>"
+  const nameMatch = sender.match(/^(.+?)\s*<[^>]+>$/);
+  if (nameMatch) {
+    const name = nameMatch[1].trim().replace(/^["']|["']$/g, "");
+    if (name.length >= 2 && !name.includes("@")) return name;
+  }
+
+  // 4. Si l'expéditeur est juste une adresse email → capitaliser la partie locale
+  const emailAddr =
+    sender.match(/<([^>]+)>/)?.[1] ??
+    (sender.includes("@") ? sender.trim() : null);
+  if (emailAddr) {
+    const local = emailAddr.split("@")[0];
+    return local
+      .split(/[._-]+/)
+      .filter(Boolean)
+      .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
+      .join(" ");
+  }
+
+  // 5. Fallback
+  return sender || "Inconnu";
+}
+
 // ── LeadCard enrichie ────────────────────────────────────────────────────────
 function LeadCard({
   lead,
@@ -187,7 +223,7 @@ function LeadCard({
   const etape = getEtapeFromLead(lead);
   const config = ETAPE_CONFIG[etape];
   const pd = lead.prospect_data;
-  const nom = pd?.nom || (lead.sender || "Inconnu").replace(/<.*>/, "").trim();
+  const nom = extractDisplayName(lead);
   const hours = hoursAgo(lead.received_at);
   const tooOld = hours !== null && hours > 48;
   const noAiReply = tooOld && !lead.ai_reply;
@@ -209,7 +245,7 @@ function LeadCard({
       {/* Ligne 1 : point tricolore + nom + badge étape */}
       <div className="flex items-center gap-2">
         <TrafficDot lead={lead} />
-        <div className="font-medium text-sm truncate flex-1" style={{ color: "rgb(30 41 59)" }}>
+        <div className="font-medium text-sm flex-1 min-w-0 leading-tight break-words" style={{ color: "rgb(30 41 59)" }}>
           {nom}
         </div>
         <span
@@ -346,7 +382,7 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
   const pd = lead.prospect_data;
   const etape = getEtapeFromLead(lead);
   const config = ETAPE_CONFIG[etape];
-  const nom = pd?.nom || (lead.sender || "Inconnu").replace(/<.*>/, "").trim();
+  const nom = extractDisplayName(lead);
   const revenus = pd?.revenus_mensuels ?? null;
   const loyer = pd?.loyer_max ?? null;
   const ratio = revenus && loyer ? (revenus / loyer) : null;
@@ -485,17 +521,22 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
               <div className="grid grid-cols-2 gap-3">
                 <div>
                   <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Nom</div>
-                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>{pd?.nom || "—"}</div>
+                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+                    {pd?.nom && !pd.nom.includes("@") ? pd.nom : extractDisplayName(lead)}
+                  </div>
                 </div>
                 <div>
                   <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Email</div>
-                  {lead.sender ? (
-                    <a href={`mailto:${lead.sender.replace(/.*<(.+)>.*/, "$1")}`}
-                      className="text-sm truncate block hover:underline"
-                      style={{ color: "rgb(79 70 229)" }}>
-                      {lead.sender.replace(/<.*>/, "").trim()}
-                    </a>
-                  ) : <div className="text-sm" style={{ color: "rgb(148 163 184)" }}>—</div>}
+                  {lead.sender ? (() => {
+                    const emailAddr = lead.sender.replace(/.*<(.+)>.*/, "$1").trim();
+                    return (
+                      <a href={`mailto:${emailAddr}`}
+                        className="text-sm truncate block hover:underline"
+                        style={{ color: "rgb(79 70 229)" }}>
+                        {emailAddr}
+                      </a>
+                    );
+                  })() : <div className="text-sm" style={{ color: "rgb(148 163 184)" }}>—</div>}
                 </div>
                 <div>
                   <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Téléphone</div>
@@ -956,7 +997,7 @@ export default function LeadsPage() {
                       const etape = getEtapeFromLead(lead);
                       const config = ETAPE_CONFIG[etape];
                       const pd = lead.prospect_data;
-                      const nom = pd?.nom || (lead.sender || "Inconnu").replace(/<.*>/, "").trim();
+                      const nom = extractDisplayName(lead);
                       const revenus = pd?.revenus_mensuels ?? null;
                       const loyer = pd?.loyer_max ?? null;
                       const ratio = revenus && loyer ? (revenus / loyer).toFixed(1) : null;
