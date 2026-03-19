@@ -188,16 +188,16 @@ function extractDisplayName(lead: Lead): string {
   }
 
   // 4. Si l'expéditeur est juste une adresse email → capitaliser la partie locale
+  //    si elle contient des séparateurs (. _ -) ; sinon afficher l'email complet
   const emailAddr =
     sender.match(/<([^>]+)>/)?.[1] ??
     (sender.includes("@") ? sender.trim() : null);
   if (emailAddr) {
     const local = emailAddr.split("@")[0];
-    return local
-      .split(/[._-]+/)
-      .filter(Boolean)
-      .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
-      .join(" ");
+    const parts = local.split(/[._-]+/).filter(Boolean);
+    // Nom sans séparateur → l'email complet est plus lisible que "Lauradouxanthony"
+    if (parts.length <= 1) return emailAddr;
+    return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
   }
 
   // 5. Fallback

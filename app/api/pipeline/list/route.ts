@@ -83,19 +83,37 @@ export async function GET() {
       }
     }
 
-    // 4. Compter le nombre d'emails par sender (thread count)
-    const senderCounts = new Map<string, number>();
+    // 4. Grouper tous les emails par sender (pour thread count + fusion de données)
+    const senderGroups = new Map<string, typeof filtered>();
     for (const row of filtered) {
       const senderKey = (row.sender ?? "").toLowerCase().replace(/.*<(.+)>.*/, "$1").trim();
-      senderCounts.set(senderKey, (senderCounts.get(senderKey) ?? 0) + 1);
+      if (!senderKey) continue;
+      const grp = senderGroups.get(senderKey) ?? [];
+      grp.push(row);
+      senderGroups.set(senderKey, grp);
     }
 
-    // 5. Enrichir chaque lead avec thread_count
+    // 5. Enrichir chaque lead avec thread_count + fusion prospect_data depuis tous les emails du groupe
     const rawLeads = Array.from(bySender.values()).map((row) => {
       const senderKey = (row.sender ?? "").toLowerCase().replace(/.*<(.+)>.*/, "$1").trim();
+      const group = senderGroups.get(senderKey) ?? [row];
+
+      // Fusionner prospect_data : pour chaque champ, prendre la première valeur non-null
+      // en parcourant le groupe par date DESC (déjà trié)
+      const mergedPd: Record<string, unknown> = {};
+      for (const email of group) {
+        const pd = (email.prospect_data as Record<string, unknown> | null) ?? {};
+        for (const [k, v] of Object.entries(pd)) {
+          if (v !== null && v !== undefined && mergedPd[k] == null) {
+            mergedPd[k] = v;
+          }
+        }
+      }
+
       return {
         ...row,
-        thread_count: senderCounts.get(senderKey) ?? 1,
+        prospect_data: { ...mergedPd, ...(row.prospect_data as Record<string, unknown> ?? {}) },
+        thread_count: group.length,
       };
     });
 

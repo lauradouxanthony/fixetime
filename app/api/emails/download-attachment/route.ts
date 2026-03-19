@@ -2,6 +2,7 @@
  * GET /api/emails/download-attachment
  * Télécharge une pièce jointe Gmail via l'API Gmail.
  * Params : gmailMessageId, attachmentId, filename, mimeType
+ * ?inline=true → Content-Disposition: inline (pour aperçu dans iframe/img)
  */
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
@@ -20,6 +21,7 @@ export async function GET(req: NextRequest) {
   const attachmentId = searchParams.get("attachmentId");
   const filename = searchParams.get("filename") ?? "document";
   const mimeType = searchParams.get("mimeType") ?? "application/octet-stream";
+  const inline = searchParams.get("inline") === "true";
 
   if (!gmailMessageId || !attachmentId) {
     return NextResponse.json({ error: "Missing gmailMessageId or attachmentId" }, { status: 400 });
@@ -54,13 +56,17 @@ export async function GET(req: NextRequest) {
 
   // Sanitiser le nom de fichier pour le header
   const safeFilename = filename.replace(/[^\w.\-() ]/g, "_");
+  const disposition = inline
+    ? `inline; filename="${safeFilename}"`
+    : `attachment; filename="${safeFilename}"`;
 
   return new Response(buffer, {
     status: 200,
     headers: {
       "Content-Type": mimeType,
-      "Content-Disposition": `attachment; filename="${safeFilename}"`,
+      "Content-Disposition": disposition,
       "Content-Length": String(buffer.length),
+      "X-Frame-Options": "SAMEORIGIN",
     },
   });
 }
