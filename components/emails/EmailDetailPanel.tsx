@@ -212,6 +212,60 @@ const DOCS = [
   { key: "piece_identite", label: "Pièce d'identité" },
 ];
 
+const DOC_TYPE_OPTIONS = [
+  { value: "fiches_paie",     label: "Fiche de paie" },
+  { value: "contrat",         label: "Contrat de travail" },
+  { value: "avis_imposition", label: "Avis d'imposition" },
+  { value: "piece_identite",  label: "Pièce d'identité" },
+  { value: "garant_paie",     label: "Fiche de paie garant" },
+  { value: "autre",           label: "Autre" },
+];
+
+// ── Feux tricolores (compatible Email) ─────────────────────────────────────
+const MECONTENTEMENT_KWS = [
+  "n'importe quoi", "scandale", "honte", "inadmissible",
+  "parler à quelqu'un", "parler a quelqu'un", "responsable", "inacceptable",
+  "avocat", "plainte",
+];
+
+type TrafficLightStatus = "AUTOPILOTE" | "DRAFT" | "ALERTE";
+
+function computeTrafficLight(email: Email | null): TrafficLightStatus {
+  if (!email) return "AUTOPILOTE";
+  const pd = (email as any).prospect_data as Record<string, unknown> | null;
+  const body = (email.body ?? "").toLowerCase();
+  const receivedAt = email.received_at;
+  const hoursOld = receivedAt
+    ? Math.round((Date.now() - new Date(receivedAt).getTime()) / 3_600_000)
+    : null;
+
+  // 🔴 ALERTE
+  if (hoursOld !== null && hoursOld > 48) return "ALERTE";
+  if (MECONTENTEMENT_KWS.some((kw) => body.includes(kw))) return "ALERTE";
+  const rev = typeof pd?.revenus_mensuels === "number" ? pd.revenus_mensuels as number : null;
+  const loy = typeof pd?.loyer_max === "number" ? pd.loyer_max as number : null;
+  if (rev && loy && rev / loy < 2) return "ALERTE";
+
+  // 🟡 DRAFT
+  const atts = (email as any).attachments as any[] | null;
+  const hasUnvalidated = atts?.some((att: any) => {
+    const dt = att.docTypes as Record<string, boolean> | undefined;
+    return dt && Object.values(dt).some(Boolean) && !att.validated_by_human;
+  });
+  if (hasUnvalidated) return "DRAFT";
+  if ((pd?.etape_process as string) === "DOSSIER_RECU") return "DRAFT";
+  if ((pd?.situation_pro as string) === "AUTO_ENTREPRENEUR") return "DRAFT";
+  if (rev && loy && rev / loy >= 2 && rev / loy < 3) return "DRAFT";
+
+  return "AUTOPILOTE";
+}
+
+const TL_CFG: Record<TrafficLightStatus, { color: string; bg: string; dot: string; label: string }> = {
+  AUTOPILOTE: { color: "rgb(22 163 74)",  bg: "rgba(22,163,74,0.1)",  dot: "#16a34a", label: "Autopilote" },
+  DRAFT:      { color: "rgb(234 88 12)",  bg: "rgba(234,88,12,0.1)",  dot: "#ea580c", label: "À valider"  },
+  ALERTE:     { color: "rgb(220 38 38)",  bg: "rgba(220,38,38,0.1)",  dot: "#dc2626", label: "Alerte"     },
+};
+
 function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
   body: string | null | undefined;
   attachments?: AttachmentInfo[];
@@ -227,6 +281,8 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
   // Rejection modal state
   const [rejectModal, setRejectModal] = useState<{ attachmentId: string; filename: string; docType: string | null } | null>(null);
   const [rejectReason, setRejectReason] = useState(REJECTION_REASONS[0]);
+  // docType overrides per attachment index
+  const [docTypeOverrides, setDocTypeOverrides] = useState<Record<number, string>>({});
 
   // BLOC 3 : auto-marquer depuis les noms de fichiers des pièces jointes
   // Priorité : att.docType (nouveau, string) > att.docTypes (ancien, Record) > détection locale
@@ -433,48 +489,63 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
     ? `https://mail.google.com/mail/u/0/#inbox/${gmailMessageId}`
     : null;
 
+  // Mettre à jour docType d'une PJ via l'API
+  const updateDocType = async (attIndex: number, newDocType: string) => {
+    if (!emailId) return;
+    setDocTypeOverrides(prev => ({ ...prev, [attIndex]: newDocType }));
+    try {
+      await fetch(`/api/emails/${emailId}/update-attachment`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attachmentIndex: attIndex, docType: newDocType }),
+      });
+    } catch { /* graceful */ }
+  };
+
+  // Comptage documents validés (validated_by_human)
+  const validatedDocTypes = new Set<string>();
+  (attachments ?? []).forEach((att: any) => {
+    if (att.validated_by_human) {
+      const dt = att.docTypes as Record<string, boolean> | undefined;
+      if (dt) Object.entries(dt).forEach(([k, v]) => { if (v) validatedDocTypes.add(k); });
+    }
+  });
+  const validatedCount = DOCS.filter(d => validatedDocTypes.has(d.key)).length;
+
   return (
     <Section title="Dossier locataire">
-      {/* Statut dossier automatique */}
-      {(() => {
-        const receivedCount = Object.values(docs).filter(s => s === "recu").length;
-        const total = DOCS.length;
-        const status = receivedCount >= total ? "COMPLET" : receivedCount >= 2 ? "PARTIEL" : "INCOMPLET";
-        const statusStyle = status === "COMPLET"
-          ? { bg: "rgba(22,163,74,0.1)", color: "rgb(22 163 74)", label: "✅ Dossier complet" }
-          : status === "PARTIEL"
-          ? { bg: "rgba(234,88,12,0.1)", color: "rgb(234 88 12)", label: `📋 Dossier partiel (${receivedCount}/${total})` }
-          : { bg: "rgba(220,38,38,0.1)", color: "rgb(220 38 38)", label: `⚠️ Dossier incomplet (${receivedCount}/${total})` };
-        return (
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs px-2.5 py-1 rounded-full font-semibold"
-              style={{ background: statusStyle.bg, color: statusStyle.color }}>
-              {statusStyle.label}
-            </span>
-            <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>
-              {receivedCount}/{total} docs reçus
-            </span>
-          </div>
-        );
-      })()}
-      <div className="space-y-2">
+      {/* Barre de progression validés */}
+      <div className="mb-3">
+        <div className="flex items-center justify-between text-xs mb-1" style={{ color: "rgb(100 116 139)" }}>
+          <span>{validatedCount}/{DOCS.length} documents validés</span>
+          <span>{Math.round((validatedCount / DOCS.length) * 100)}%</span>
+        </div>
+        <div className="relative h-2 rounded-full overflow-hidden" style={{ background: "rgb(226 232 240)" }}>
+          <div className="h-full rounded-full transition-all duration-500" style={{
+            width: `${Math.round((validatedCount / DOCS.length) * 100)}%`,
+            background: validatedCount >= DOCS.length ? "rgb(22,163,74)" : validatedCount > 0 ? "rgb(234,88,12)" : "rgb(220,38,38)",
+          }} />
+        </div>
+      </div>
+
+      {/* Checklist documents */}
+      <div className="space-y-1.5 mb-4">
         {DOCS.map((doc) => {
           const status = docs[doc.key];
-          const isRecu = status === "recu";
+          const isValidated = validatedDocTypes.has(doc.key);
+          const isRecu = status === "recu" || isValidated;
+          const statusLabel = isValidated ? "✓ Validé" : isRecu ? "⏳ Reçu" : "✗ Manquant";
+          const statusColor = isValidated ? "rgb(22 163 74)" : isRecu ? "rgb(234 88 12)" : "rgb(220 38 38)";
+          const statusBg = isValidated ? "rgba(22,163,74,0.06)" : isRecu ? "rgba(234,88,12,0.06)" : "rgba(226,232,240,0.4)";
           return (
             <div
               key={doc.key}
               onClick={() => toggle(doc.key)}
               className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors"
-              style={{ background: isRecu ? "rgba(22,163,74,0.06)" : "rgba(226,232,240,0.5)" }}
+              style={{ background: statusBg, border: `1px solid ${isValidated ? "rgba(22,163,74,0.15)" : isRecu ? "rgba(234,88,12,0.15)" : "rgb(226 232 240)"}` }}
             >
-              <span>{isRecu ? "✅" : "❌"}</span>
-              <span className="text-sm" style={{ color: isRecu ? "rgb(22,163,74)" : "rgb(100,116,139)" }}>
-                {doc.label}
-              </span>
-              <span className="ml-auto text-xs" style={{ color: "rgb(148,163,184)" }}>
-                {isRecu ? "Reçu" : "Manquant"}
-              </span>
+              <span className="text-xs font-medium flex-shrink-0" style={{ color: statusColor, minWidth: 68 }}>{statusLabel}</span>
+              <span className="text-sm" style={{ color: "rgb(30 41 59)" }}>{doc.label}</span>
             </div>
           );
         })}
@@ -482,7 +553,7 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
 
       {/* ── BLOC 2 + 3 : Documents reçus avec validation manuelle ── */}
       {attachments && attachments.length > 0 && (
-        <div className="mt-4 pt-3 border-t" style={{ borderColor: "rgb(226 232 240)" }}>
+        <div className="pt-3 border-t" style={{ borderColor: "rgb(226 232 240)" }}>
           <div className="flex items-center gap-2 mb-3">
             <span className="text-sm font-semibold" style={{ color: "rgb(30 41 59)" }}>
               📎 Documents reçus
@@ -499,22 +570,24 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
               const icon = isPdf ? "📄" : isImage ? "🖼️" : "📎";
               const vStatus = validationStatus[att.attachmentId] ?? "pending";
               const isValidatingThis = validating === att.attachmentId;
+              const detectedType = docTypeOverrides[i] ?? getAttDocType(att);
+              const typeIsUnknown = !detectedType || detectedType === "autre";
 
               const statusBadge =
                 vStatus === "validated" ? (
                   <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
                     style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22,163,74)" }}>
-                    ✅ Validé
+                    ✓ Validé
                   </span>
                 ) : vStatus === "rejected" ? (
                   <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
                     style={{ background: "rgba(220,38,38,0.1)", color: "rgb(220,38,38)" }}>
-                    ❌ Rejeté
+                    ✗ Rejeté
                   </span>
                 ) : (
                   <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
                     style={{ background: "rgba(234,88,12,0.08)", color: "rgb(234,88,12)" }}>
-                    ⏳ En attente
+                    ⏳ Reçu
                   </span>
                 );
 
@@ -537,6 +610,11 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
                       </p>
                       <p className="text-xs" style={{ color: "rgb(148 163 184)" }}>
                         {att.size > 0 ? `${Math.round(att.size / 1024)} Ko` : "—"}
+                        {!typeIsUnknown && (
+                          <> · <span style={{ color: "rgb(79 70 229)" }}>
+                            {DOC_TYPE_OPTIONS.find(o => o.value === detectedType)?.label ?? detectedType}
+                          </span></>
+                        )}
                       </p>
                     </div>
                     {linkUrl && (
@@ -557,6 +635,24 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
                       </a>
                     )}
                   </div>
+
+                  {/* Sélect type si inconnu */}
+                  {typeIsUnknown && (
+                    <div className="mb-2">
+                      <select
+                        value={docTypeOverrides[i] ?? ""}
+                        onChange={(e) => updateDocType(i, e.target.value)}
+                        className="w-full rounded-lg border px-2 py-1.5 text-xs focus:outline-none"
+                        style={{ borderColor: "rgb(234 88 12)", color: "rgb(30 41 59)", background: "rgba(234,88,12,0.04)" }}
+                      >
+                        <option value="">— Identifier le type de document —</option>
+                        {DOC_TYPE_OPTIONS.map(o => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
                   {/* Ligne 2: statut + boutons */}
                   <div className="flex items-center gap-2 flex-wrap">
                     {statusBadge}
@@ -568,18 +664,18 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
                           className="text-xs px-2 py-1 rounded-lg font-medium transition-colors disabled:opacity-50"
                           style={{ background: "rgba(22,163,74,0.1)", color: "rgb(22,163,74)" }}
                         >
-                          {isValidatingThis ? "…" : "✅ Valider"}
+                          {isValidatingThis ? "…" : "✓ Valider"}
                         </button>
                         <button
                           disabled={!!validating}
                           onClick={() => {
-                            setRejectModal({ attachmentId: att.attachmentId, filename: att.filename, docType: getAttDocType(att) });
+                            setRejectModal({ attachmentId: att.attachmentId, filename: att.filename, docType: detectedType });
                             setRejectReason(REJECTION_REASONS[0]);
                           }}
                           className="text-xs px-2 py-1 rounded-lg font-medium transition-colors disabled:opacity-50"
                           style={{ background: "rgba(220,38,38,0.08)", color: "rgb(220,38,38)" }}
                         >
-                          ❌ Rejeter
+                          ✗ Rejeter
                         </button>
                       </>
                     )}
@@ -1254,32 +1350,76 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
     <div className="p-5 space-y-4 max-w-2xl mx-auto animate-fade-in">
 
       {/* ── En-tête email ── */}
-      <div className="rounded-xl border p-4 bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
-        <div className="flex items-start justify-between gap-4 mb-2">
-          <h2 className="text-base font-semibold" style={{ color: "rgb(30 41 59)" }}>
-            {email.subject || "(Sans objet)"}
-          </h2>
-          {/* Badge intention */}
-          {intention && (
-            <span className="text-xs px-2 py-1 rounded-full font-medium flex-shrink-0"
-              style={{
-                background: intention === "LOCATION" ? "rgba(59,130,246,0.1)" :
-                  intention === "INFO" ? "rgba(100,116,139,0.1)" : "rgba(15,23,42,0.08)",
-                color: intention === "LOCATION" ? "rgb(37,99,235)" :
-                  intention === "INFO" ? "rgb(71,85,105)" : "rgb(51,65,85)",
-              }}>
-              {intention === "LOCATION" ? "🏠 Location" : intention === "INFO" ? "ℹ️ Info" : "🚫 Hors sujet"}
-            </span>
-          )}
-        </div>
-
-        <div className="text-sm mb-0.5" style={{ color: "rgb(100 116 139)" }}>
-          {email.sender || "Expéditeur inconnu"}
-        </div>
-        <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
-          {email.received_at ? new Date(email.received_at).toLocaleString("fr-FR") : ""}
-        </div>
-      </div>
+      {(() => {
+        const tl = computeTrafficLight(email);
+        const tlCfg = TL_CFG[tl];
+        return (
+          <div className="rounded-xl border p-4 bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
+            <div className="flex items-start justify-between gap-4 mb-2">
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <span title={tlCfg.label} style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: tlCfg.dot, flexShrink: 0 }} />
+                <h2 className="text-base font-semibold truncate" style={{ color: "rgb(30 41 59)" }}>
+                  {email.subject || "(Sans objet)"}
+                </h2>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {/* Badge feu tricolore */}
+                <span className="text-xs px-2 py-0.5 rounded-full font-medium"
+                  style={{ background: tlCfg.bg, color: tlCfg.color }}>
+                  {tl === "AUTOPILOTE" ? "🟢" : tl === "DRAFT" ? "🟡" : "🔴"} {tlCfg.label}
+                </span>
+                {/* Badge intention */}
+                {intention && (
+                  <span className="text-xs px-2 py-1 rounded-full font-medium"
+                    style={{
+                      background: intention === "LOCATION" ? "rgba(59,130,246,0.1)" :
+                        intention === "INFO" ? "rgba(100,116,139,0.1)" : "rgba(15,23,42,0.08)",
+                      color: intention === "LOCATION" ? "rgb(37,99,235)" :
+                        intention === "INFO" ? "rgb(71,85,105)" : "rgb(51,65,85)",
+                    }}>
+                    {intention === "LOCATION" ? "🏠 Location" : intention === "INFO" ? "ℹ️ Info" : "🚫 Hors sujet"}
+                  </span>
+                )}
+              </div>
+            </div>
+            {(() => {
+              const senderStr = email.sender ?? "";
+              const pdNom = ((email as any).prospect_data as Record<string, unknown> | null)?.nom as string | null ?? null;
+              // Nom : priorité prospect_data.nom (si pas un email), sinon extraire du format Gmail
+              const nameFromSender = senderStr.match(/^(.+?)\s*<[^>]+>$/)?.[1]?.trim().replace(/^["']|["']$/g, "") ?? null;
+              const displayName =
+                pdNom && !pdNom.includes("@")
+                  ? pdNom
+                  : nameFromSender && nameFromSender.length >= 2 && !nameFromSender.includes("@")
+                  ? nameFromSender
+                  : null;
+              // Email : extraire l'adresse entre <> ou utiliser le sender brut s'il est déjà une adresse
+              const emailAddr =
+                senderStr.match(/<([^>]+)>/)?.[1] ??
+                (senderStr.includes("@") ? senderStr.trim() : null);
+              return (
+                <>
+                  {displayName && (
+                    <div className="text-sm font-medium mb-0.5" style={{ color: "rgb(30 41 59)" }}>
+                      {displayName}
+                    </div>
+                  )}
+                  <div className="text-sm mb-0.5" style={{ color: "rgb(100 116 139)" }}>
+                    {emailAddr ? (
+                      <a href={`mailto:${emailAddr}`} className="hover:underline">{emailAddr}</a>
+                    ) : (
+                      senderStr || "Expéditeur inconnu"
+                    )}
+                  </div>
+                </>
+              );
+            })()}
+            <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+              {email.received_at ? new Date(email.received_at).toLocaleString("fr-FR") : ""}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Résumé IA ── */}
       <Section title="Résumé IA">
