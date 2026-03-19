@@ -412,7 +412,7 @@ export async function POST(req: Request) {
     // 3. Charger email + champs nécessaires (thread, property, attachments)
     const { data: email, error: emailErr } = await supabaseAdmin
       .from("emails")
-      .select("id, sender, subject, body, ai_reply, category, prospect_data, prospect_id, thread_id, gmail_thread_id, property_id, attachments")
+      .select("id, sender, subject, body, ai_reply, category, prospect_data, thread_id, gmail_thread_id, property_id, attachments")
       .eq("id", emailId)
       .eq("user_id", user.id)
       .single();
@@ -531,22 +531,7 @@ export async function POST(req: Request) {
     let etapeApres: string = "unknown";
 
     if (isLocation) {
-      // ── NOUVELLE SOURCE : charger prospect depuis la table prospects ──
-      const prospectId = (email as any).prospect_id as string | null;
-      let prospectRow: Record<string, unknown> | null = null;
-
-      if (prospectId) {
-        const { data: pr } = await supabaseAdmin
-          .from("prospects")
-          .select("*")
-          .eq("id", prospectId)
-          .maybeSingle();
-        prospectRow = pr ?? null;
-        console.log(`[generate-reply] Prospect chargé depuis table: ${prospectId} etape=${pr?.etape_process ?? "null"}`);
-      }
-
-      // Fallback JSONB si pas de prospect_id
-      const pd = prospectRow ?? ((email as any).prospect_data as Record<string, unknown> | null);
+      const pd = (email as any).prospect_data as Record<string, unknown> | null;
 
       const situationProMap: Record<string, string> = {
         ETUDIANT: "etudiant", CDI: "cdi", CDD: "cdd", AUTO_ENTREPRENEUR: "auto", RETRAITE: "retraite",
@@ -562,112 +547,12 @@ export async function POST(req: Request) {
       const revenus = pdRevenus ?? bodyRevenus;
       const loyer = pdLoyer ?? bodyLoyer;
 
-      const nomStr = typeof pd?.nom === "string" ? pd.nom.trim() : "";
-      const prenomStr = typeof pd?.prenom === "string" ? pd.prenom.trim() : "";
-      const fullNom = [prenomStr, nomStr].filter(Boolean).join(" ");
-      const nom = fullNom.length > 0 ? fullNom : extractNom(body);
+      const nom = (typeof pd?.nom === "string" && pd.nom.trim().length > 0)
+        ? pd.nom.trim()
+        : extractNom(body);
 
       const etapeProcess = (pd?.etape_process as string | null) ?? null;
       etapeAvant = etapeProcess ?? "NEW";
-
-      // ── RÈGLE 3 : Auto DOSSIER_RECU si pièces jointes + étape = DOSSIER_DEMANDE ──
-      if (attachments.length > 0 && etapeProcess === "DOSSIER_DEMANDE" && prospectId) {
-        try {
-          await supabaseAdmin
-            .from("prospects")
-            .update({ etape_process: "DOSSIER_RECU", updated_at: new Date().toISOString() })
-            .eq("id", prospectId);
-          await supabaseAdmin.from("prospect_timeline").insert({
-            user_id: user.id,
-            email_id: emailId,
-            action_type: "dossier_recu_auto",
-            description: "Dossier reçu automatiquement (pièces jointes détectées)",
-            metadata: { prospect_id: prospectId, etape_avant: "DOSSIER_DEMANDE", etape_apres: "DOSSIER_RECU" },
-          });
-          console.log(`[generate-reply] RÈGLE 3: DOSSIER_RECU auto pour prospect ${prospectId}`);
-          etapeAvant = "DOSSIER_RECU"; // traiter comme si on est à DOSSIER_RECU pour le prompt
-        } catch { /* non bloquant */ }
-      }
-
-      // ── RÈGLE 2 : Auto VISITE_CONFIRMEE si le prospect confirme une visite ──
-      const confirmeVisite = (() => {
-        const l = body.toLowerCase();
-        return (
-          (etapeProcess === "VISITE_PROPOSEE" || etapeProcess === "VISITE_CONFIRMEE") &&
-          (
-            l.includes("je confirme") || l.includes("je serai") || l.includes("je serai présent") ||
-            l.includes("ça me convient") || l.includes("c'est parfait") || l.includes("ça m'arrange") ||
-            (l.includes("ok") && (l.includes("visite") || l.includes("créneau") || l.includes("rdv"))) ||
-            l.includes("j'y serai") || l.includes("rendez-vous confirmé")
-          )
-        );
-      })();
-
-      if (confirmeVisite && etapeProcess !== "VISITE_CONFIRMEE" && prospectId) {
-        try {
-          await supabaseAdmin
-            .from("prospects")
-            .update({ etape_process: "VISITE_CONFIRMEE", updated_at: new Date().toISOString() })
-            .eq("id", prospectId);
-          await supabaseAdmin.from("prospect_timeline").insert({
-            user_id: user.id,
-            email_id: emailId,
-            action_type: "visite_confirmee_auto",
-            description: "Visite confirmée automatiquement par le prospect",
-            metadata: { prospect_id: prospectId, etape_avant: etapeProcess, etape_apres: "VISITE_CONFIRMEE" },
-          });
-          console.log(`[generate-reply] RÈGLE 2: VISITE_CONFIRMEE auto pour prospect ${prospectId}`);
-          etapeAvant = "VISITE_CONFIRMEE";
-        } catch { /* non bloquant */ }
-      }
-
-      // ── RÈGLE 4 : Comptabiliser les relances (max 2 par étape) ──
-      const relanceCount = typeof pd?.relance_count === "number" ? pd.relance_count : 0;
-      const lastRelanceAt = pd?.last_relance_at ? new Date(pd.last_relance_at as string) : null;
-      const hoursSinceRelance = lastRelanceAt ? (Date.now() - lastRelanceAt.getTime()) / 3_600_000 : Infinity;
-      const relanceLimits: Record<string, number> = {
-        NEW: 48, QUALIFICATION: 48,
-        VISITE_PROPOSEE: 72,
-        DOSSIER_DEMANDE: 120, // 5 jours
-      };
-      const relanceThreshold = relanceLimits[etapeAvant ?? "NEW"] ?? 48;
-      const canRelance = relanceCount < 2 && hoursSinceRelance >= relanceThreshold;
-      if (canRelance && prospectId) {
-        try {
-          await supabaseAdmin
-            .from("prospects")
-            .update({
-              relance_count: relanceCount + 1,
-              last_relance_at: new Date().toISOString(),
-              updated_at: new Date().toISOString(),
-            })
-            .eq("id", prospectId);
-          console.log(`[generate-reply] RÈGLE 4: Relance ${relanceCount + 1}/2 enregistrée pour prospect ${prospectId}`);
-        } catch { /* non bloquant */ }
-      }
-
-      // ── RÈGLE 1 : Ne pas reposer une question déjà posée dans le thread ──
-      const threadBodies = threadEmails
-        .map((te) => [(te.body ?? "").toLowerCase(), (te.ai_reply ?? "").toLowerCase()])
-        .flat()
-        .join(" ");
-      const alreadyAskedSituation = /situation professionnelle|cdi|cdd|auto.entrepreneur|étudiant|retraité|emploi/.test(threadBodies);
-      const alreadyAskedRevenus = /revenus|salaire|gagne|touche/.test(threadBodies);
-      const alreadyAskedVisite = /créneau|rendez.vous|rdv|disponibili/.test(threadBodies);
-      const noRepeatInstructions = [
-        alreadyAskedSituation && "Ne repose PAS de question sur la situation professionnelle (déjà abordée).",
-        alreadyAskedRevenus && "Ne repose PAS de question sur les revenus (déjà abordés).",
-        alreadyAskedVisite && "Ne repose PAS de question sur les disponibilités pour la visite (déjà proposée).",
-      ].filter(Boolean).join(" ");
-
-      // ── RÈGLE 5 : Ton adapté au profil ──
-      const toneInstruction = (() => {
-        if (situation === "etudiant") return "Ton rassurant et bienveillant : l'étudiant peut être anxieux dans ses démarches.";
-        if (revenus !== null && loyer !== null && loyer > 0 && revenus / loyer < settings.multiplicateur) {
-          return "Ton poli et doux : le profil est insolvable, il faut décliner sans blesser.";
-        }
-        return "Ton professionnel et humain.";
-      })();
 
       const { cas, intention: detectedIntention } = determineCase({
         situation,
@@ -684,14 +569,6 @@ export async function POST(req: Request) {
       if (intention === "changement_creneau") {
         etapeApres = "VISITE_PROPOSEE";
         try {
-          // Mettre à jour la table prospects (source de vérité)
-          if (prospectId) {
-            await supabaseAdmin
-              .from("prospects")
-              .update({ etape_process: "VISITE_PROPOSEE", updated_at: new Date().toISOString() })
-              .eq("id", prospectId);
-          }
-          // Compat JSONB pour l'ancien modèle
           await supabaseAdmin
             .from("emails")
             .update({ prospect_data: { ...(pd ?? {}), etape_process: "VISITE_PROPOSEE" } })
@@ -704,23 +581,16 @@ export async function POST(req: Request) {
       console.log(`[generate-reply] emailId=${emailId} thread_emails=${threadEmails.length} etape=${etapeProcess ?? "null"} cas=${cas} intention=${intention}`);
 
       // Contexte système structuré
-      // Injecter RÈGLE 1 (no-repeat) + RÈGLE 5 (tone) dans les instructions
-      const augmentedInstructions = [
-        settings.instructions,
-        noRepeatInstructions,
-        toneInstruction,
-      ].filter(Boolean).join(" ").trim();
-
       const systemContext = buildSystemContext({
         nomAgence: settings.nomAgence,
-        instructions: augmentedInstructions,
+        instructions: settings.instructions,
         prospect: {
           nom,
           etapeProcess: etapeAvant,
           situationPro: situation,
           revenus,
           loyer,
-          garant: (pd?.garant as boolean | null) ?? null,
+          garant: pd?.garant as boolean | null ?? null,
           multiplicateur: settings.multiplicateur,
         },
         property,
