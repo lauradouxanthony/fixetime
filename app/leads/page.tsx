@@ -396,6 +396,12 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
   const [summaryNote, setSummaryNote] = useState<string | null>(null);
   const [generatingSummary, setGeneratingSummary] = useState(false);
   const [exportingZip, setExportingZip] = useState(false);
+  const [portalStatus, setPortalStatus] = useState<{
+    hasToken: boolean;
+    lastSentAt: string | null;
+    portalUrl: string | null;
+  } | null>(null);
+  const [sendingPortal, setSendingPortal] = useState(false);
   const { toast } = useToast();
 
   const ACTION_ICONS: Record<string, string> = {
@@ -409,6 +415,20 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
     fetch(`/api/leads/${lead.id}/timeline`)
       .then(r => r.json())
       .then(d => setTimeline(d.timeline ?? []))
+      .catch(() => {});
+  }, [lead.id]);
+
+  useEffect(() => {
+    fetch(`/api/portal/status?emailId=${lead.id}`)
+      .then(r => r.ok ? r.json() : null)
+      .then(d => {
+        if (!d) return;
+        setPortalStatus({
+          hasToken: d.hasToken ?? false,
+          lastSentAt: d.lastSentAt ?? null,
+          portalUrl: d.portalUrl ?? null,
+        });
+      })
       .catch(() => {});
   }, [lead.id]);
 
@@ -428,6 +448,35 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
       setTimeline(d.timeline ?? []);
     } finally {
       setSavingNote(false);
+    }
+  };
+
+  const sendPortalLink = async () => {
+    if (sendingPortal) return;
+    setSendingPortal(true);
+    try {
+      const res = await fetch("/api/portal/create-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailId: lead.id, sendEmail: true }),
+      });
+      const data = await res.json();
+      if (res.ok || res.status === 207) {
+        const sentAt = data.lastSentAt ?? new Date().toISOString();
+        setPortalStatus({ hasToken: true, lastSentAt: sentAt, portalUrl: data.portalUrl ?? null });
+        if (res.status === 207) {
+          toast("Lien créé mais envoi Gmail échoué — copiez le lien manuellement", "error");
+        } else {
+          const prospectEmail = data.prospectEmail ?? "le prospect";
+          toast(`Lien envoyé à ${prospectEmail} ✅`, "success");
+        }
+      } else {
+        toast("Erreur lors de la création du lien", "error");
+      }
+    } catch {
+      toast("Erreur réseau", "error");
+    } finally {
+      setSendingPortal(false);
     }
   };
 
@@ -714,6 +763,43 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
                       </div>
                     );
                   })}
+                </div>
+
+                {/* Bouton portail de dépôt */}
+                <div className="pt-2">
+                  {portalStatus?.lastSentAt ? (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs" style={{ color: "rgb(22 163 74)" }}>
+                        ✓ Lien envoyé le {new Date(portalStatus.lastSentAt).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
+                      </span>
+                      {portalStatus.portalUrl && (
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(portalStatus.portalUrl!); toast("Lien copié !", "success"); }}
+                          className="text-xs px-2 py-0.5 rounded-md"
+                          style={{ background: "rgba(22,163,74,0.08)", color: "rgb(22 163 74)" }}
+                        >
+                          📋 Copier
+                        </button>
+                      )}
+                      <button
+                        onClick={sendPortalLink}
+                        disabled={sendingPortal}
+                        className="text-xs px-2 py-0.5 rounded-md disabled:opacity-50"
+                        style={{ background: "rgba(100,116,139,0.08)", color: "rgb(100 116 139)" }}
+                      >
+                        {sendingPortal ? "Envoi…" : "↩ Renvoyer"}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={sendPortalLink}
+                      disabled={sendingPortal}
+                      className="text-xs px-3 py-1.5 rounded-lg font-medium disabled:opacity-50"
+                      style={{ background: "rgba(99,102,241,0.1)", color: "rgb(99 102 241)" }}
+                    >
+                      {sendingPortal ? "📎 Envoi…" : "📎 Envoyer le lien de dépôt"}
+                    </button>
+                  )}
                 </div>
 
                 {/* Boutons IA synthèse + ZIP export */}
