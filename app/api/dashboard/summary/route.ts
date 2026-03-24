@@ -135,14 +135,13 @@ export async function GET() {
     // 9. Actions requises (emails LOCATION sans réponse IA)
     supabase
       .from("emails")
-      .select("id, sender, subject, received_at, is_urgent, summary")
+      .select("id, sender, subject, received_at, is_urgent, summary, prospect_data, property_id")
       .eq("user_id", userId)
       .eq("category", "LOCATION")
-      .is("ai_reply", null)
       .neq("decision", "ignorer")
       .order("is_urgent", { ascending: false })
       .order("received_at", { ascending: true })
-      .limit(5),
+      .limit(10),
 
     // 10. Prochains RDV
     supabase

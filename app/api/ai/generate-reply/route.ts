@@ -103,6 +103,7 @@ function buildSystemPrompt(params: {
   heureFin: number;
   dureeVisite: number;
   etapeProcess: string;
+  garantObligatoire: Record<string, boolean>;
   prospect: {
     nom: string | null;
     telephone: string | null;
@@ -120,7 +121,7 @@ function buildSystemPrompt(params: {
   const {
     nomAgence, multiplicateur, seuilAutopilote, tonDeVoix, instructions,
     prioriteProfils, heureDebut, heureFin, dureeVisite, etapeProcess,
-    prospect, bien, docsList, faqContext, multipleProperties,
+    garantObligatoire, prospect, bien, docsList, faqContext, multipleProperties,
   } = params;
 
   const loyerBien = (bien?.loyer as number | null) ?? prospect.loyer_max;
@@ -219,7 +220,8 @@ ${etapeWorkflow}
 CONTEXTE AGENCE :
 - Critère de solvabilité : revenus ≥ ${multiplicateur}x le loyer BRUT (hors charges)
 - Seuil autopilote : revenus ≥ ${seuilAutopilote}x le loyer BRUT
-- RÈGLE CHARGES : utiliser UNIQUEMENT le loyer brut pour le calcul. Ne JAMAIS inventer de charges (ex: 150€ imaginaire). Si charges inconnues → écrire "charges à confirmer" dans la réponse.${bien ? `
+- RÈGLE CHARGES : utiliser UNIQUEMENT le loyer brut pour le calcul. Ne JAMAIS inventer de charges (ex: 150€ imaginaire). Si charges inconnues → écrire "charges à confirmer" dans la réponse.
+- GARANT OBLIGATOIRE pour ces profils : ${Object.entries(garantObligatoire).filter(([,v]) => v).map(([k]) => k).join(", ") || "aucun profil spécifique"}. Si le prospect a un de ces profils et n'a pas mentionné de garant → demander explicitement un garant en DRAFT.${bien ? `
 
 BIEN CONCERNÉ :
 - Titre : ${(bien.title as string) ?? "?"}
@@ -387,7 +389,7 @@ export async function POST(req: Request) {
     // 10. Construction du prompt système
     const systemPrompt = buildSystemPrompt({
       nomAgence, multiplicateur, seuilAutopilote, tonDeVoix, instructions, prioriteProfils,
-      heureDebut, heureFin, dureeVisite, etapeProcess,
+      heureDebut, heureFin, dureeVisite, etapeProcess, garantObligatoire,
       prospect, bien, docsList, faqContext, multipleProperties,
     });
 

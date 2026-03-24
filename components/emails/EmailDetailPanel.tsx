@@ -109,12 +109,16 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function SolvabiliteWidget({ body, prospectData }: { body: string | null | undefined; prospectData?: ProspectData | null }) {
+function SolvabiliteWidget({ body, prospectData, propertyId }: {
+  body: string | null | undefined;
+  prospectData?: ProspectData | null;
+  propertyId?: string | null;
+}) {
   const [revenus, setRevenus] = useState<string>("");
   const [loyer, setLoyer] = useState<string>("");
 
   useEffect(() => {
-    // BUG #1 FIX : priorité aux données IA (prospect_data), fallback corps email
+    // Revenus : priorité prospect_data IA, sinon extraction corps
     if (prospectData?.revenus_mensuels) {
       setRevenus(String(prospectData.revenus_mensuels));
     } else {
@@ -122,14 +126,27 @@ function SolvabiliteWidget({ body, prospectData }: { body: string | null | undef
       setRevenus(extracted.revenus ? String(extracted.revenus) : "");
     }
 
+    // Loyer : 1) prospect_data.loyer_max  2) property.rent  3) vide (jamais les revenus)
     if (prospectData?.loyer_max) {
       setLoyer(String(prospectData.loyer_max));
+    } else if (propertyId) {
+      // Chercher le loyer du bien associé
+      fetch("/api/properties")
+        .then((r) => r.json())
+        .then((data) => {
+          const props: Array<{ id: string; rent: number }> = data.properties ?? [];
+          const found = props.find((p) => p.id === propertyId);
+          if (found?.rent) setLoyer(String(found.rent));
+        })
+        .catch(() => {});
     } else {
+      // Fallback extraction corps — uniquement si mention explicite de loyer
       const extracted = extractSolvabilite(body);
-      setLoyer(extracted.loyer ? String(extracted.loyer) : "");
+      // N'utiliser que si la valeur vient d'une ligne avec mot-clé loyer (pas juste le 1er montant)
+      setLoyer(extracted.loyer && extracted.loyer !== extracted.revenus ? String(extracted.loyer) : "");
     }
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [body, JSON.stringify(prospectData)]);
+  }, [body, JSON.stringify(prospectData), propertyId]);
 
   const ratio = revenus && loyer ? parseFloat(revenus) / parseFloat(loyer) : null;
   const solvable = ratio !== null && ratio >= 3;
@@ -1636,7 +1653,11 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
               }
             }}
           />
-          <SolvabiliteWidget body={body || email.body} prospectData={(email as any).prospect_data ?? null} />
+          <SolvabiliteWidget
+            body={body || email.body}
+            prospectData={(email as any).prospect_data ?? null}
+            propertyId={(email as any).property_id ?? null}
+          />
           <DossierWidget
             body={body || email.body}
             attachments={(email as any).attachments ?? []}

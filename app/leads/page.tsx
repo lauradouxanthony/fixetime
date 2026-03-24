@@ -166,6 +166,44 @@ function daysAgoLabel(dateStr: string | null): string | null {
   return `Il y a ${Math.floor(h / 24)}j`;
 }
 
+// ── Score de priorité prospect ───────────────────────────────────────────────
+type ProspectPriority = "CHAUD" | "TIEDE" | "FROID";
+
+function computeProspectPriority(lead: Lead): ProspectPriority {
+  const pd = lead.prospect_data;
+  const etape = getEtapeFromLead(lead);
+
+  const revenus = pd?.revenus_mensuels ?? null;
+  const loyer = pd?.loyer_max ?? null;
+  const isSolvable = revenus && loyer ? revenus / loyer >= 3 : false;
+
+  // Dossier complet : etape DOSSIER_RECU ou 4+ docs uploadés
+  const atts = (lead.attachments ?? []) as Array<{ docTypes?: Record<string, boolean> }>;
+  const docsFound = new Set<string>();
+  atts.forEach((att) => {
+    const dt = att.docTypes;
+    if (dt) { for (const [k, v] of Object.entries(dt)) { if (v) docsFound.add(k); } }
+  });
+  const dossierComplet = etape === "DOSSIER_RECU" || docsFound.size >= 4;
+  const visitePrevue = etape === "VISITE_CONFIRMEE";
+
+  // 🔴 Chaud : solvable + (visite confirmée OU dossier complet)
+  if (isSolvable && (visitePrevue || dossierComplet)) return "CHAUD";
+
+  // 🟡 Tiède : qualifié + solvable
+  const isQualifie = !!(pd?.situation_pro || pd?.revenus_mensuels);
+  if (isQualifie && isSolvable) return "TIEDE";
+
+  // 🟢 Froid par défaut
+  return "FROID";
+}
+
+const PRIORITY_CONFIG: Record<ProspectPriority, { emoji: string; label: string; color: string; bg: string }> = {
+  CHAUD:  { emoji: "🔴", label: "Chaud",  color: "rgb(220 38 38)",  bg: "rgba(220,38,38,0.08)"  },
+  TIEDE:  { emoji: "🟡", label: "Tiède",  color: "rgb(202 138 4)",  bg: "rgba(202,138,4,0.08)"  },
+  FROID:  { emoji: "🟢", label: "Froid",  color: "rgb(22 163 74)",  bg: "rgba(22,163,74,0.08)"  },
+};
+
 // ── SolvabilityBadge amélioré (vert ≥3x | orange 2-3x | rouge <2x | gris) ──
 function SolvabilityBadge({ revenus, loyer, multiplicateur = 3 }: { revenus: number | null; loyer: number | null; multiplicateur?: number }) {
   if (!revenus || !loyer) {
@@ -249,6 +287,8 @@ function LeadCard({
   const config = ETAPE_CONFIG[etape];
   const pd = lead.prospect_data;
   const nom = extractDisplayName(lead);
+  const priority = computeProspectPriority(lead);
+  const priorityCfg = PRIORITY_CONFIG[priority];
   const hours = hoursAgo(lead.received_at);
   const tooOld = hours !== null && hours > 48;
   const noAiReply = tooOld && !lead.ai_reply;
@@ -290,6 +330,13 @@ function LeadCard({
           </span>
         )}
         <SolvabilityBadge revenus={pd?.revenus_mensuels ?? null} loyer={pd?.loyer_max ?? null} />
+        <span
+          className="text-xs px-2 py-0.5 rounded-full font-medium"
+          style={{ background: priorityCfg.bg, color: priorityCfg.color }}
+          title={`Priorité : ${priorityCfg.label}`}
+        >
+          {priorityCfg.emoji} {priorityCfg.label}
+        </span>
       </div>
 
       {/* Ligne 3 : bien visé */}
@@ -1223,9 +1270,39 @@ export default function LeadsPage() {
     "locataire", "demande", "intéressé", "appart", "re:",
   ];
 
+  // Sujets parasites — email marketing/notification à exclure même s'ils passent l'IA
+  const PARASITE_SUBJECT_KW = [
+    "événement", "webinaire", "badge", "mise à jour", "notification",
+    "alerte", "nouvelles de", "prix cassés", "offre", "promotion",
+    "top 14", "bmc", "pépite", "cohésion", "abonnement",
+    "aliexpress", "h&m", "pass culture", "youversion",
+    "newsletter", "désabonner", "unsubscribe", "invitation",
+    "vous avez été", "confirmez votre", "reçu de paiement",
+    "commande", "facture", "récapitulatif", "livraison",
+  ];
+
   function hasImmoSubject(lead: Lead): boolean {
     const s = (lead.subject ?? "").toLowerCase();
     return IMMO_KEYWORDS.some((kw) => s.includes(kw));
+  }
+
+  function isParasiteSubject(lead: Lead): boolean {
+    const s = (lead.subject ?? "").toLowerCase();
+    return PARASITE_SUBJECT_KW.some((kw) => s.includes(kw));
+  }
+
+  /** Un prospect est valide si au moins une condition de qualification est remplie */
+  function isValidProspect(lead: Lead): boolean {
+    // Exclure immédiatement les sujets parasites connus
+    if (isParasiteSubject(lead)) return false;
+    const pd = lead.prospect_data;
+    // Valide si données prospect extraites
+    if (pd?.nom && String(pd.nom).trim().length > 0) return true;
+    if (pd?.situation_pro) return true;
+    if (pd?.revenus_mensuels) return true;
+    // Valide si sujet immobilier
+    if (hasImmoSubject(lead)) return true;
+    return false;
   }
 
   function deduplicateLeads(leads: Lead[]): Lead[] {
@@ -1276,44 +1353,22 @@ export default function LeadsPage() {
       .limit(200);
 
     if (data) {
-      const COMMERCIAL_DOMAINS = [
-        "@revolut.com", "@facebookmail.com", "@meta.com",
-        "@google.com", "@linkedin.com", "@twitter.com",
-        "@netflix.com", "@amazon.com", "@paypal.com",
-        "@stripe.com", "@notion.so", "@slack.com",
-      ];
-      const filtered = (data as unknown as Lead[]).filter(lead => {
-        const pd = lead.prospect_data;
-        // Vrai prospect : données IA extraites
-        const hasProspectData = pd && (pd.nom || pd.situation_pro || pd.revenus_mensuels);
-        if (hasProspectData) return true;
-        // Ou sujet contient un mot-clé immobilier
-        if (hasImmoSubject(lead)) return true;
-        // Sinon : exclure si domaine commercial connu
-        const email = normalizeSender(lead.sender);
-        return !COMMERCIAL_DOMAINS.some(d => email.endsWith(d) || email.includes(d));
-      });
-
+      const filtered = (data as unknown as Lead[]).filter(isValidProspect);
       const deduped = deduplicateLeads(filtered);
-
-      // Exclure les leads sans nom ET sans sujet immobilier (parasites résiduels)
-      const clean = deduped.filter(lead => {
-        const pd = lead.prospect_data;
-        const hasName = !!(pd?.nom);
-        return hasName || hasImmoSubject(lead);
-      });
-
-      setLeads(clean);
+      setLeads(deduped);
     }
 
     // Charger les biens pour les filtres
     try {
-      // Utiliser le nouveau route pipeline/list pour filtres + déduplication
+      // pipeline/list pour filtres + déduplication — appliquer le même filtre parasite
       const res = await fetch("/api/pipeline/list");
       if (res.status === 401) { window.location.href = "/auth/login"; return; }
       if (res.ok) {
         const json = await res.json();
-        setLeads((json.leads ?? []) as Lead[]);
+        const pipelineLeads = (json.leads ?? []) as Lead[];
+        const cleanPipeline = pipelineLeads.filter(isValidProspect);
+        const dedupedPipeline = deduplicateLeads(cleanPipeline);
+        setLeads(dedupedPipeline);
       }
 
       // Charger les biens pour les filtres

@@ -164,14 +164,15 @@ export async function POST(
     // Classify document
     const classification = await classifyWithClaude(file.name, file.type);
 
-    // Append to email.attachments
+    // Append to email.attachments + fetch full email data for notifications
     const { data: emailRow } = await supabaseAdmin
       .from("emails")
-      .select("attachments")
+      .select("attachments, prospect_data, user_id, sender")
       .eq("id", tokenRow.email_id)
       .single();
 
     const currentAttachments: unknown[] = (emailRow?.attachments ?? []) as unknown[];
+    const uploadedAt = new Date().toISOString();
     const newAttachment = {
       source: "portal",
       filename: file.name,
@@ -182,20 +183,110 @@ export async function POST(
       confidence: classification.confidence,
       label: classification.label,
       validated_by_human: false,
-      uploaded_at: new Date().toISOString(),
+      uploaded_at: uploadedAt,
     };
+
+    // Mise à jour prospect_data avec note de réception portail
+    const existingPd = (emailRow?.prospect_data ?? {}) as Record<string, unknown>;
+    const portalNotes: string[] = Array.isArray(existingPd.portal_docs_received)
+      ? (existingPd.portal_docs_received as string[])
+      : [];
+    portalNotes.push(`${classification.label} reçu via portail le ${new Date(uploadedAt).toLocaleDateString("fr-FR")}`);
 
     await supabaseAdmin
       .from("emails")
-      .update({ attachments: [...currentAttachments, newAttachment] })
+      .update({
+        attachments: [...currentAttachments, newAttachment],
+        prospect_data: {
+          ...existingPd,
+          portal_docs_received: portalNotes,
+          etape_process: "DOSSIER_RECU",
+          last_portal_upload: uploadedAt,
+        },
+      })
       .eq("id", tokenRow.email_id);
 
     // Mark token as used (first upload only)
     await supabaseAdmin
       .from("document_portal_tokens")
-      .update({ used_at: new Date().toISOString() })
+      .update({ used_at: uploadedAt })
       .eq("id", tokenRow.id)
       .is("used_at", null);
+
+    // Notification à l'agent selon pipeline_mode
+    const userId = emailRow?.user_id;
+    if (userId) {
+      try {
+        const { data: settingsRow } = await supabaseAdmin
+          .from("settings_v1")
+          .select("email_rules")
+          .eq("user_id", userId)
+          .maybeSingle();
+
+        const pipelineMode = (settingsRow?.email_rules as Record<string, unknown>)?.pipeline_mode ?? "DRAFT";
+        const nomProspect = (existingPd.nom as string | null)
+          ?? emailRow?.sender?.replace(/<.*>/, "").trim()
+          ?? "Un prospect";
+
+        if (pipelineMode === "AUTOPILOTE") {
+          // Envoyer un email à l'agent (via son adresse auth.users)
+          const { data: agentUser } = await supabaseAdmin.auth.admin.getUserById(userId);
+          const agentEmail = agentUser?.user?.email;
+          if (agentEmail) {
+            // Utiliser l'API Gmail de l'agent pour s'envoyer une notification
+            const { data: gmailToken } = await supabaseAdmin
+              .from("gmail_tokens")
+              .select("access_token, refresh_token, expires_at")
+              .eq("user_id", userId)
+              .maybeSingle();
+
+            if (gmailToken) {
+              const subject = `📎 ${nomProspect} a déposé un document sur son portail`;
+              const body = `Bonjour,\n\n${nomProspect} vient de déposer le document suivant via le portail FixTime :\n\n• ${classification.label} (${file.name})\n• Déposé le : ${new Date(uploadedAt).toLocaleString("fr-FR")}\n\nConnectez-vous à FixTime pour valider le dossier.\n\nCordialement,\nFixTime`;
+
+              const raw = Buffer.from(
+                `To: ${agentEmail}\r\nSubject: ${subject}\r\nContent-Type: text/plain; charset=utf-8\r\n\r\n${body}`
+              ).toString("base64url");
+
+              // Vérifier validité token Gmail
+              const now = Date.now();
+              let accessToken = gmailToken.access_token;
+              if (gmailToken.expires_at && new Date(gmailToken.expires_at).getTime() < now + 60_000) {
+                // Token expiré → refresh
+                const refreshRes = await fetch("https://oauth2.googleapis.com/token", {
+                  method: "POST",
+                  headers: { "Content-Type": "application/x-www-form-urlencoded" },
+                  body: new URLSearchParams({
+                    client_id: process.env.GOOGLE_CLIENT_ID ?? "",
+                    client_secret: process.env.GOOGLE_CLIENT_SECRET ?? "",
+                    refresh_token: gmailToken.refresh_token ?? "",
+                    grant_type: "refresh_token",
+                  }),
+                });
+                if (refreshRes.ok) {
+                  const refreshData = await refreshRes.json();
+                  accessToken = refreshData.access_token;
+                }
+              }
+
+              await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+                method: "POST",
+                headers: {
+                  Authorization: `Bearer ${accessToken}`,
+                  "Content-Type": "application/json",
+                },
+                body: JSON.stringify({ raw }),
+              }).catch((err) => console.error("[PORTAL UPLOAD] Gmail send error:", err));
+            }
+          }
+        }
+        // DRAFT mode : la note dans prospect_data.portal_docs_received suffit
+        // (visible dans le dashboard via l'étape DOSSIER_RECU)
+        console.log(`[PORTAL UPLOAD] Doc reçu — mode=${pipelineMode} prospect=${nomProspect} doc=${classification.label}`);
+      } catch (notifErr) {
+        console.error("[PORTAL UPLOAD] Notification error:", notifErr);
+      }
+    }
 
     return NextResponse.json({
       docType: classification.docType,

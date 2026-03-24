@@ -129,7 +129,29 @@ function guessCategory(email: { subject?: string | null; sender?: string | null 
   const s = (email.subject || "").toLowerCase();
   const sender = (email.sender || "").toLowerCase();
 
-  // HORS_SUJET en priorité — domaines commerciaux connus
+  // Senders clairement automatisés (noreply / newsletter / donotreply)
+  const automatedSender =
+    sender.includes("noreply") || sender.includes("no-reply") ||
+    sender.includes("donotreply") || sender.includes("newsletter") ||
+    sender.includes("notification") || sender.includes("marketing") ||
+    sender.includes("promo");
+
+  // LOCATION EN PRIORITÉ ABSOLUE — si sujet contient un mot immobilier explicite
+  // ET sender n'est PAS clairement automatisé (noreply/newsletter/donotreply)
+  // NOTE : "agency" dans l'adresse email ne rend PAS automatisé (ex: dolphinagency@gmail.com)
+  const locationKw = [
+    "louer", "location", "appartement", "logement", "visite", "loyer",
+    "locataire", "t1", "t2", "t3", "chambre", "studio",
+    "surface", "m²", "caution", "propriétaire",
+    "candidature location", "dépôt de garantie", "quittance",
+  ];
+  if (!automatedSender && locationKw.some((k) => s.includes(k))) return "LOCATION";
+  // "bail" uniquement si accompagné d'un autre mot immobilier
+  if (!automatedSender && s.includes("bail") && ["louer", "location", "loyer", "appartement", "logement", "locataire"].some((k) => s.includes(k))) {
+    return "LOCATION";
+  }
+
+  // HORS_SUJET — domaines commerciaux connus
   const commercialDomains = [
     "@hellofresh", "@netflix", "@revolut", "@facebookmail", "@meta.com",
     "@google.com", "@linkedin", "@twitter.com", "@amazon", "@paypal",
@@ -137,39 +159,18 @@ function guessCategory(email: { subject?: string | null; sender?: string | null 
     "no-reply@", "donotreply@", "newsletter@", "@newsletter",
   ];
   if (commercialDomains.some((d) => sender.includes(d))) return "HORS_SUJET";
+  if (automatedSender) return "HORS_SUJET";
 
-  // HORS_SUJET — patterns sender génériques
-  if (
-    sender.includes("newsletter") || sender.includes("no-reply") ||
-    sender.includes("noreply") || sender.includes("donotreply") ||
-    sender.includes("notification") || sender.includes("marketing") ||
-    sender.includes("promo") || sender.includes("info@") && s.includes("offre")
-  ) return "HORS_SUJET";
-
-  // HORS_SUJET — mots-clés sujet commerciaux (élargis)
+  // HORS_SUJET — mots-clés sujet commerciaux
   const horsSujetSubjectKw = [
     "offre exclusive", "offre spéciale", "promotion", "découvrez", "gagnez", "gratuit",
     "abonnement", "commande", "facture", "reçu de paiement",
     "security alert", "alerte sécurité", "compte facebook", "compte google",
     "crypto", "bitcoin", "investissement", "trading",
-    "désabonner", "unsubscribe", "newsletter", "événement", "vous avez été invité",
+    "désabonner", "unsubscribe", "vous avez été invité",
     "se désinscrire", "mise à jour de votre compte", "confirmez votre",
   ];
   if (horsSujetSubjectKw.some((k) => s.includes(k))) return "HORS_SUJET";
-
-  // LOCATION — mots-clés immobiliers explicites UNIQUEMENT
-  // RÈGLE : "bail" seul ne suffit pas — nécessite un autre mot immobilier
-  const locationKw = [
-    "louer", "location", "appartement", "logement", "visite", "loyer",
-    "locataire", "t1", "t2", "t3", "chambre", "studio",
-    "surface", "m²", "caution", "propriétaire",
-    "candidature location", "dépôt de garantie", "quittance",
-  ];
-  if (locationKw.some((k) => s.includes(k))) return "LOCATION";
-  // "bail" uniquement si accompagné d'un autre mot immobilier
-  if (s.includes("bail") && ["louer", "location", "loyer", "appartement", "logement", "locataire"].some((k) => s.includes(k))) {
-    return "LOCATION";
-  }
 
   // INFO — questions générales
   if (
@@ -844,24 +845,25 @@ ${agencyContext}
 
 RÈGLES STRICTES pour "intention" — LIRE ATTENTIVEMENT :
 
-"LOCATION" UNIQUEMENT si TOUTES ces conditions sont remplies :
-- L'expéditeur est un particulier (pas une entreprise, marque ou service automatique)
-- Le message mentionne EXPLICITEMENT au moins un de ces mots : louer, location, appartement, logement, visite, loyer, locataire, bail, T1, T2, T3, chambre, studio, surface, m², charges, caution, agence immobilière, candidature, dossier locataire, propriétaire, quittance
-- Le message est une demande de location ou une réponse à une annonce immobilière
+⚡ RÈGLE PRIORITAIRE (override) : si le SUJET contient l'un de ces mots : T1, T2, T3, T4, appartement, visite, location, loyer, logement, chambre, studio, locataire, quittance → classifier "LOCATION" IMMÉDIATEMENT, SAUF si l'expéditeur est clairement automatisé (noreply, no-reply, donotreply, newsletter dans l'adresse).
+ATTENTION : "agency" ou "agence" dans l'adresse email n'est PAS un expéditeur automatisé — c'est souvent un particulier ou une petite agence qui écrit manuellement.
+
+"LOCATION" si :
+- Le sujet OU le corps mentionne EXPLICITEMENT un mot immobilier : louer, location, appartement, logement, visite, loyer, locataire, bail, T1, T2, T3, chambre, studio, surface, m², charges, caution, candidature, dossier locataire, propriétaire, quittance
+- ET l'expéditeur n'est PAS clairement automatisé (noreply / no-reply / donotreply / newsletter dans l'adresse)
 
 "HORS_SUJET" si UNE de ces conditions est vraie :
-- L'expéditeur contient : newsletter, no-reply, noreply, donotreply, marketing, promo, notification
-- L'expéditeur vient de : HelloFresh, Netflix, Revolut, Meta, Facebook, Google, LinkedIn, Twitter, Amazon, PayPal, Stripe, crypto, fintech, banque en ligne
-- Le sujet ou corps contient : offre, promotion, offre spéciale, découvrez, gagnez, gratuit, abonnement, commande, facture, reçu, sécurité de votre compte, alerte, bitcoin, crypto, investissement, trading
-- Le corps ou sujet contient : désabonner, unsubscribe, se désinscrire, newsletter, événement, vous avez été invité, mise à jour de votre compte, confirmez votre email
+- L'expéditeur contient : no-reply, noreply, donotreply, newsletter, marketing, promo, notification (dans l'ADRESSE email, pas le nom affiché)
+- L'expéditeur vient de : HelloFresh, Netflix, Revolut, Meta, Facebook, LinkedIn, Twitter, Amazon, PayPal, Stripe, crypto, fintech
+- Le sujet ou corps contient : offre spéciale, promotion, découvrez, gagnez, gratuit, abonnement, commande, facture, reçu de paiement, bitcoin, crypto, investissement, trading
+- Le corps ou sujet contient : désabonner, unsubscribe, se désinscrire, vous avez été invité, mise à jour de votre compte, confirmez votre email
 - C'est un email transactionnel automatique (confirmation de commande, récapitulatif, etc.)
-- Le mot "bail" apparaît SEUL sans aucun autre mot immobilier (louer, location, loyer, appartement, logement, locataire) → HORS_SUJET
 
-"INFO" : question générale sur l'agence, les conditions, les prix — d'un particulier identifiable.
+"INFO" : question générale sur l'agence, les conditions, les prix.
 
-EN CAS DE DOUTE entre LOCATION et HORS_SUJET → choisir HORS_SUJET.
+EN CAS DE DOUTE entre LOCATION et HORS_SUJET → si sujet contient mot immobilier → LOCATION, sinon HORS_SUJET.
 EN CAS DE DOUTE entre LOCATION et INFO → choisir INFO.
-JAMAIS classifier LOCATION un email marketing, publicitaire ou automatique.
+JAMAIS classifier HORS_SUJET un email dont le sujet contient T1, T2, T3, appartement, visite, location, loyer.
 
 RÈGLES pour "decision" :
 - "TRAITER" si LOCATION ou INFO nécessitant une réponse

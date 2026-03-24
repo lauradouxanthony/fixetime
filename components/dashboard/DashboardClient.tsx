@@ -47,6 +47,8 @@ type DashboardData = {
     received_at: string | null;
     is_urgent: boolean | null;
     summary: string | null;
+    prospect_data?: Record<string, unknown> | null;
+    property_id?: string | null;
   }[];
   prochainRdv: {
     id: string;
@@ -584,6 +586,54 @@ export default function DashboardClient() {
                   const hoursAgo = e.received_at
                     ? Math.round((Date.now() - new Date(e.received_at).getTime()) / 3_600_000)
                     : null;
+                  const pd = e.prospect_data ?? {};
+                  const etape = (pd.etape_process as string) ?? "NEW";
+                  const revenus = pd.revenus_mensuels as number | null;
+                  const loyer = pd.loyer_max as number | null;
+                  const ratio = revenus && loyer ? revenus / loyer : null;
+
+                  // Calcul priorité
+                  let priorityDot = "🟢";
+                  let priorityLabel = "Info";
+                  let priorityColor = "rgb(22 163 74)";
+                  let priorityBg = "rgba(22,163,74,0.08)";
+                  let actionLabel = "Nouveau prospect à qualifier";
+
+                  const isDossierComplet = etape === "DOSSIER_RECU" || etape === "VALIDE";
+                  const isVisiteConfirmee = etape === "VISITE_CONFIRMEE";
+                  const isSolvable = ratio !== null && ratio >= 3;
+                  const isQualified = etape !== "NEW" && !!pd.situation_pro;
+
+                  if (e.is_urgent || isDossierComplet || (isVisiteConfirmee && hoursAgo !== null && hoursAgo > 2)) {
+                    priorityDot = "🔴";
+                    priorityLabel = "Urgent";
+                    priorityColor = "rgb(220 38 38)";
+                    priorityBg = "rgba(220,38,38,0.08)";
+                    actionLabel = isDossierComplet
+                      ? "Dossier complet — validation requise"
+                      : isVisiteConfirmee
+                      ? "Visite confirmée — préparer le RDV"
+                      : "En attente de réponse urgente";
+                  } else if (isQualified && isSolvable) {
+                    priorityDot = "🟡";
+                    priorityLabel = "À traiter";
+                    priorityColor = "rgb(161 98 7)";
+                    priorityBg = "rgba(234,179,8,0.1)";
+                    actionLabel = "Prospect qualifié solvable — proposer visite";
+                  } else if (hoursAgo !== null && hoursAgo > 24) {
+                    priorityDot = "🟡";
+                    priorityLabel = "Relance";
+                    priorityColor = "rgb(161 98 7)";
+                    priorityBg = "rgba(234,179,8,0.1)";
+                    actionLabel = `Sans réponse depuis ${Math.floor(hoursAgo / 24)}j`;
+                  } else {
+                    actionLabel = e.summary ?? "Nouveau prospect — qualifier";
+                  }
+
+                  const nomProspect = (pd.nom as string | null)
+                    ?? e.sender?.replace(/<.*>/, "").trim()
+                    ?? "Prospect";
+
                   return (
                     <Link
                       key={e.id}
@@ -592,30 +642,33 @@ export default function DashboardClient() {
                     >
                       <Avatar name={e.sender} />
                       <div className="min-w-0 flex-1">
-                        <div className="text-sm font-medium truncate" style={{ color: "rgb(30 41 59)" }}>
-                          {e.subject || "(Sans objet)"}
+                        <div className="flex items-center gap-1.5">
+                          <span className="text-xs">{priorityDot}</span>
+                          <span className="text-sm font-medium truncate" style={{ color: "rgb(30 41 59)" }}>
+                            {nomProspect}
+                          </span>
+                        </div>
+                        <div className="text-xs mt-0.5 truncate" style={{ color: "rgb(100 116 139)" }}>
+                          {actionLabel}
                         </div>
                         <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                          {e.is_urgent && (
-                            <span className="text-xs font-medium" style={{ color: "rgb(220 38 38)" }}>🔴 Urgent</span>
-                          )}
                           {hoursAgo !== null && (
-                            <span
-                              className="text-xs"
-                              style={{ color: hoursAgo > 24 ? "rgb(220 38 38)" : "rgb(148 163 184)" }}
-                            >
-                              {hoursAgo > 24
-                                ? `⚠️ ${Math.floor(hoursAgo / 24)}j sans réponse`
-                                : `Il y a ${hoursAgo}h`}
+                            <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+                              {hoursAgo < 1 ? "À l'instant" : hoursAgo < 24 ? `Il y a ${hoursAgo}h` : `${Math.floor(hoursAgo / 24)}j`}
+                            </span>
+                          )}
+                          {ratio !== null && (
+                            <span className="text-xs" style={{ color: isSolvable ? "rgb(22 163 74)" : "rgb(220 38 38)" }}>
+                              · Ratio {ratio.toFixed(1)}x
                             </span>
                           )}
                         </div>
                       </div>
                       <span
                         className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
-                        style={{ background: "rgba(234,88,12,0.1)", color: "rgb(194 65 12)" }}
+                        style={{ background: priorityBg, color: priorityColor }}
                       >
-                        À traiter
+                        {priorityLabel}
                       </span>
                     </Link>
                   );
