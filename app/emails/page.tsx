@@ -8,7 +8,7 @@ import { EmailDetailPanel } from "@/components/emails/EmailDetailPanel";
 import type { Email } from "@/types/email";
 import AppShell from "@/components/layout/AppShell";
 
-type Period = "today" | "7d" | "30d";
+type Period = "today" | "7d" | "30d" | "all";
 type PipelineMode = "DRAFT" | "AUTOPILOTE";
 type IntentionFilter = "all" | "LOCATION" | "INFO" | "HORS_SUJET";
 
@@ -70,6 +70,7 @@ export default function PipelinePage() {
     if (period === "today") { fromDate = new Date(); fromDate.setHours(0, 0, 0, 0); }
     if (period === "7d") { fromDate = new Date(); fromDate.setDate(now.getDate() - 7); }
     if (period === "30d") { fromDate = new Date(); fromDate.setDate(now.getDate() - 30); }
+    // period === "all" → no date filter
 
     let query = supabase
       .from("emails")
@@ -419,8 +420,8 @@ export default function PipelinePage() {
 
           {/* Période */}
           <div className="flex items-center gap-1">
-            {(["today", "7d", "30d"] as const).map((p) => {
-              const labels = { today: "Auj.", "7d": "7j", "30d": "30j" };
+            {(["today", "7d", "30d", "all"] as const).map((p) => {
+              const labels = { today: "Auj.", "7d": "7j", "30d": "30j", all: "Tout" };
               const isActive = period === p;
               return (
                 <button

@@ -5,7 +5,7 @@ import { useRouter } from "next/navigation";
 import AppShell from "@/components/layout/AppShell";
 import { useToast } from "@/components/ui/Toast";
 
-type Tab = "locatif" | "documents" | "faq" | "calendrier" | "ia";
+type Tab = "locatif" | "documents" | "faq" | "calendrier" | "ia" | "compte";
 type FaqEntry = { id: string; question: string; reponse: string };
 
 const DAYS_FR = ["Lundi", "Mardi", "Mercredi", "Jeudi", "Vendredi", "Samedi", "Dimanche"];
@@ -809,6 +809,9 @@ function TabIA() {
   const router = useRouter();
   const [instructions, setInstructions] = useState("");
   const [mode, setMode] = useState<"DRAFT" | "AUTOPILOTE">("DRAFT");
+  const [tonDeVoix, setTonDeVoix] = useState<"Professionnel et formel" | "Chaleureux et dynamique" | "Neutre et efficace">("Professionnel et formel");
+  const [prioriteProfils, setPrioriteProfils] = useState("");
+  const [seuilAutopilote, setSeuilAutopilote] = useState(3.5);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
@@ -833,6 +836,9 @@ function TabIA() {
         const ia = rules.ft_ia || {};
         const instrVal = ia.instructions || "";
         setInstructions(instrVal);
+        if (ia.ton_de_voix) setTonDeVoix(ia.ton_de_voix as typeof tonDeVoix);
+        if (ia.priorite_profils) setPrioriteProfils(ia.priorite_profils as string);
+        if (typeof ia.seuil_autopilote === "number") setSeuilAutopilote(ia.seuil_autopilote);
         setPreviewParams({
           nomAgence: locatif.nomAgence || "",
           multiplicateur: locatif.multiplicateur || 3,
@@ -859,7 +865,7 @@ function TabIA() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pipeline_mode: mode }),
       }),
-      saveSection("ia", { instructions }),
+      saveSection("ia", { instructions, ton_de_voix: tonDeVoix, priorite_profils: prioriteProfils, seuil_autopilote: seuilAutopilote }),
     ]);
     setSaving(false);
     const modeOk = modeRes.ok;
@@ -944,6 +950,49 @@ function TabIA() {
           className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none resize-none"
           style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
         />
+      </Card>
+
+      <Card title="🎙 Ton de voix de l'IA">
+        <p className="text-xs mb-3" style={{ color: "rgb(100 116 139)" }}>Définit le registre de langage utilisé dans chaque réponse générée.</p>
+        <div className="space-y-2">
+          {(["Professionnel et formel", "Chaleureux et dynamique", "Neutre et efficace"] as const).map((opt) => (
+            <label key={opt} className="flex items-center gap-3 px-4 py-2.5 rounded-xl cursor-pointer transition-all"
+              style={tonDeVoix === opt ? { background: "rgb(238 242 255)", border: "1.5px solid rgb(79 70 229)" } : { border: "1.5px solid rgb(226 232 240)" }}>
+              <input type="radio" name="tonDeVoix" checked={tonDeVoix === opt} onChange={() => setTonDeVoix(opt)} className="accent-indigo-600" />
+              <span className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>{opt}</span>
+            </label>
+          ))}
+        </div>
+      </Card>
+
+      <Card title="🎯 Priorisation des profils">
+        <p className="text-xs mb-2" style={{ color: "rgb(100 116 139)" }}>Indique à l'IA comment hiérarchiser les profils pour proposer des créneaux ou accorder une priorité.</p>
+        <input
+          type="text"
+          value={prioriteProfils}
+          onChange={(e) => setPrioriteProfils(e.target.value)}
+          placeholder="Ex: Priorise les CDI pour les visites du samedi"
+          className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none"
+          style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+        />
+      </Card>
+
+      <Card title="⚡ Seuil autopilote">
+        <p className="text-xs mb-3" style={{ color: "rgb(100 116 139)" }}>
+          L'IA envoie automatiquement (sans validation) si les revenus du prospect atteignent ce ratio.
+        </p>
+        <div className="flex items-center gap-4">
+          <input
+            type="range" min={2.5} max={5} step={0.5}
+            value={seuilAutopilote}
+            onChange={(e) => setSeuilAutopilote(parseFloat(e.target.value))}
+            className="flex-1 accent-indigo-600"
+          />
+          <span className="text-lg font-bold w-12 text-right" style={{ color: "rgb(79 70 229)" }}>{seuilAutopilote}x</span>
+        </div>
+        <p className="text-xs mt-1" style={{ color: "rgb(148 163 184)" }}>
+          Autopilote activé si revenus ≥ {seuilAutopilote}x le loyer (CDI requis)
+        </p>
       </Card>
 
       {/* Preview prompt collapsible */}
@@ -1032,11 +1081,126 @@ function TabIA() {
   );
 }
 
+/* ── TAB 6 : COMPTE ── */
+function TabCompte() {
+  const { toast } = useToast();
+  type EmailStatus =
+    | { connected: false }
+    | { connected: true; provider: "gmail" | "outlook"; email: string; revoked: boolean };
+
+  const [status, setStatus] = useState<EmailStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+
+  useEffect(() => {
+    fetch("/api/settings/email-status", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((d) => setStatus(d as EmailStatus))
+      .catch(() => setStatus({ connected: false }))
+      .finally(() => setLoading(false));
+  }, []);
+
+  const reconnect = (provider: "gmail" | "outlook") => {
+    window.location.href =
+      provider === "gmail" ? "/api/auth/google" : "/api/auth/microsoft";
+  };
+
+  return (
+    <div className="space-y-4">
+      <Card title="📧 Connexion email">
+        {loading ? (
+          <div className="flex items-center gap-2 text-sm" style={{ color: "rgb(100 116 139)" }}>
+            <svg className="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+              <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+              <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+            </svg>
+            Vérification en cours…
+          </div>
+        ) : status?.connected ? (
+          <div className="space-y-3">
+            {status.revoked ? (
+              <div
+                className="flex items-start gap-3 rounded-xl px-4 py-3"
+                style={{ background: "rgba(234,88,12,0.06)", border: "1px solid rgba(234,88,12,0.2)" }}
+              >
+                <span className="text-lg flex-shrink-0">⚠️</span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium" style={{ color: "rgb(234 88 12)" }}>
+                    Token révoqué — reconnectez-vous
+                  </div>
+                  <div className="text-xs mt-0.5 truncate" style={{ color: "rgb(100 116 139)" }}>
+                    {status.email}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div
+                className="flex items-start gap-3 rounded-xl px-4 py-3"
+                style={{ background: "rgba(22,163,74,0.06)", border: "1px solid rgba(22,163,74,0.2)" }}
+              >
+                <span className="text-lg flex-shrink-0">
+                  {status.provider === "gmail" ? "📧" : "📮"}
+                </span>
+                <div className="flex-1 min-w-0">
+                  <div className="text-sm font-medium" style={{ color: "rgb(22 163 74)" }}>
+                    ✓ {status.provider === "gmail" ? "Gmail connecté" : "Outlook connecté"}
+                  </div>
+                  <div className="text-xs mt-0.5 truncate" style={{ color: "rgb(100 116 139)" }}>
+                    {status.email}
+                  </div>
+                </div>
+              </div>
+            )}
+            <button
+              onClick={() => {
+                reconnect(status.provider);
+                toast("Redirection vers l'autorisation…", "success");
+              }}
+              className="px-4 py-2 rounded-lg text-sm font-medium transition-all"
+              style={{ background: "rgb(238 242 255)", color: "rgb(79 70 229)", border: "1px solid rgb(199 210 254)" }}
+            >
+              🔄 Reconnecter {status.provider === "gmail" ? "Gmail" : "Outlook"}
+            </button>
+          </div>
+        ) : (
+          <div className="space-y-3">
+            <p className="text-sm" style={{ color: "rgb(100 116 139)" }}>
+              Aucun compte email connecté. Connectez Gmail ou Outlook pour activer la synchronisation.
+            </p>
+            <div className="flex gap-2 flex-wrap">
+              <button
+                onClick={() => {
+                  reconnect("gmail");
+                  toast("Redirection vers Google…", "success");
+                }}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all"
+                style={{ background: "rgb(238 242 255)", color: "rgb(79 70 229)", border: "1px solid rgb(199 210 254)" }}
+              >
+                📧 Connecter Gmail
+              </button>
+              <button
+                onClick={() => {
+                  reconnect("outlook");
+                  toast("Redirection vers Microsoft…", "success");
+                }}
+                className="flex items-center gap-2 px-4 py-2 rounded-lg text-sm font-medium transition-all"
+                style={{ background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
+              >
+                📮 Connecter Outlook
+              </button>
+            </div>
+          </div>
+        )}
+      </Card>
+    </div>
+  );
+}
+
 /* ── PAGE PRINCIPALE ── */
 export default function SettingsPage() {
   const [activeTab, setActiveTab] = useState<Tab>("locatif");
 
   const tabs: { key: Tab; label: string }[] = [
+    { key: "compte", label: "🔗 Compte" },
     { key: "locatif", label: "🏠 Règles locatives" },
     { key: "documents", label: "📄 Documents" },
     { key: "faq", label: "💬 FAQ Agence" },
@@ -1069,6 +1233,7 @@ export default function SettingsPage() {
           <div style={{ display: activeTab === "faq" ? "block" : "none" }}><TabFaq /></div>
           <div style={{ display: activeTab === "calendrier" ? "block" : "none" }}><TabCalendrier /></div>
           <div style={{ display: activeTab === "ia" ? "block" : "none" }}><TabIA /></div>
+          <div style={{ display: activeTab === "compte" ? "block" : "none" }}><TabCompte /></div>
         </div>
       </div>
     </AppShell>

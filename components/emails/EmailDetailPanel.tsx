@@ -213,11 +213,12 @@ const DOCS = [
   { key: "piece_identite", label: "Pièce d'identité" },
 ];
 
-function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
+function DossierWidget({ body, attachments, gmailMessageId, emailId, portalHasToken }: {
   body: string | null | undefined;
   attachments?: AttachmentInfo[];
   gmailMessageId?: string | null;
   emailId?: string;
+  portalHasToken?: boolean;
 }) {
   const { toast: notify } = useToast();
   const [docs, setDocs] = useState<Record<string, DocStatus>>(
@@ -456,7 +457,22 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
       </div>
 
       {/* ── BLOC 2 + 3 : Documents reçus avec validation manuelle ── */}
-      {attachments && attachments.length > 0 && (
+      {portalHasToken ? (
+        <div className="mt-4 pt-3 border-t" style={{ borderColor: "rgb(226 232 240)" }}>
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg"
+            style={{ background: "rgba(79,70,229,0.06)", border: "1px solid rgba(79,70,229,0.15)" }}>
+            <span className="text-base">📎</span>
+            <div>
+              <p className="text-sm font-medium" style={{ color: "rgb(79 70 229)" }}>
+                Dossier sur portail
+              </p>
+              <p className="text-xs" style={{ color: "rgb(100 116 139)" }}>
+                Gérez les documents depuis la fiche prospect
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : attachments && attachments.length > 0 && (
         <div className="mt-4 pt-3 border-t" style={{ borderColor: "rgb(226 232 240)" }}>
           <div className="flex items-center gap-2 mb-3">
             <span className="text-sm font-semibold" style={{ color: "rgb(30 41 59)" }}>
@@ -1076,6 +1092,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
   const [sending, setSending] = useState(false);
   const [reclassifyOpen, setReclassifyOpen] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [portalHasToken, setPortalHasToken] = useState(false);
 
   const intention = getIntention(email);
   const decision = email?.decision ?? fallbackDecision(email);
@@ -1093,6 +1110,13 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
     setEmailSent(false);
     setSending(false);
     setReclassifyOpen(false);
+    setPortalHasToken(false);
+    if (email?.id) {
+      fetch(`/api/portal/status?emailId=${email.id}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d?.hasToken) setPortalHasToken(true); })
+        .catch(() => {});
+    }
   }, [email?.id]);
 
   // Fetch body à la demande
@@ -1331,6 +1355,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
             attachments={(email as any).attachments ?? []}
             gmailMessageId={email.gmail_message_id}
             emailId={email.id}
+            portalHasToken={portalHasToken}
           />
           <DocumentsTemplateWidget email={email} mode={mode} />
           <BookingWidget email={email} mode={mode} onApprove={handleBookingApprove} />

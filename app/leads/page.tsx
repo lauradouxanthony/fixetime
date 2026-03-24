@@ -33,6 +33,31 @@ type Lead = {
   } | null;
 };
 
+type AttachmentItem = {
+  source?: string;
+  filename?: string;
+  mimeType?: string;
+  size?: number;
+  storagePath?: string;
+  docType?: string;
+  confidence?: number;
+  label?: string;
+  validated_by_human?: boolean;
+  uploaded_at?: string;
+  // Gmail format
+  docTypes?: Record<string, boolean>;
+  attachmentId?: string;
+  gmailLink?: string;
+};
+
+type PortalStatus = {
+  hasToken: boolean;
+  token?: string;
+  portalUrl?: string;
+  lastSentAt?: string | null;
+  expiresAt?: string;
+};
+
 type PropertyInfo = { id: string; title: string; rent: number };
 
 const ETAPE_CONFIG: Record<EtapeProcess, { label: string; color: string; bg: string; border: string }> = {
@@ -248,6 +273,13 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
   const [savingNote, setSavingNote] = useState(false);
   const { toast } = useToast();
 
+  // Portal state
+  const [portalStatus, setPortalStatus] = useState<PortalStatus | null>(null);
+  const [sendingPortal, setSendingPortal] = useState(false);
+  const [localAttachments, setLocalAttachments] = useState<AttachmentItem[]>(
+    () => ((lead as unknown as { attachments?: AttachmentItem[] }).attachments ?? [])
+  );
+
   const ACTION_ICONS: Record<string, string> = {
     EMAIL_RECU: "📧", IA_REPONDU: "🤖", PROSPECT_REPONDU: "📧",
     VISITE_PROPOSEE: "📅", VISITE_CONFIRMEE: "✅", VISITE_EFFECTUEE: "🏠",
@@ -259,6 +291,16 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
     fetch(`/api/leads/${lead.id}/timeline`)
       .then(r => r.json())
       .then(d => setTimeline(d.timeline ?? []))
+      .catch(() => {});
+  }, [lead.id]);
+
+  useEffect(() => {
+    setLocalAttachments(
+      ((lead as unknown as { attachments?: AttachmentItem[] }).attachments ?? [])
+    );
+    fetch(`/api/portal/status?emailId=${lead.id}`)
+      .then(r => r.json())
+      .then(d => setPortalStatus(d as PortalStatus))
       .catch(() => {});
   }, [lead.id]);
 
@@ -400,12 +442,16 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
             const docs = DOC_PROFILES[spKey] ?? DOC_PROFILES.CDI;
 
             // Calculer les docs reçus à partir des PJ (depuis lead.attachments si disponible)
-            const attachments: any[] = (lead as any).attachments ?? [];
+            const attachments: AttachmentItem[] = localAttachments;
             const receivedKeys = new Set<string>();
-            attachments.forEach((att: any) => {
-              const docTypes = att.docTypes as Record<string, boolean> | undefined;
-              if (docTypes) {
-                Object.entries(docTypes).forEach(([k, v]) => { if (v) receivedKeys.add(k); });
+            attachments.forEach((att) => {
+              // Gmail style
+              if (att.docTypes) {
+                Object.entries(att.docTypes).forEach(([k, v]) => { if (v) receivedKeys.add(k); });
+              }
+              // Portal style
+              if (att.source === "portal" && att.docType) {
+                receivedKeys.add(att.docType);
               }
             });
 
@@ -452,17 +498,90 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
 
                 <div className="space-y-1">
                   {docs.map(doc => {
-                    const received = receivedKeys.has(doc.key);
+                    const portalAtt = attachments.find(a => a.source === "portal" && a.docType === doc.key);
+                    const gmailAtt = attachments.find(a => !a.source && a.docTypes?.[doc.key]);
+                    const matchedAtt = portalAtt ?? gmailAtt;
+                    const isValidated = matchedAtt?.validated_by_human === true;
+
+                    const openFile = async () => {
+                      if (portalAtt?.storagePath) {
+                        const r = await fetch(`/api/portal/doc-url?path=${encodeURIComponent(portalAtt.storagePath)}`);
+                        const d = await r.json();
+                        if (d.url) window.open(d.url, "_blank");
+                      } else if (gmailAtt?.gmailLink) {
+                        window.open(gmailAtt.gmailLink, "_blank");
+                      }
+                    };
+
+                    const validateDoc = async (validated: boolean) => {
+                      if (!portalStatus?.token || !portalAtt?.storagePath) return;
+                      const res = await fetch(`/api/portal/${portalStatus.token}/validate`, {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ storagePath: portalAtt.storagePath, validated }),
+                      });
+                      if (res.ok) {
+                        setLocalAttachments(prev => prev.map(a =>
+                          a.storagePath === portalAtt.storagePath
+                            ? { ...a, validated_by_human: validated }
+                            : a
+                        ));
+                        toast(validated ? "✓ Document validé" : "✗ Document rejeté", validated ? "success" : "error");
+                      }
+                    };
+
+                    if (!matchedAtt) {
+                      return (
+                        <div key={doc.key} className="flex items-center gap-2 px-2 py-1.5 rounded-lg"
+                          style={{ background: "rgba(226,232,240,0.4)" }}>
+                          <span className="text-sm flex-shrink-0" style={{ color: "rgb(148 163 184)" }}>✗</span>
+                          <span className="text-xs flex-1" style={{ color: "rgb(100 116 139)" }}>{doc.label}</span>
+                          <span className="text-xs flex-shrink-0" style={{ color: "rgb(148 163 184)" }}>Manquant</span>
+                        </div>
+                      );
+                    }
+                    if (isValidated) {
+                      return (
+                        <div key={doc.key} className="flex items-center gap-2 px-2 py-1.5 rounded-lg"
+                          style={{ background: "rgba(22,163,74,0.06)" }}>
+                          <span className="text-sm flex-shrink-0" style={{ color: "rgb(22 163 74)" }}>✓</span>
+                          <span className="text-xs flex-1" style={{ color: "rgb(22 163 74)" }}>{doc.label}</span>
+                          <span className="text-xs flex-shrink-0 font-medium" style={{ color: "rgb(22 163 74)" }}>Validé</span>
+                        </div>
+                      );
+                    }
                     return (
-                      <div key={doc.key} className="flex items-center gap-2 px-2 py-1.5 rounded-lg"
-                        style={{ background: received ? "rgba(22,163,74,0.06)" : "rgba(226,232,240,0.4)" }}>
-                        <span className="text-sm flex-shrink-0">{received ? "✅" : "❌"}</span>
-                        <span className="text-xs flex-1" style={{ color: received ? "rgb(22 163 74)" : "rgb(100 116 139)" }}>
-                          {doc.label}
-                        </span>
-                        <span className="text-xs flex-shrink-0" style={{ color: received ? "rgb(22 163 74)" : "rgb(148 163 184)" }}>
-                          {received ? "Reçu" : "Manquant"}
-                        </span>
+                      <div key={doc.key} className="flex flex-col gap-1 px-2 py-1.5 rounded-lg"
+                        style={{ background: "rgba(234,88,12,0.06)" }}>
+                        <div className="flex items-center gap-2">
+                          <span className="text-sm flex-shrink-0" style={{ color: "rgb(234 88 12)" }}>⏳</span>
+                          <button
+                            onClick={openFile}
+                            className="text-xs flex-1 text-left underline underline-offset-2 truncate"
+                            style={{ color: "rgb(234 88 12)" }}
+                          >
+                            {matchedAtt.filename ?? doc.label}
+                          </button>
+                          <span className="text-xs flex-shrink-0 font-medium" style={{ color: "rgb(234 88 12)" }}>À valider</span>
+                        </div>
+                        {portalAtt && portalStatus?.token && (
+                          <div className="flex gap-1 pl-6">
+                            <button
+                              onClick={() => validateDoc(true)}
+                              className="text-xs px-2 py-0.5 rounded font-medium"
+                              style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22 163 74)" }}
+                            >
+                              ✓ Valider
+                            </button>
+                            <button
+                              onClick={() => validateDoc(false)}
+                              className="text-xs px-2 py-0.5 rounded font-medium"
+                              style={{ background: "rgba(220,38,38,0.08)", color: "rgb(220 38 38)" }}
+                            >
+                              ✗ Rejeter
+                            </button>
+                          </div>
+                        )}
                       </div>
                     );
                   })}
@@ -470,6 +589,104 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
               </div>
             );
           })()}
+
+          {/* ── PORTAIL DE DÉPÔT ──────────────────────────────────── */}
+          <div className="space-y-2">
+            <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>
+              📎 Lien de dépôt de documents
+            </h3>
+
+            {portalStatus?.hasToken ? (
+              <div className="rounded-lg border p-3 space-y-2" style={{ borderColor: "rgb(199 210 254)", background: "rgb(238 242 255)" }}>
+                <div className="flex items-center gap-2 text-xs" style={{ color: "rgb(79 70 229)" }}>
+                  <span>✓</span>
+                  <span>
+                    Lien envoyé{portalStatus.lastSentAt
+                      ? ` le ${new Date(portalStatus.lastSentAt).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}`
+                      : ""}
+                  </span>
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    onClick={() => {
+                      if (portalStatus.portalUrl) {
+                        navigator.clipboard.writeText(portalStatus.portalUrl);
+                        toast("Lien copié !", "success");
+                      }
+                    }}
+                    className="text-xs px-2.5 py-1 rounded-lg font-medium"
+                    style={{ background: "rgba(79,70,229,0.12)", color: "rgb(79 70 229)" }}
+                  >
+                    📋 Copier
+                  </button>
+                  <button
+                    disabled={sendingPortal}
+                    onClick={async () => {
+                      setSendingPortal(true);
+                      const res = await fetch("/api/portal/create-token", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: JSON.stringify({ emailId: lead.id, sendEmail: true }),
+                      });
+                      const d = await res.json();
+                      setSendingPortal(false);
+                      if (res.ok || res.status === 207) {
+                        setPortalStatus({ hasToken: true, token: d.token, portalUrl: d.portalUrl, lastSentAt: d.lastSentAt, expiresAt: d.expiresAt });
+                        if (d.gmailError) {
+                          toast("Gmail indisponible — lien ci-dessus à copier", "error");
+                        } else {
+                          toast(`Lien renvoyé ✓`, "success");
+                        }
+                      }
+                    }}
+                    className="text-xs px-2.5 py-1 rounded-lg font-medium disabled:opacity-50"
+                    style={{ background: "rgba(79,70,229,0.12)", color: "rgb(79 70 229)" }}
+                  >
+                    {sendingPortal ? "Envoi…" : "🔄 Renvoyer"}
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button
+                disabled={sendingPortal}
+                onClick={async () => {
+                  setSendingPortal(true);
+                  const res = await fetch("/api/portal/create-token", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ emailId: lead.id, sendEmail: true }),
+                  });
+                  const d = await res.json();
+                  setSendingPortal(false);
+                  if (res.ok || res.status === 207) {
+                    setPortalStatus({ hasToken: true, token: d.token, portalUrl: d.portalUrl, lastSentAt: d.lastSentAt, expiresAt: d.expiresAt });
+                    if (d.gmailError) {
+                      toast("Lien créé — Gmail indisponible, copiez-le ci-dessus", "error");
+                    } else {
+                      const senderEmail = lead.sender?.match(/<(.+)>/)?.[1] ?? lead.sender ?? "";
+                      toast(`Lien envoyé à ${senderEmail} ✓`, "success");
+                    }
+                  } else {
+                    toast("Erreur lors de la création du lien", "error");
+                  }
+                }}
+                className="w-full text-sm px-3 py-2 rounded-lg font-medium disabled:opacity-50 flex items-center justify-center gap-2"
+                style={{ background: "rgb(79 70 229)", color: "white" }}
+              >
+                {sendingPortal ? (
+                  <>
+                    <svg className="animate-spin h-3 w-3" viewBox="0 0 24 24" fill="none">
+                      <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                      <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z" />
+                    </svg>
+                    Envoi en cours…
+                  </>
+                ) : (
+                  <>📎 Envoyer le lien de dépôt</>
+                )}
+              </button>
+            )}
+          </div>
 
           {/* ÉTAPE + ACTIONS */}
           <div className="space-y-3">
@@ -577,6 +794,57 @@ export default function LeadsPage() {
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
   const { toast } = useToast();
 
+  const ETAPE_ORDER: Partial<Record<string, number>> = {
+    NEW: 0, QUALIFICATION: 1, VISITE_PROPOSEE: 2,
+    VISITE_CONFIRMEE: 3, DOSSIER_DEMANDE: 4,
+    DOSSIER_RECU: 5, VALIDE: 6, REFUSE: 7,
+  };
+
+  function normalizeSender(sender: string | null): string {
+    if (!sender) return "";
+    return (sender.match(/<(.+)>/)?.[1] ?? sender).toLowerCase().trim();
+  }
+
+  const IMMO_KEYWORDS = [
+    "visite", "location", "louer", "appartement", "logement",
+    "t1", "t2", "t3", "chambre", "studio", "loyer", "bail",
+    "locataire", "demande", "intéressé", "appart", "re:",
+  ];
+
+  function hasImmoSubject(lead: Lead): boolean {
+    const s = (lead.subject ?? "").toLowerCase();
+    return IMMO_KEYWORDS.some((kw) => s.includes(kw));
+  }
+
+  function deduplicateLeads(leads: Lead[]): Lead[] {
+    const best = new Map<string, Lead>();
+    for (const lead of leads) {
+      const key = normalizeSender(lead.sender) || lead.id;
+      const existing = best.get(key);
+      if (!existing) { best.set(key, lead); continue; }
+
+      const immoA = hasImmoSubject(existing);
+      const immoB = hasImmoSubject(lead);
+
+      // Priorité absolue à l'email avec sujet immobilier
+      if (immoB && !immoA) { best.set(key, lead); continue; }
+      if (immoA && !immoB) { continue; }
+
+      // Les deux immo ou aucun → comparer étape puis date
+      const etapeA = (existing.prospect_data as any)?.etape_process ?? "NEW";
+      const etapeB = (lead.prospect_data as any)?.etape_process ?? "NEW";
+      const eA = ETAPE_ORDER[etapeA] ?? 0;
+      const eB = ETAPE_ORDER[etapeB] ?? 0;
+      if (eB > eA) { best.set(key, lead); continue; }
+      if (eB === eA) {
+        const dA = new Date(existing.received_at ?? 0).getTime();
+        const dB = new Date(lead.received_at ?? 0).getTime();
+        if (dB > dA) best.set(key, lead);
+      }
+    }
+    return Array.from(best.values());
+  }
+
   const fetchLeads = useCallback(async () => {
     const { data: { user } } = await supabase.auth.getUser();
     if (!user) { window.location.href = "/auth/login"; return; }
@@ -595,7 +863,36 @@ export default function LeadsPage() {
       .order("received_at", { ascending: false })
       .limit(200);
 
-    if (data) setLeads(data as unknown as Lead[]);
+    if (data) {
+      const COMMERCIAL_DOMAINS = [
+        "@revolut.com", "@facebookmail.com", "@meta.com",
+        "@google.com", "@linkedin.com", "@twitter.com",
+        "@netflix.com", "@amazon.com", "@paypal.com",
+        "@stripe.com", "@notion.so", "@slack.com",
+      ];
+      const filtered = (data as unknown as Lead[]).filter(lead => {
+        const pd = lead.prospect_data;
+        // Vrai prospect : données IA extraites
+        const hasProspectData = pd && (pd.nom || pd.situation_pro || pd.revenus_mensuels);
+        if (hasProspectData) return true;
+        // Ou sujet contient un mot-clé immobilier
+        if (hasImmoSubject(lead)) return true;
+        // Sinon : exclure si domaine commercial connu
+        const email = normalizeSender(lead.sender);
+        return !COMMERCIAL_DOMAINS.some(d => email.endsWith(d) || email.includes(d));
+      });
+
+      const deduped = deduplicateLeads(filtered);
+
+      // Exclure les leads sans nom ET sans sujet immobilier (parasites résiduels)
+      const clean = deduped.filter(lead => {
+        const pd = lead.prospect_data;
+        const hasName = !!(pd?.nom);
+        return hasName || hasImmoSubject(lead);
+      });
+
+      setLeads(clean);
+    }
 
     // Charger les biens pour les filtres
     try {
