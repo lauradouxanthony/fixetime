@@ -1,9 +1,235 @@
 import { NextRequest, NextResponse } from "next/server";
+import { google } from "googleapis";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { getValidGoogleAccessToken } from "@/lib/google/getValidAccessToken";
 
 export const runtime = "nodejs";
+
+// Approche simplifiée : stocker le lien Gmail direct (pas de Supabase Storage)
+// L'utilisateur peut ouvrir la PJ depuis Gmail en un clic
+function buildGmailLink(gmailMsgId: string): string {
+  return `https://mail.google.com/mail/u/0/#inbox/${gmailMsgId}`;
+}
+
+// ── Classifier par nom de fichier (synchrone, heuristique) ──────────────────
+function classifyByFilename(filename: string): string {
+  const f = filename.toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+
+  if (f.includes("paie") || f.includes("salaire") || f.includes("bulletin") || f.includes("fiche"))
+    return "fiche_paie";
+  if (f.includes("contrat") || f.includes("cdi") || f.includes("cdd") || f.includes("emploi"))
+    return "contrat_travail";
+  if (f.includes("impos") || f.includes("avis") || f.includes("impot") || f.includes("fiscal"))
+    return "avis_imposition";
+  if (f.includes("identit") || f.includes("cni") || f.includes("passeport") || f.includes("carte") || f.includes(" id"))
+    return "piece_identite";
+  if (f.includes("rib") || f.includes("bancaire") || f.includes("releve") || f.includes("compte"))
+    return "rib";
+  if (f.includes("etudiant") || f.includes("scolari") || f.includes("universite") || f.includes("ecole"))
+    return "carte_etudiant";
+  if (f.includes("kbis") || f.includes("siret") || f.includes("entreprise"))
+    return "kbis";
+  if (f.includes("garant") || f.includes("caution"))
+    return "document_garant";
+  if (f.includes("quittance") || f.includes("quitt"))
+    return "quittance_loyer";
+  return "autre";
+}
+
+// ── Vérifier si le nom de fichier est "générique" (pas de mots-clés clairs) ─
+function isGenericFilename(filename: string): boolean {
+  const f = filename.toLowerCase().normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  // Patterns génériques : img_001, scan001, document, fichier, photo, dsc_, dsc0, p1, p2…
+  const genericPatterns = [
+    /^img[_\-\s]?\d/,
+    /^scan\d/,
+    /^document\./,
+    /^fichier\d/,
+    /^photo[_\-\s]?\d/,
+    /^dsc[_\-\s0-9]/,
+    /^p\d+\./,
+    /^\d{4,}/,        // commence par 4+ chiffres (ex: 20240315_...)
+    /^capture/,
+    /^image\d/,
+    /^screenshot/,
+    /^file\d/,
+    /^attachment/,
+    /^untitled/,
+    /^new\s*doc/,
+    /^doc\d/,
+  ];
+  const base = f.replace(/\.[^.]+$/, ""); // nom sans extension
+  return genericPatterns.some(p => p.test(base)) || base.length <= 5;
+}
+
+// ── Classifier via Claude (async, pour noms de fichiers génériques) ──────────
+async function classifyWithAI(params: {
+  filename: string;
+  size: number;
+  subject: string;
+  body: string;
+}): Promise<{ type: string; confidence: number; reasoning: string }> {
+  const { filename, size, subject, body } = params;
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    console.warn("[CLASSIFY-AI] ANTHROPIC_API_KEY manquant — fallback 'autre'");
+    return { type: "autre", confidence: 0, reasoning: "API key absent" };
+  }
+
+  const prompt = `Tu es un assistant immobilier français.
+Ce fichier s'appelle '${filename}' (${size} octets).
+Il a été envoyé par un candidat à la location.
+Objet de l'email : ${subject}
+Corps de l'email : ${body.substring(0, 500)}
+
+Déduis le type de document parmi :
+fiche_paie | contrat_travail | avis_imposition | piece_identite | garant_fiche_paie | garant_contrat | rib | quittance_loyer | autre
+
+Réponds UNIQUEMENT en JSON :
+{"type": "...", "confidence": 0.0, "reasoning": "..."}`;
+
+  try {
+    const res = await fetch("https://api.anthropic.com/v1/messages", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+      },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-20250514",
+        max_tokens: 200,
+        messages: [{ role: "user", content: prompt }],
+      }),
+    });
+
+    if (!res.ok) {
+      const errTxt = await res.text();
+      console.warn("[CLASSIFY-AI] Anthropic error:", errTxt.substring(0, 200));
+      return { type: "autre", confidence: 0, reasoning: "API error" };
+    }
+
+    const json = await res.json();
+    const content: string = json.content?.[0]?.text ?? "";
+    const match = content.match(/\{[\s\S]*\}/);
+    if (!match) return { type: "autre", confidence: 0, reasoning: "No JSON in response" };
+
+    const parsed = JSON.parse(match[0]);
+    const type = String(parsed.type ?? "autre");
+    const confidence = typeof parsed.confidence === "number"
+      ? Math.max(0, Math.min(1, parsed.confidence))
+      : 0;
+    const reasoning = String(parsed.reasoning ?? "");
+
+    console.log(`[CLASSIFY-AI] '${filename}' → type=${type} confidence=${confidence.toFixed(2)}`);
+    return { type, confidence, reasoning };
+  } catch (e: any) {
+    console.warn("[CLASSIFY-AI] Exception:", e?.message);
+    return { type: "autre", confidence: 0, reasoning: "Classification failed" };
+  }
+}
+
+// ── Orchestrateur : heuristique d'abord, IA si nom générique ────────────────
+async function classifyDocument(params: {
+  filename: string;
+  size: number;
+  subject: string;
+  body: string;
+}): Promise<{ docType: string; ai_confidence: number | null; ai_reasoning: string | null }> {
+  const { filename } = params;
+  const byFilename = classifyByFilename(filename);
+
+  // Si le nom de fichier est clair → pas besoin d'IA
+  if (byFilename !== "autre" || !isGenericFilename(filename)) {
+    return {
+      docType: byFilename,
+      ai_confidence: byFilename !== "autre" ? 1.0 : null,
+      ai_reasoning: byFilename !== "autre" ? "Détecté par nom de fichier" : null,
+    };
+  }
+
+  // Nom générique → appeler Claude
+  const aiResult = await classifyWithAI(params);
+  const docType = aiResult.confidence >= 0.7 ? aiResult.type : "autre";
+
+  return {
+    docType,
+    ai_confidence: aiResult.confidence,
+    ai_reasoning: aiResult.reasoning,
+  };
+}
+
+// Fonction helper : extraire les pièces jointes (récursif, version robuste)
+// RÈGLE : on ne garde que les parts avec attachmentId (vraies PJ, pas les images inline)
+function extractAttachments(payload: any): { filename: string; mimeType: string; attachmentId: string; size: number }[] {
+  const result: { filename: string; mimeType: string; attachmentId: string; size: number }[] = [];
+  const seen = new Set<string>();
+
+  const scan = (part: any) => {
+    if (!part) return;
+    // PJ réelle : doit avoir un attachmentId ET un nom de fichier non-vide
+    if (part.body?.attachmentId && part.filename && part.filename.trim().length > 0) {
+      const key = `${part.body.attachmentId}:${part.filename}`;
+      if (!seen.has(key)) {
+        seen.add(key);
+        result.push({
+          filename: part.filename.trim(),
+          mimeType: part.mimeType ?? "application/octet-stream",
+          attachmentId: part.body.attachmentId,
+          size: part.body.size ?? 0,
+        });
+      }
+    }
+    // Scanner récursivement les sous-parties
+    if (Array.isArray(part.parts)) {
+      part.parts.forEach(scan);
+    }
+  };
+
+  // Scanner le payload lui-même (cas extrême : payload = PJ directe)
+  if (payload) {
+    scan(payload);
+    // Scanner aussi payload.parts directement (cas standard multipart)
+    if (Array.isArray(payload.parts)) {
+      payload.parts.forEach(scan);
+    }
+  }
+
+  return result;
+}
+
+// BLOC 1 FIX : extraire le corps de l'email (base64url → utf-8)
+// Priorité : text/plain > html (cherche récursivement dans payload.parts)
+function getBody(payload: any): string {
+  if (!payload) return "";
+  if (payload.body?.data) {
+    return Buffer.from(payload.body.data, "base64url").toString("utf-8");
+  }
+  if (payload.parts) {
+    for (const part of payload.parts) {
+      if (part.mimeType === "text/plain" && part.body?.data) {
+        return Buffer.from(part.body.data, "base64url").toString("utf-8");
+      }
+    }
+    for (const part of payload.parts) {
+      if (part.parts) {
+        const nested = getBody(part);
+        if (nested) return nested;
+      }
+    }
+    // fallback html si pas de text/plain
+    for (const part of payload.parts) {
+      if (part.mimeType === "text/html" && part.body?.data) {
+        const html = Buffer.from(part.body.data, "base64url").toString("utf-8");
+        return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
+      }
+    }
+  }
+  return "";
+}
 
 export async function POST(req: NextRequest) {
   const syncStart = Date.now();
@@ -30,7 +256,7 @@ export async function POST(req: NextRequest) {
     } catch {}
 
     if (!userId) {
-      return NextResponse.json({ error: "NOT_AUTHENTICATED" }, { status: 401 });
+      return NextResponse.json({ error: "UNAUTHENTICATED" }, { status: 401 });
     }
 
     console.log(`[GMAIL SYNC] user=${userId} mode=${quickMode ? "quick" : "full"}`);
@@ -39,8 +265,6 @@ export async function POST(req: NextRequest) {
     let accessToken = await getValidGoogleAccessToken(userId);
 
     // ── Paramètres selon le mode ──────────────────────────────────────────
-    // QUICK (manuel) : 50 messages INBOX uniquement → ~50 appels API → rapide
-    // FULL  (cron)   : 200 messages INBOX 30j        → ~200 appels API → complet
     const MAX_MESSAGES = quickMode ? 50 : 200;
     const PAGE_SIZE = quickMode ? 50 : 100;
     const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
@@ -48,96 +272,24 @@ export async function POST(req: NextRequest) {
     const callList = (token: string, pageToken?: string) => {
       const url = new URL("https://gmail.googleapis.com/gmail/v1/users/me/messages");
       url.searchParams.set("maxResults", String(PAGE_SIZE));
-      url.searchParams.set("labelIds", "INBOX"); // ✅ INBOX seulement (pas sent/drafts/spam)
+      url.searchParams.set("labelIds", "INBOX");
       if (pageToken) url.searchParams.set("pageToken", pageToken);
       return fetch(url.toString(), { headers: { Authorization: `Bearer ${token}` } });
     };
 
-    // Approche simplifiée : stocker le lien Gmail direct (pas de Supabase Storage)
-    // L'utilisateur peut ouvrir la PJ depuis Gmail en un clic
-    function buildGmailLink(gmailMsgId: string): string {
-      return `https://mail.google.com/mail/u/0/#inbox/${gmailMsgId}`;
-    }
-
-    // Auto-détection du type de document selon le nom du fichier
-    function autoCheckDoc(filename: string): Record<string, boolean> {
-      const name = filename.toLowerCase();
-      const docs: Record<string, boolean> = {};
-      if (name.includes("paie") || name.includes("salaire") || name.includes("bulletin"))
-        docs.fiches_paie = true;
-      if (name.includes("contrat") || name.includes("cdi") || name.includes("cdd") || name.includes("travail"))
-        docs.contrat_travail = true;
-      if (name.includes("impos") || name.includes("avis") || name.includes("impot") || name.includes("fiscal"))
-        docs.avis_imposition = true;
-      if (name.includes("identit") || name.includes("cni") || name.includes("passeport") || name.includes("carte"))
-        docs.piece_identite = true;
-      if (name.includes("etudiant") || name.includes("scolarit") || name.includes("universite") || name.includes("carte_etud"))
-        docs.carte_etudiant = true;
-      if (name.includes("kbis") || name.includes("siren") || name.includes("extrait"))
-        docs.kbis = true;
-      if (name.includes("bilan") || name.includes("comptable"))
-        docs.bilan = true;
-      return docs;
-    }
-
     // ── Récupérer les gmail_message_id déjà en DB ──
-    // On charge aussi le champ `attachments` pour distinguer :
-    //   - emails déjà traités avec PJ → skip complet
-    //   - emails en DB sans PJ → on re-traite les attachments uniquement
     const { data: existingRows } = await supabaseAdmin
       .from("emails")
       .select("id, gmail_message_id, attachments")
       .eq("user_id", userId)
       .not("gmail_message_id", "is", null);
 
-    // Tous les IDs connus
-    // Fonction helper : extraire les pièces jointes (récursif, version robuste)
-    // RÈGLE : on ne garde que les parts avec attachmentId (vraies PJ, pas les images inline)
-    function extractAttachments(payload: any): { filename: string; mimeType: string; attachmentId: string; size: number }[] {
-      const result: { filename: string; mimeType: string; attachmentId: string; size: number }[] = [];
-      const seen = new Set<string>();
-
-      const scan = (part: any) => {
-        if (!part) return;
-        // PJ réelle : doit avoir un attachmentId ET un nom de fichier non-vide
-        if (part.body?.attachmentId && part.filename && part.filename.trim().length > 0) {
-          const key = `${part.body.attachmentId}:${part.filename}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            result.push({
-              filename: part.filename.trim(),
-              mimeType: part.mimeType ?? "application/octet-stream",
-              attachmentId: part.body.attachmentId,
-              size: part.body.size ?? 0,
-            });
-          }
-        }
-        // Scanner récursivement les sous-parties
-        if (Array.isArray(part.parts)) {
-          part.parts.forEach(scan);
-        }
-      };
-
-      // Scanner le payload lui-même (cas extrême : payload = PJ directe)
-      if (payload) {
-        scan(payload);
-        // Scanner aussi payload.parts directement (cas standard multipart)
-        if (Array.isArray(payload.parts)) {
-          payload.parts.forEach(scan);
-        }
-      }
-
-      return result;
-    }
-
     const knownIds = new Set((existingRows || []).map((r: any) => r.gmail_message_id));
-    // IDs avec PJ déjà traitées (array non vide)
     const knownWithAttachments = new Set(
       (existingRows || [])
         .filter((r: any) => Array.isArray(r.attachments) && r.attachments.length > 0)
         .map((r: any) => r.gmail_message_id)
     );
-    // Map gmail_message_id → DB uuid (pour UPDATE ciblé)
     const gmailIdToDbId = new Map<string, string>(
       (existingRows || []).map((r: any) => [r.gmail_message_id, r.id])
     );
@@ -151,12 +303,6 @@ export async function POST(req: NextRequest) {
     outer: while (true) {
       let listRes = await callList(accessToken, pageToken);
 
-      // retry 1 fois si 401
-      if (listRes.status === 401) {
-        accessToken = await getValidGoogleAccessToken(userId);
-        listRes = await callList(accessToken, pageToken);
-      }
-
       if (!listRes.ok) {
         const txt = await listRes.text();
         console.error("[GMAIL SYNC] Gmail list error:", txt);
@@ -166,8 +312,6 @@ export async function POST(req: NextRequest) {
       const listJson = await listRes.json();
       const messages: { id: string }[] = listJson.messages ?? [];
       pageToken = listJson.nextPageToken;
-
-      if (!messages.length) break;
 
       for (const msg of messages) {
         fetched++;
@@ -179,7 +323,7 @@ export async function POST(req: NextRequest) {
           continue;
         }
 
-        // Email en DB sans PJ : re-traiter uniquement les attachments (lien Gmail direct)
+        // Email en DB sans PJ : re-traiter uniquement les attachments
         if (knownIds.has(msg.id)) {
           const dbId = gmailIdToDbId.get(msg.id);
           if (dbId) {
@@ -194,11 +338,30 @@ export async function POST(req: NextRequest) {
                 console.log(`[GMAIL SYNC][PJ] Re-scan msg=${msg.id} → ${attsRaw.length} PJ détectée(s)`);
                 if (attsRaw.length > 0) {
                   const gmailLink = buildGmailLink(msg.id);
-                  const enriched = attsRaw.map(att => ({
-                    ...att,
-                    gmailLink,
-                    docTypes: autoCheckDoc(att.filename),
+                  // Récupérer subject/body pour la classification IA
+                  const reHeaders: { name: string; value: string }[] = detailAtt.payload?.headers || [];
+                  const reSubject = reHeaders.find((h: any) => h.name === "Subject")?.value ?? "";
+                  const reBody = getBody(detailAtt.payload);
+
+                  const enriched = await Promise.all(attsRaw.map(async att => {
+                    const classified = await classifyDocument({
+                      filename: att.filename,
+                      size: att.size,
+                      subject: reSubject,
+                      body: reBody,
+                    });
+                    return {
+                      ...att,
+                      gmailLink,
+                      docType: classified.docType,
+                      ai_confidence: classified.ai_confidence,
+                      ai_reasoning: classified.ai_reasoning,
+                      detected_at: new Date().toISOString(),
+                      validated_by_human: false,
+                      status: "EN_ATTENTE",
+                    };
                   }));
+
                   await supabaseAdmin
                     .from("emails")
                     .update({ attachments: enriched })
@@ -216,7 +379,6 @@ export async function POST(req: NextRequest) {
         }
 
         // BLOC 3 : format=full pour obtenir payload.parts (pièces jointes)
-        // + headers From/Subject/Date dans payload.headers
         const detailRes = await fetch(
           `https://gmail.googleapis.com/gmail/v1/users/me/messages/${msg.id}?format=full`,
           { headers: { Authorization: `Bearer ${accessToken}` } }
@@ -228,7 +390,7 @@ export async function POST(req: NextRequest) {
         }
 
         const detail = await detailRes.json();
-        const internalDate = Number(detail.internalDate ?? 0);
+        const internalDate = detail.internalDate ? Number(detail.internalDate) : null;
 
         // Filtre 30j côté serveur
         if (internalDate && Date.now() - internalDate > THIRTY_DAYS) {
@@ -242,35 +404,6 @@ export async function POST(req: NextRequest) {
         const date = headers.find((h) => h.name === "Date")?.value;
         const receivedAt = date ? new Date(date).toISOString() : new Date().toISOString();
 
-        // BLOC 1 FIX : extraire le corps de l'email (base64url → utf-8)
-        // Priorité : text/plain > html (cherche récursivement dans payload.parts)
-        function getBody(payload: any): string {
-          if (!payload) return "";
-          if (payload.body?.data) {
-            return Buffer.from(payload.body.data, "base64url").toString("utf-8");
-          }
-          if (payload.parts) {
-            for (const part of payload.parts) {
-              if (part.mimeType === "text/plain" && part.body?.data) {
-                return Buffer.from(part.body.data, "base64url").toString("utf-8");
-              }
-            }
-            for (const part of payload.parts) {
-              if (part.parts) {
-                const nested = getBody(part);
-                if (nested) return nested;
-              }
-            }
-            // fallback html si pas de text/plain
-            for (const part of payload.parts) {
-              if (part.mimeType === "text/html" && part.body?.data) {
-                const html = Buffer.from(part.body.data, "base64url").toString("utf-8");
-                return html.replace(/<[^>]+>/g, " ").replace(/\s+/g, " ").trim();
-              }
-            }
-          }
-          return "";
-        }
         const emailBody = getBody(detail.payload);
 
         // ── DIAGNOSTIC PJ ──────────────────────────────────────────────────
@@ -288,43 +421,54 @@ export async function POST(req: NextRequest) {
         const attachments = extractAttachments(detail.payload);
         console.log(`[GMAIL SYNC][PJ] msg=${msg.id} → ${attachments.length} PJ réelle(s)${attachments.length > 0 ? ": " + attachments.map((a: any) => a.filename).join(", ") : " (aucune PJ avec attachmentId)"}`);
 
-        // Approche simplifiée : lien Gmail direct + auto-détection du type de document
+        // Enrichir avec classification IA pour noms génériques
         const gmailLink = buildGmailLink(msg.id);
-        const enrichedAttachments = attachments.map((att: any) => ({
-          ...att,
-          gmailLink,
-          docTypes: autoCheckDoc(att.filename),
+        const enrichedAttachments = await Promise.all(attachments.map(async (att: any) => {
+          const classified = await classifyDocument({
+            filename: att.filename,
+            size: att.size,
+            subject,
+            body: emailBody,
+          });
+          return {
+            ...att,
+            gmailLink,
+            docType: classified.docType,
+            ai_confidence: classified.ai_confidence,
+            ai_reasoning: classified.ai_reasoning,
+            detected_at: new Date().toISOString(),
+            validated_by_human: false,
+            status: "EN_ATTENTE",
+          };
         }));
 
-        // PROBLÈME 1 : thread_id pour la détection des fils de conversation
         const threadId: string | null = detail.threadId ?? null;
 
-        // ✅ FIX BUG 1 : is_archived:false explicite + ignoreDuplicates
-        // → les nouveaux emails ont is_archived=false (visible dans fetchEmails)
-        // → on n'écrase pas les emails déjà archivés manuellement
         console.log(`[GMAIL SYNC] msg=${msg.id} body_length=${emailBody.length} body_sample=${emailBody.substring(0, 100)}`);
 
         const { error } = await supabaseAdmin.from("emails").upsert(
           {
             user_id: userId,
+            provider: "google",
             gmail_message_id: msg.id,
+            gmail_thread_id: threadId,
+            received_at: receivedAt,
             sender: from,
             subject,
             body: emailBody || null,
-            received_at: receivedAt,
-            is_archived: false,  // ← CRITIQUE : évite is_archived=NULL
+            is_archived: false,
             attachments: enrichedAttachments.length > 0 ? enrichedAttachments : [],
             thread_id: threadId,
           },
           {
             onConflict: "gmail_message_id",
-            ignoreDuplicates: true, // ← Ne pas écraser les emails existants (archivage préservé)
+            ignoreDuplicates: true,
           }
         );
 
         if (!error) {
           inserted++;
-          knownIds.add(msg.id); // éviter doublons dans la même exécution
+          knownIds.add(msg.id);
         }
 
         if (fetched >= MAX_MESSAGES) break outer;

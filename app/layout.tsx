@@ -1,4 +1,4 @@
-import "./globals.css";
+ import "./globals.css";
 import type { Metadata } from "next";
 import SettingsBoot from "@/components/providers/SettingsBoot";
 import { ToastProvider } from "@/components/ui/Toast";
@@ -24,3 +24,4 @@ export default function RootLayout({
     </html>
   );
 }
+

@@ -36,6 +36,20 @@ export async function POST() {
     }
 
     console.log("[SYNC ALL] Gmail sync OK");
+// =========================
+// 3.5️⃣ OUTLOOK SYNC (si connecté)
+// =========================
+const outlookRes = await fetch(`${baseUrl}/api/outlook/sync`, {
+  method: "POST",
+  headers: { cookie: cookieHeader },
+});
+
+if (!outlookRes.ok && outlookRes.status !== 401) {
+  const text = await outlookRes.text();
+  console.error("[SYNC ALL] Outlook sync failed:", text);
+} else {
+  console.log("[SYNC ALL] Outlook sync OK (or not connected)");
+}
 
     // 4) Calendar sync
     const calendarRes = await fetch(`${baseUrl}/api/calendar/sync`, {
@@ -55,7 +69,30 @@ export async function POST() {
 
     console.log("[SYNC ALL] Calendar sync OK");
 
-    return NextResponse.json({ success: true });
+// =========================
+// 5) ANALYSE INBOX (APRÈS SYNC GMAIL)
+// =========================
+const analyzeRes = await fetch(`${baseUrl}/api/ai/analyze-inbox`, {
+  method: "POST",
+  headers: {
+    "Content-Type": "application/json",
+    "x-fixetime-analyze-now": "true",
+    "x-fixetime-cron-key":
+      process.env.FIXETIME_INTERNAL_CRON_KEY || "",
+    cookie: cookieHeader,
+  },
+  body: JSON.stringify({}),
+});
+
+if (!analyzeRes.ok) {
+  const text = await analyzeRes.text();
+  console.error("[SYNC ALL] Analyze inbox failed:", text);
+} else {
+  console.log("[SYNC ALL] Analyze inbox triggered");
+}
+
+return NextResponse.json({ success: true });
+
   } catch (error) {
     console.error("[SYNC ALL] Global sync error:", error);
     return NextResponse.json(

@@ -2,6 +2,27 @@ import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getValidGoogleAccessToken } from "@/lib/google/getValidAccessToken";
+import { fetchWithTimeout } from "@/lib/http/fetchWithTimeout";
+
+const SYNC_FETCH_TIMEOUT_MS = 12000;
+
+function isTimeout(err: unknown): boolean {
+  return err instanceof Error && err.message === "TIMEOUT";
+}
+
+function isNoToken(err: unknown): boolean {
+  if (!(err instanceof Error)) return false;
+  const m = err.message;
+  return m === "NO_GOOGLE_TOKEN" || m === "NO_REFRESH_TOKEN" || m === "NO_MICROSOFT_TOKEN" || m === "NO_MICROSOFT_REFRESH_TOKEN";
+}
+
+function isReauth(err: unknown): { provider: "google" | "microsoft" } | null {
+  if (!(err instanceof Error)) return null;
+  const m = err.message;
+  if (m === "GOOGLE_TOKEN_REVOKED") return { provider: "google" };
+  if (m === "NO_MICROSOFT_TOKEN" || m === "NO_MICROSOFT_REFRESH_TOKEN") return { provider: "microsoft" };
+  return null;
+}
 
 export async function GET() {
   try {
@@ -24,12 +45,10 @@ export async function GET() {
       .eq("user_id", userId)
       .maybeSingle();
 
-    if (!tokenRow) {
-      return NextResponse.json(
-        { error: "NO_GOOGLE_TOKEN" },
-        { status: 400 }
-      );
-    }
+      if (!tokenRow) {
+        return NextResponse.json({ ok: true, skipped: true, reason: "NO_TOKEN" }, { status: 200 });
+      }
+      
 
     // 3️⃣ Récupérer un access_token Google TOUJOURS valide
     const accessToken = await getValidGoogleAccessToken(userId);
@@ -40,13 +59,10 @@ export async function GET() {
     const timeMax = new Date(now.getTime() + 30 * 86400000).toISOString();
 
     // 5️⃣ Récupérer tous les calendriers Google
-    const listRes = await fetch(
+    const listRes = await fetchWithTimeout(
       "https://www.googleapis.com/calendar/v3/users/me/calendarList",
-      {
-        headers: {
-          Authorization: `Bearer ${accessToken}`,
-        },
-      }
+      { headers: { Authorization: `Bearer ${accessToken}` } },
+      SYNC_FETCH_TIMEOUT_MS
     );
 
     if (!listRes.ok) {
@@ -67,15 +83,12 @@ export async function GET() {
       const calId = cal.id;
       const calName = cal.summary ?? "Calendrier";
 
-      const eventsRes = await fetch(
+      const eventsRes = await fetchWithTimeout(
         `https://www.googleapis.com/calendar/v3/calendars/${encodeURIComponent(
           calId
         )}/events?timeMin=${timeMin}&timeMax=${timeMax}`,
-        {
-          headers: {
-            Authorization: `Bearer ${accessToken}`,
-          },
-        }
+        { headers: { Authorization: `Bearer ${accessToken}` } },
+        SYNC_FETCH_TIMEOUT_MS
       );
 
       if (!eventsRes.ok) {
@@ -113,10 +126,16 @@ export async function GET() {
       inserted_events: totalInserted,
     });
   } catch (error) {
-    console.error("CALENDAR_SYNC_ERROR:", error);
-    return NextResponse.json(
-      { error: "CALENDAR_SYNC_FAILED" },
-      { status: 500 }
-    );
+    if (isTimeout(error)) {
+      return NextResponse.json({ ok: false, error: "TIMEOUT" }, { status: 200 });
+    }
+    if (isNoToken(error)) {
+      return NextResponse.json({ ok: true, skipped: true, reason: "NO_TOKEN" }, { status: 200 });
+    }
+    const reauth = isReauth(error);
+    if (reauth) {
+      return NextResponse.json({ ok: true, skipped: true, needs_reauth: true, provider: reauth.provider }, { status: 200 });
+    }
+    return NextResponse.json({ ok: false, error: "SERVER_ERROR" }, { status: 200 });
   }
 }

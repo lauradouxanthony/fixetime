@@ -11,7 +11,6 @@ import {
 } from "@/components/calendar/getOptimalSlotForEmail";
 import ProspectFiche from "@/components/emails/ProspectFiche";
 import type { ProspectData } from "@/types/email";
-import type { GeneratePdfParams } from "@/lib/pdf/generateProspectPdf";
 
 type PipelineMode = "DRAFT" | "AUTOPILOTE";
 
@@ -229,32 +228,51 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId, portalHasTo
   // Rejection modal state
   const [rejectModal, setRejectModal] = useState<{ attachmentId: string; filename: string; docType: string | null } | null>(null);
   const [rejectReason, setRejectReason] = useState(REJECTION_REASONS[0]);
+  // docType overrides per attachment index
+  const [docTypeOverrides, setDocTypeOverrides] = useState<Record<number, string>>({});
+  // Preview modal state
+  const [previewModal, setPreviewModal] = useState<{ att: AttachmentInfo; idx: number } | null>(null);
 
   // BLOC 3 : auto-marquer depuis les noms de fichiers des pièces jointes
-  // Priorité : att.docTypes (pré-calculé par le sync) > détection locale
+  // Priorité : att.docType (nouveau, string) > att.docTypes (ancien, Record) > détection locale
   useEffect(() => {
     if (!attachments || attachments.length === 0) return;
+    // Map nouveau docType string → clé DOCS
+    const toDocsKey = (dt: string): string | null => {
+      if (dt === "fiche_paie" || dt === "fiches_paie") return "fiches_paie";
+      if (dt === "contrat_travail" || dt === "contrat") return "contrat";
+      if (dt === "avis_imposition") return "avis_imposition";
+      if (dt === "piece_identite") return "piece_identite";
+      return null;
+    };
     const updates: Record<string, DocStatus> = {};
     for (const att of attachments) {
-      // Utiliser docTypes pré-calculé s'il est disponible
+      // Nouveau format : docType string
+      const docType = (att as any).docType as string | undefined;
+      if (docType && docType !== "autre") {
+        const key = toDocsKey(docType);
+        if (key) updates[key] = "recu";
+        continue;
+      }
+      // Ancien format : docTypes Record<string, boolean>
       const docTypes = (att as any).docTypes as Record<string, boolean> | undefined;
       if (docTypes) {
         for (const [key, val] of Object.entries(docTypes)) {
-          if (val) updates[key] = "recu";
+          if (val) { const k = toDocsKey(key) ?? key; updates[k] = "recu"; }
         }
-      } else {
-        // Fallback : détection locale par nom de fichier
-        const fname = att.filename.toLowerCase()
-          .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-        if (fname.includes("fiche") || fname.includes("paie") || fname.includes("bulletin"))
-          updates.fiches_paie = "recu";
-        if (fname.includes("contrat") || fname.includes("cdi") || fname.includes("cdd"))
-          updates.contrat = "recu";
-        if (fname.includes("imposition") || fname.includes("avis") || fname.includes("impot"))
-          updates.avis_imposition = "recu";
-        if (fname.includes("identite") || fname.includes("cni") || fname.includes("passeport") || fname.includes("carte"))
-          updates.piece_identite = "recu";
+        continue;
       }
+      // Fallback : détection locale par nom de fichier
+      const fname = att.filename.toLowerCase()
+        .normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+      if (fname.includes("fiche") || fname.includes("paie") || fname.includes("bulletin"))
+        updates.fiches_paie = "recu";
+      if (fname.includes("contrat") || fname.includes("cdi") || fname.includes("cdd"))
+        updates.contrat = "recu";
+      if (fname.includes("imposition") || fname.includes("avis") || fname.includes("impot"))
+        updates.avis_imposition = "recu";
+      if (fname.includes("identite") || fname.includes("cni") || fname.includes("passeport") || fname.includes("carte"))
+        updates.piece_identite = "recu";
     }
     if (Object.keys(updates).length > 0) {
       setDocs((prev) => ({ ...prev, ...updates }));
@@ -304,16 +322,20 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId, portalHasTo
 
   // ── BLOC 3 : Validation / Rejet ─────────────────────────────────────────
 
-  // Détermine le docType d'une attachment
+  // Détermine le docType d'une attachment — supporte nouveau format (string) et ancien (Record)
   function getAttDocType(att: AttachmentInfo): string | null {
+    // Nouveau format : docType string direct
+    const docType = (att as any).docType as string | undefined;
+    if (docType && docType !== "autre") return docType;
+    // Ancien format : docTypes Record<string, boolean>
     const dt = (att as any).docTypes as Record<string, boolean> | undefined;
     if (dt) {
       for (const [k, v] of Object.entries(dt)) { if (v) return k; }
     }
     // Fallback par nom de fichier
     const fname = att.filename.toLowerCase();
-    if (fname.includes("paie") || fname.includes("bulletin")) return "fiches_paie";
-    if (fname.includes("contrat")) return "contrat";
+    if (fname.includes("paie") || fname.includes("bulletin")) return "fiche_paie";
+    if (fname.includes("contrat")) return "contrat_travail";
     if (fname.includes("imposition") || fname.includes("impot")) return "avis_imposition";
     if (fname.includes("identite") || fname.includes("cni") || fname.includes("passeport") || fname.includes("carte")) return "piece_identite";
     return null;
@@ -332,11 +354,18 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId, portalHasTo
         .map(a => getAttDocType(a))
         .filter(Boolean)
     );
-    // Map docType variants to DOCS keys
-    const normalize = (k: string | null) => k === "contrat_travail" ? "contrat" : k;
-    const docsComplet = DOCS.every(d => validatedDocTypes.has(d.key) || validatedDocTypes.has(
-      d.key === "contrat" ? "contrat_travail" : d.key
-    ));
+    // Map docType variants to DOCS keys (supporte nouveau format fiche_paie/contrat_travail et ancien)
+    const normalize = (k: string | null) => {
+      if (k === "contrat_travail") return "contrat";
+      if (k === "fiche_paie" || k === "fiches_paie") return "fiches_paie";
+      return k;
+    };
+    const docsComplet = DOCS.every(d => {
+      const normalized = normalize(d.key);
+      return validatedDocTypes.has(d.key) || validatedDocTypes.has(normalized ?? d.key)
+        || (d.key === "contrat" && validatedDocTypes.has("contrat_travail"))
+        || (d.key === "fiches_paie" && validatedDocTypes.has("fiche_paie"));
+    });
 
     try {
       const res = await fetch("/api/emails/validate-doc", {
@@ -409,48 +438,105 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId, portalHasTo
     ? `https://mail.google.com/mail/u/0/#inbox/${gmailMessageId}`
     : null;
 
+  // Mettre à jour docType d'une PJ via l'API
+  const updateDocType = async (attIndex: number, newDocType: string) => {
+    if (!emailId) return;
+    setDocTypeOverrides(prev => ({ ...prev, [attIndex]: newDocType }));
+    try {
+      await fetch(`/api/emails/${emailId}/update-attachment`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ attachmentIndex: attIndex, docType: newDocType }),
+      });
+    } catch { /* graceful */ }
+  };
+
+  // Comptage documents validés (validated_by_human)
+  const validatedDocTypes = new Set<string>();
+  (attachments ?? []).forEach((att: any) => {
+    if (att.validated_by_human) {
+      // Nouveau format docType string
+      if (att.docType && att.docType !== "autre") validatedDocTypes.add(att.docType);
+      // Ancien format docTypes Record
+      const dt = att.docTypes as Record<string, boolean> | undefined;
+      if (dt) Object.entries(dt).forEach(([k, v]) => { if (v) validatedDocTypes.add(k); });
+    }
+  });
+  const validatedCount = DOCS.filter(d => validatedDocTypes.has(d.key) ||
+    (d.key === "fiches_paie" && validatedDocTypes.has("fiche_paie")) ||
+    (d.key === "contrat" && validatedDocTypes.has("contrat_travail"))).length;
+
+  // Construire une map docKey → meilleure AI confidence parmi les pièces jointes
+  const docAiConfidence = new Map<string, number>();
+  (attachments ?? []).forEach((att: any) => {
+    const conf = typeof att.ai_confidence === "number" ? att.ai_confidence as number : null;
+    if (conf === null) return;
+    const docTypeStr = (att.docType as string | undefined) ?? null;
+    if (!docTypeStr || docTypeStr === "autre") return;
+    const normalize = (t: string) => {
+      if (t === "fiche_paie" || t === "fiches_paie") return "fiches_paie";
+      if (t === "contrat_travail" || t === "contrat") return "contrat";
+      return t;
+    };
+    const key = normalize(docTypeStr);
+    if ((docAiConfidence.get(key) ?? -1) < conf) docAiConfidence.set(key, conf);
+  });
+
   return (
     <Section title="Dossier locataire">
-      {/* Statut dossier automatique */}
-      {(() => {
-        const receivedCount = Object.values(docs).filter(s => s === "recu").length;
-        const total = DOCS.length;
-        const status = receivedCount >= total ? "COMPLET" : receivedCount >= 2 ? "PARTIEL" : "INCOMPLET";
-        const statusStyle = status === "COMPLET"
-          ? { bg: "rgba(22,163,74,0.1)", color: "rgb(22 163 74)", label: "✅ Dossier complet" }
-          : status === "PARTIEL"
-          ? { bg: "rgba(234,88,12,0.1)", color: "rgb(234 88 12)", label: `📋 Dossier partiel (${receivedCount}/${total})` }
-          : { bg: "rgba(220,38,38,0.1)", color: "rgb(220 38 38)", label: `⚠️ Dossier incomplet (${receivedCount}/${total})` };
-        return (
-          <div className="flex items-center justify-between mb-3">
-            <span className="text-xs px-2.5 py-1 rounded-full font-semibold"
-              style={{ background: statusStyle.bg, color: statusStyle.color }}>
-              {statusStyle.label}
-            </span>
-            <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>
-              {receivedCount}/{total} docs reçus
-            </span>
-          </div>
-        );
-      })()}
-      <div className="space-y-2">
+      {/* Barre de progression validés */}
+      <div className="mb-3">
+        <div className="flex items-center justify-between text-xs mb-1" style={{ color: "rgb(100 116 139)" }}>
+          <span>{validatedCount}/{DOCS.length} documents validés</span>
+          <span>{Math.round((validatedCount / DOCS.length) * 100)}%</span>
+        </div>
+        <div className="relative h-2 rounded-full overflow-hidden" style={{ background: "rgb(226 232 240)" }}>
+          <div className="h-full rounded-full transition-all duration-500" style={{
+            width: `${Math.round((validatedCount / DOCS.length) * 100)}%`,
+            background: validatedCount >= DOCS.length ? "rgb(22,163,74)" : validatedCount > 0 ? "rgb(234,88,12)" : "rgb(220,38,38)",
+          }} />
+        </div>
+      </div>
+
+      {/* Checklist documents avec statuts IA */}
+      <div className="space-y-1.5 mb-4">
         {DOCS.map((doc) => {
           const status = docs[doc.key];
-          const isRecu = status === "recu";
+          const isValidated = validatedDocTypes.has(doc.key) ||
+            (doc.key === "fiches_paie" && validatedDocTypes.has("fiche_paie")) ||
+            (doc.key === "contrat" && validatedDocTypes.has("contrat_travail"));
+          const isRecu = status === "recu" || isValidated;
+          const aiConf = docAiConfidence.get(doc.key) ?? null;
+          // Statuts : ✓ Validé | 🤖 IA (≥70%) | ⚠️ Doute IA (<70%) | ✗ Manquant
+          let statusLabel: string;
+          let statusColor: string;
+          let statusBg: string;
+          let borderColor: string;
+          if (isValidated) {
+            statusLabel = "✓ Validé"; statusColor = "rgb(22 163 74)";
+            statusBg = "rgba(22,163,74,0.06)"; borderColor = "rgba(22,163,74,0.15)";
+          } else if (isRecu && aiConf !== null && aiConf >= 0.7) {
+            statusLabel = "🤖 Classifié IA"; statusColor = "rgb(2 132 199)";
+            statusBg = "rgba(2,132,199,0.06)"; borderColor = "rgba(2,132,199,0.15)";
+          } else if (isRecu && aiConf !== null && aiConf < 0.7) {
+            statusLabel = "⚠️ Doute IA"; statusColor = "rgb(234 88 12)";
+            statusBg = "rgba(234,88,12,0.06)"; borderColor = "rgba(234,88,12,0.15)";
+          } else if (isRecu) {
+            statusLabel = "⏳ Reçu"; statusColor = "rgb(234 88 12)";
+            statusBg = "rgba(234,88,12,0.06)"; borderColor = "rgba(234,88,12,0.15)";
+          } else {
+            statusLabel = "✗ Manquant"; statusColor = "rgb(220 38 38)";
+            statusBg = "rgba(226,232,240,0.4)"; borderColor = "rgb(226 232 240)";
+          }
           return (
             <div
               key={doc.key}
               onClick={() => toggle(doc.key)}
               className="flex items-center gap-2 px-3 py-2 rounded-lg cursor-pointer transition-colors"
-              style={{ background: isRecu ? "rgba(22,163,74,0.06)" : "rgba(226,232,240,0.5)" }}
+              style={{ background: statusBg, border: `1px solid ${borderColor}` }}
             >
-              <span>{isRecu ? "✅" : "❌"}</span>
-              <span className="text-sm" style={{ color: isRecu ? "rgb(22,163,74)" : "rgb(100,116,139)" }}>
-                {doc.label}
-              </span>
-              <span className="ml-auto text-xs" style={{ color: "rgb(148,163,184)" }}>
-                {isRecu ? "Reçu" : "Manquant"}
-              </span>
+              <span className="text-xs font-medium flex-shrink-0" style={{ color: statusColor, minWidth: 72 }}>{statusLabel}</span>
+              <span className="text-sm" style={{ color: "rgb(30 41 59)" }}>{doc.label}</span>
             </div>
           );
         })}
@@ -490,22 +576,37 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId, portalHasTo
               const icon = isPdf ? "📄" : isImage ? "🖼️" : "📎";
               const vStatus = validationStatus[att.attachmentId] ?? "pending";
               const isValidatingThis = validating === att.attachmentId;
+              const detectedType = docTypeOverrides[i] ?? getAttDocType(att);
+              const typeIsUnknown = !detectedType || detectedType === "autre";
+              const attAiConf = (att as any).ai_confidence as number | null | undefined;
 
               const statusBadge =
                 vStatus === "validated" ? (
                   <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
                     style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22,163,74)" }}>
-                    ✅ Validé
+                    ✓ Validé
                   </span>
                 ) : vStatus === "rejected" ? (
                   <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
                     style={{ background: "rgba(220,38,38,0.1)", color: "rgb(220,38,38)" }}>
-                    ❌ Rejeté
+                    ✗ Rejeté
                   </span>
+                ) : attAiConf !== null && attAiConf !== undefined ? (
+                  attAiConf >= 0.7 ? (
+                    <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
+                      style={{ background: "rgba(2,132,199,0.1)", color: "rgb(2,132,199)" }}>
+                      🤖 IA {Math.round(attAiConf * 100)}%
+                    </span>
+                  ) : (
+                    <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
+                      style={{ background: "rgba(234,88,12,0.08)", color: "rgb(234,88,12)" }}>
+                      ⚠️ Doute {Math.round(attAiConf * 100)}%
+                    </span>
+                  )
                 ) : (
                   <span className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
                     style={{ background: "rgba(234,88,12,0.08)", color: "rgb(234,88,12)" }}>
-                    ⏳ En attente
+                    ⏳ Reçu
                   </span>
                 );
 
@@ -528,16 +629,60 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId, portalHasTo
                       </p>
                       <p className="text-xs" style={{ color: "rgb(148 163 184)" }}>
                         {att.size > 0 ? `${Math.round(att.size / 1024)} Ko` : "—"}
+                        {!typeIsUnknown && (
+                          <> · <span style={{ color: "rgb(79 70 229)" }}>
+                            {DOC_TYPE_OPTIONS.find(o => o.value === detectedType)?.label ?? detectedType}
+                          </span></>
+                        )}
                       </p>
                     </div>
+                    {/* Bouton Aperçu */}
+                    {att.attachmentId && gmailMessageId && (
+                      <button
+                        onClick={() => setPreviewModal({ att, idx: i })}
+                        className="text-xs px-2 py-1 rounded-lg font-medium flex-shrink-0"
+                        style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}
+                        title="Ouvrir l'aperçu"
+                      >
+                        👁 Aperçu
+                      </button>
+                    )}
                     {linkUrl && (
                       <a href={linkUrl} target="_blank" rel="noopener noreferrer"
                         className="text-xs px-2 py-1 rounded-lg font-medium flex-shrink-0"
-                        style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}>
-                        Voir →
+                        style={{ background: "rgba(79,70,229,0.06)", color: "rgb(100 116 139)" }}>
+                        Gmail →
+                      </a>
+                    )}
+                    {att.attachmentId && gmailMessageId && (
+                      <a
+                        href={`/api/emails/download-attachment?gmailMessageId=${encodeURIComponent(gmailMessageId)}&attachmentId=${encodeURIComponent(att.attachmentId)}&filename=${encodeURIComponent(att.filename)}&mimeType=${encodeURIComponent(att.mimeType ?? "")}`}
+                        download={att.filename}
+                        className="text-xs px-2 py-1 rounded-lg font-medium flex-shrink-0"
+                        style={{ background: "rgba(100,116,139,0.08)", color: "rgb(71 85 105)" }}
+                      >
+                        ⬇️
                       </a>
                     )}
                   </div>
+
+                  {/* Sélect type si inconnu */}
+                  {typeIsUnknown && (
+                    <div className="mb-2">
+                      <select
+                        value={docTypeOverrides[i] ?? ""}
+                        onChange={(e) => updateDocType(i, e.target.value)}
+                        className="w-full rounded-lg border px-2 py-1.5 text-xs focus:outline-none"
+                        style={{ borderColor: "rgb(234 88 12)", color: "rgb(30 41 59)", background: "rgba(234,88,12,0.04)" }}
+                      >
+                        <option value="">— Identifier le type de document —</option>
+                        {DOC_TYPE_OPTIONS.map(o => (
+                          <option key={o.value} value={o.value}>{o.label}</option>
+                        ))}
+                      </select>
+                    </div>
+                  )}
+
                   {/* Ligne 2: statut + boutons */}
                   <div className="flex items-center gap-2 flex-wrap">
                     {statusBadge}
@@ -549,18 +694,18 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId, portalHasTo
                           className="text-xs px-2 py-1 rounded-lg font-medium transition-colors disabled:opacity-50"
                           style={{ background: "rgba(22,163,74,0.1)", color: "rgb(22,163,74)" }}
                         >
-                          {isValidatingThis ? "…" : "✅ Valider"}
+                          {isValidatingThis ? "…" : "✓ Valider"}
                         </button>
                         <button
                           disabled={!!validating}
                           onClick={() => {
-                            setRejectModal({ attachmentId: att.attachmentId, filename: att.filename, docType: getAttDocType(att) });
+                            setRejectModal({ attachmentId: att.attachmentId, filename: att.filename, docType: detectedType });
                             setRejectReason(REJECTION_REASONS[0]);
                           }}
                           className="text-xs px-2 py-1 rounded-lg font-medium transition-colors disabled:opacity-50"
                           style={{ background: "rgba(220,38,38,0.08)", color: "rgb(220,38,38)" }}
                         >
-                          ❌ Rejeter
+                          ✗ Rejeter
                         </button>
                       </>
                     )}
@@ -570,6 +715,26 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId, portalHasTo
             })}
           </div>
         </div>
+      )}
+
+      {/* ── Modal aperçu document ── */}
+      {previewModal && gmailMessageId && emailId && (
+        <DocPreviewModal
+          att={previewModal.att as AttachmentInfo & Record<string, unknown>}
+          gmailMessageId={gmailMessageId}
+          emailId={emailId}
+          onClose={() => setPreviewModal(null)}
+          onValidate={(a) => { handleValidateDoc(a); }}
+          onReject={(a) => {
+            setRejectModal({ attachmentId: a.attachmentId, filename: a.filename, docType: getAttDocType(a) });
+            setRejectReason(REJECTION_REASONS[0]);
+          }}
+          validationStatus={validationStatus}
+          validating={validating}
+          docTypeOverrides={docTypeOverrides}
+          onChangeType={updateDocType}
+          attIndex={previewModal.idx}
+        />
       )}
 
       {/* ── Modal rejet ── */}
@@ -1205,59 +1370,22 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
     if (!email || exportingPdf) return;
     setExportingPdf(true);
     try {
-      // Fetch timeline
-      let timeline: GeneratePdfParams["timeline"] = [];
-      try {
-        const tlRes = await fetch(`/api/leads/${email.id}/timeline`);
-        if (tlRes.ok) {
-          const tlData = await tlRes.json();
-          timeline = tlData.timeline ?? [];
-        }
-      } catch {}
-
-      // Fetch property if linked
-      let property: GeneratePdfParams["property"] = null;
-      const propertyId = (email as any).property_id ?? (email as any).prospect_data?.property_id;
-      if (propertyId) {
-        try {
-          const propRes = await fetch("/api/properties");
-          if (propRes.ok) {
-            const propData = await propRes.json();
-            const props: Array<{ id: string; title: string; rent: number; type: string | null }> =
-              propData.properties ?? [];
-            property = props.find((p) => p.id === propertyId) ?? null;
-          }
-        } catch {}
-      }
-
-      // Fetch agency name from settings
-      let agenceName = "Votre agence";
-      try {
-        const sRes = await fetch("/api/settings", { cache: "no-store" });
-        if (sRes.ok) {
-          const sData = await sRes.json();
-          agenceName = (sData?.email_rules?.ft_locatif as any)?.nomAgence ?? agenceName;
-        }
-      } catch {}
-
-      const { generateProspectPdf } = await import("@/lib/pdf/generateProspectPdf");
-      await generateProspectPdf({
-        email: {
-          id: email.id,
-          sender: email.sender,
-          subject: email.subject,
-          received_at: email.received_at,
-          prospect_data: (email as any).prospect_data ?? null,
-          attachments: (email as any).attachments ?? [],
-        },
-        property,
-        timeline,
-        agenceName,
-      });
+      const res = await fetch(`/api/prospects/${email.id}/export-pdf`);
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      const today = new Date().toISOString().split("T")[0];
+      a.href = url;
+      a.download = `Dossier_${today}.pdf`;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(url);
       notify("PDF exporté ✅", "success");
     } catch (e) {
       console.error("[exportPdf] erreur:", e);
-      notify("Erreur lors de l'export PDF", "error");
+      notify("Erreur lors de la génération du PDF", "error");
     } finally {
       setExportingPdf(false);
     }
@@ -1280,32 +1408,76 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
     <div className="p-5 space-y-4 max-w-2xl mx-auto animate-fade-in">
 
       {/* ── En-tête email ── */}
-      <div className="rounded-xl border p-4 bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
-        <div className="flex items-start justify-between gap-4 mb-2">
-          <h2 className="text-base font-semibold" style={{ color: "rgb(30 41 59)" }}>
-            {email.subject || "(Sans objet)"}
-          </h2>
-          {/* Badge intention */}
-          {intention && (
-            <span className="text-xs px-2 py-1 rounded-full font-medium flex-shrink-0"
-              style={{
-                background: intention === "LOCATION" ? "rgba(59,130,246,0.1)" :
-                  intention === "INFO" ? "rgba(100,116,139,0.1)" : "rgba(15,23,42,0.08)",
-                color: intention === "LOCATION" ? "rgb(37,99,235)" :
-                  intention === "INFO" ? "rgb(71,85,105)" : "rgb(51,65,85)",
-              }}>
-              {intention === "LOCATION" ? "🏠 Location" : intention === "INFO" ? "ℹ️ Info" : "🚫 Hors sujet"}
-            </span>
-          )}
-        </div>
-
-        <div className="text-sm mb-0.5" style={{ color: "rgb(100 116 139)" }}>
-          {email.sender || "Expéditeur inconnu"}
-        </div>
-        <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
-          {email.received_at ? new Date(email.received_at).toLocaleString("fr-FR") : ""}
-        </div>
-      </div>
+      {(() => {
+        const tl = computeTrafficLight(email);
+        const tlCfg = TL_CFG[tl];
+        return (
+          <div className="rounded-xl border p-4 bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
+            <div className="flex items-start justify-between gap-4 mb-2">
+              <div className="flex items-center gap-2 min-w-0 flex-1">
+                <span title={tlCfg.label} style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: tlCfg.dot, flexShrink: 0 }} />
+                <h2 className="text-base font-semibold truncate" style={{ color: "rgb(30 41 59)" }}>
+                  {email.subject || "(Sans objet)"}
+                </h2>
+              </div>
+              <div className="flex items-center gap-2 flex-shrink-0">
+                {/* Badge feu tricolore */}
+                <span className="text-xs px-2 py-0.5 rounded-full font-medium"
+                  style={{ background: tlCfg.bg, color: tlCfg.color }}>
+                  {tl === "AUTOPILOTE" ? "🟢" : tl === "DRAFT" ? "🟡" : "🔴"} {tlCfg.label}
+                </span>
+                {/* Badge intention */}
+                {intention && (
+                  <span className="text-xs px-2 py-1 rounded-full font-medium"
+                    style={{
+                      background: intention === "LOCATION" ? "rgba(59,130,246,0.1)" :
+                        intention === "INFO" ? "rgba(100,116,139,0.1)" : "rgba(15,23,42,0.08)",
+                      color: intention === "LOCATION" ? "rgb(37,99,235)" :
+                        intention === "INFO" ? "rgb(71,85,105)" : "rgb(51,65,85)",
+                    }}>
+                    {intention === "LOCATION" ? "🏠 Location" : intention === "INFO" ? "ℹ️ Info" : "🚫 Hors sujet"}
+                  </span>
+                )}
+              </div>
+            </div>
+            {(() => {
+              const senderStr = email.sender ?? "";
+              const pdNom = ((email as any).prospect_data as Record<string, unknown> | null)?.nom as string | null ?? null;
+              // Nom : priorité prospect_data.nom (si pas un email), sinon extraire du format Gmail
+              const nameFromSender = senderStr.match(/^(.+?)\s*<[^>]+>$/)?.[1]?.trim().replace(/^["']|["']$/g, "") ?? null;
+              const displayName =
+                pdNom && !pdNom.includes("@")
+                  ? pdNom
+                  : nameFromSender && nameFromSender.length >= 2 && !nameFromSender.includes("@")
+                  ? nameFromSender
+                  : null;
+              // Email : extraire l'adresse entre <> ou utiliser le sender brut s'il est déjà une adresse
+              const emailAddr =
+                senderStr.match(/<([^>]+)>/)?.[1] ??
+                (senderStr.includes("@") ? senderStr.trim() : null);
+              return (
+                <>
+                  {displayName && (
+                    <div className="text-sm font-medium mb-0.5" style={{ color: "rgb(30 41 59)" }}>
+                      {displayName}
+                    </div>
+                  )}
+                  <div className="text-sm mb-0.5" style={{ color: "rgb(100 116 139)" }}>
+                    {emailAddr ? (
+                      <a href={`mailto:${emailAddr}`} className="hover:underline">{emailAddr}</a>
+                    ) : (
+                      senderStr || "Expéditeur inconnu"
+                    )}
+                  </div>
+                </>
+              );
+            })()}
+            <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+              {email.received_at ? new Date(email.received_at).toLocaleString("fr-FR") : ""}
+            </div>
+          </div>
+        );
+      })()}
 
       {/* ── Résumé IA ── */}
       <Section title="Résumé IA">
@@ -1362,29 +1534,31 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
           <TimelineWidget emailId={email.id} emailReceivedAt={email.received_at} />
           <NotesWidget emailId={email.id} />
 
-          {/* BLOC 4 — Export dossier PDF */}
-          <div className="flex justify-end">
-            <button
-              onClick={exportPdf}
-              disabled={exportingPdf}
-              className="flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-xl transition-opacity disabled:opacity-60"
-              style={{
-                background: "rgb(79 70 229)",
-                color: "white",
-              }}
-            >
-              {exportingPdf ? (
-                <>
-                  <span className="animate-spin">⏳</span>
-                  Génération en cours…
-                </>
-              ) : (
-                <>
-                  📄 Exporter dossier PDF
-                </>
-              )}
-            </button>
-          </div>
+          {/* BLOC 4 — Export dossier PDF (visible si au moins 1 document reçu) */}
+          {((email as any).attachments ?? []).length > 0 && (
+            <div className="flex justify-end">
+              <button
+                onClick={exportPdf}
+                disabled={exportingPdf}
+                className="flex items-center gap-2 text-sm font-medium px-4 py-2.5 rounded-xl transition-opacity disabled:opacity-60"
+                style={{
+                  background: "rgb(79 70 229)",
+                  color: "white",
+                }}
+              >
+                {exportingPdf ? (
+                  <>
+                    <span className="animate-spin">⏳</span>
+                    Génération en cours…
+                  </>
+                ) : (
+                  <>
+                    📄 Exporter dossier PDF
+                  </>
+                )}
+              </button>
+            </div>
+          )}
         </>
       )}
 

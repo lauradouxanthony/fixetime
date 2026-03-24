@@ -22,6 +22,8 @@ type Lead = {
   classification_reason: string | null;
   property_id?: string | null;
   attachments?: unknown[] | null;
+  ai_reply?: string | null;
+  thread_count?: number;
   prospect_data: {
     nom?: string | null;
     situation_pro?: string | null;
@@ -71,10 +73,77 @@ const ETAPE_CONFIG: Record<EtapeProcess, { label: string; color: string; bg: str
   REFUSE:           { label: "Refusé",           color: "rgb(220 38 38)",   bg: "rgb(254 242 242)",  border: "rgb(252 165 165)" },
 };
 
-// Colonnes affichées dans le Kanban (on masque VALIDE/REFUSE par défaut)
 const VISIBLE_STAGES: EtapeProcess[] = [
   "NEW", "QUALIFICATION", "VISITE_PROPOSEE", "VISITE_CONFIRMEE", "DOSSIER_DEMANDE", "DOSSIER_RECU",
 ];
+
+// ── Feux tricolores ──────────────────────────────────────────────────────────
+const MECONTENTEMENT_KEYWORDS = [
+  "n'importe quoi", "scandale", "honte", "inadmissible",
+  "parler à quelqu'un", "parler a quelqu'un", "responsable", "inacceptable",
+  "avocat", "plainte",
+];
+
+type TrafficLight = "AUTOPILOTE" | "DRAFT" | "ALERTE";
+
+function getTrafficLight(lead: Lead, multiplicateur = 3): TrafficLight {
+  const pd = lead.prospect_data;
+  const etape = getEtapeFromLead(lead);
+  const hours = hoursAgo(lead.received_at);
+  const body = (lead.body ?? "").toLowerCase();
+
+  // 🔴 ALERTE — intervention humaine requise
+  if (hours !== null && hours > 48) return "ALERTE";
+  if (MECONTENTEMENT_KEYWORDS.some((kw) => body.includes(kw))) return "ALERTE";
+  if (pd?.revenus_mensuels && pd?.loyer_max && pd.revenus_mensuels / pd.loyer_max < 2) return "ALERTE";
+
+  // 🟡 DRAFT — agent doit valider
+  const atts = (lead.attachments ?? []) as any[];
+  const hasUnvalidatedDocs = atts.some((att) => {
+    const dt = att.docTypes as Record<string, boolean> | undefined;
+    return dt && Object.values(dt).some(Boolean) && !att.validated_by_human;
+  });
+  if (hasUnvalidatedDocs) return "DRAFT";
+  if (etape === "DOSSIER_RECU") return "DRAFT";
+
+  const situation = pd?.situation_pro;
+  if (situation === "AUTO_ENTREPRENEUR") return "DRAFT";
+  const revenus = pd?.revenus_mensuels;
+  const loyer = pd?.loyer_max;
+  if (revenus && loyer) {
+    const ratio = revenus / loyer;
+    if (ratio >= 2 && ratio < multiplicateur) return "DRAFT"; // profil limite
+  }
+
+  // 🟢 AUTOPILOTE — IA gère seule
+  return "AUTOPILOTE";
+}
+
+const TRAFFIC_LIGHT_CONFIG: Record<TrafficLight, { color: string; bg: string; label: string; dot: string }> = {
+  AUTOPILOTE: { color: "rgb(22 163 74)",  bg: "rgba(22,163,74,0.1)",  label: "Autopilote", dot: "#16a34a" },
+  DRAFT:      { color: "rgb(234 88 12)",  bg: "rgba(234,88,12,0.1)",  label: "À valider",  dot: "#ea580c" },
+  ALERTE:     { color: "rgb(220 38 38)",  bg: "rgba(220,38,38,0.1)",  label: "Alerte",     dot: "#dc2626" },
+};
+
+function TrafficDot({ lead }: { lead: Lead }) {
+  const tl = getTrafficLight(lead);
+  const cfg = TRAFFIC_LIGHT_CONFIG[tl];
+  return (
+    <span
+      title={cfg.label}
+      style={{
+        display: "inline-block",
+        width: 8,
+        height: 8,
+        borderRadius: "50%",
+        background: cfg.dot,
+        flexShrink: 0,
+      }}
+    />
+  );
+}
+
+// ── Helpers ──────────────────────────────────────────────────────────────────
 
 function getEtapeFromLead(lead: Lead): EtapeProcess {
   const etape = lead.prospect_data?.etape_process;
@@ -89,31 +158,88 @@ function hoursAgo(dateStr: string | null): number | null {
   return Math.round((Date.now() - new Date(dateStr).getTime()) / 3_600_000);
 }
 
+function daysAgoLabel(dateStr: string | null): string | null {
+  const h = hoursAgo(dateStr);
+  if (h === null) return null;
+  if (h < 1) return "À l'instant";
+  if (h < 24) return `Il y a ${h}h`;
+  return `Il y a ${Math.floor(h / 24)}j`;
+}
+
+// ── SolvabilityBadge amélioré (vert ≥3x | orange 2-3x | rouge <2x | gris) ──
 function SolvabilityBadge({ revenus, loyer, multiplicateur = 3 }: { revenus: number | null; loyer: number | null; multiplicateur?: number }) {
-  if (!revenus || !loyer) return null;
+  if (!revenus || !loyer) {
+    return (
+      <span className="text-xs px-2 py-0.5 rounded-full font-medium"
+        style={{ background: "rgba(100,116,139,0.1)", color: "rgb(100 116 139)" }}>
+        — ratio
+      </span>
+    );
+  }
   const ratio = revenus / loyer;
-  const ok = ratio >= multiplicateur;
+  let color: string;
+  let bg: string;
+  if (ratio >= multiplicateur) {
+    color = "rgb(22 163 74)"; bg = "rgba(22,163,74,0.1)";
+  } else if (ratio >= 2) {
+    color = "rgb(234 88 12)"; bg = "rgba(234,88,12,0.1)";
+  } else {
+    color = "rgb(220 38 38)"; bg = "rgba(220,38,38,0.1)";
+  }
   return (
-    <span
-      className="text-xs px-2 py-0.5 rounded-full font-medium"
-      style={{
-        background: ok ? "rgba(22,163,74,0.1)" : "rgba(220,38,38,0.1)",
-        color: ok ? "rgb(22 163 74)" : "rgb(220 38 38)",
-      }}
-    >
-      {ratio.toFixed(1)}x {ok ? "✓" : "✗"}
+    <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: bg, color }}>
+      {ratio.toFixed(1)}x {ratio >= multiplicateur ? "✓" : "✗"}
     </span>
   );
 }
 
+// ── Extraction intelligente du nom d'affichage ────────────────────────────
+function extractDisplayName(lead: Lead): string {
+  const pd = lead.prospect_data;
+  const sender = lead.sender ?? "";
+
+  // 1. Données IA : prenom + nom séparés (si l'IA les a distingués)
+  const prenom = (pd as Record<string, unknown> | null)?.prenom as string | null | undefined;
+  if (pd?.nom && prenom) return `${prenom} ${pd.nom}`;
+
+  // 2. Données IA : nom seul (ignorer si ça ressemble à un email)
+  if (pd?.nom && !pd.nom.includes("@")) return pd.nom;
+
+  // 3. Extraire le nom depuis le format Gmail "Name <email@domain.com>"
+  const nameMatch = sender.match(/^(.+?)\s*<[^>]+>$/);
+  if (nameMatch) {
+    const name = nameMatch[1].trim().replace(/^["']|["']$/g, "");
+    if (name.length >= 2 && !name.includes("@")) return name;
+  }
+
+  // 4. Si l'expéditeur est juste une adresse email → capitaliser la partie locale
+  //    si elle contient des séparateurs (. _ -) ; sinon afficher l'email complet
+  const emailAddr =
+    sender.match(/<([^>]+)>/)?.[1] ??
+    (sender.includes("@") ? sender.trim() : null);
+  if (emailAddr) {
+    const local = emailAddr.split("@")[0];
+    const parts = local.split(/[._-]+/).filter(Boolean);
+    // Nom sans séparateur → l'email complet est plus lisible que "Lauradouxanthony"
+    if (parts.length <= 1) return emailAddr;
+    return parts.map((p) => p.charAt(0).toUpperCase() + p.slice(1)).join(" ");
+  }
+
+  // 5. Fallback
+  return sender || "Inconnu";
+}
+
+// ── LeadCard enrichie ────────────────────────────────────────────────────────
 function LeadCard({
   lead,
+  propertyName,
   onVisiteEffectuee,
   onVisiteAnnulee,
   onMoveToStage,
   onSelect,
 }: {
   lead: Lead;
+  propertyName: string | null;
   onVisiteEffectuee: (id: string) => void;
   onVisiteAnnulee: (id: string) => void;
   onMoveToStage: (id: string, etape: EtapeProcess) => void;
@@ -122,23 +248,29 @@ function LeadCard({
   const etape = getEtapeFromLead(lead);
   const config = ETAPE_CONFIG[etape];
   const pd = lead.prospect_data;
-  const nom = pd?.nom || (lead.sender || "Inconnu").replace(/<.*>/, "").trim();
+  const nom = extractDisplayName(lead);
   const hours = hoursAgo(lead.received_at);
   const tooOld = hours !== null && hours > 48;
-  const spMap: Record<string, string> = { CDI: "CDI", CDD: "CDD", AUTO_ENTREPRENEUR: "Auto.", ETUDIANT: "Étudiant", RETRAITE: "Retraité" };
-  const situationLabel = pd?.situation_pro ? (spMap[pd.situation_pro] ?? pd.situation_pro) : null;
+  const noAiReply = tooOld && !lead.ai_reply;
+  const spMap: Record<string, { label: string; color: string; bg: string }> = {
+    CDI:              { label: "CDI",           color: "rgb(22 163 74)",  bg: "rgba(22,163,74,0.1)"  },
+    CDD:              { label: "CDD",           color: "rgb(234 88 12)", bg: "rgba(234,88,12,0.1)" },
+    AUTO_ENTREPRENEUR:{ label: "Indépendant",   color: "rgb(147 51 234)",bg: "rgba(147,51,234,0.1)" },
+    ETUDIANT:         { label: "Étudiant",      color: "rgb(2 132 199)", bg: "rgba(2,132,199,0.1)"  },
+    RETRAITE:         { label: "Retraité",      color: "rgb(100 116 139)",bg:"rgba(100,116,139,0.1)" },
+  };
+  const sitStyle = pd?.situation_pro ? (spMap[pd.situation_pro] ?? null) : null;
 
   return (
     <div
       className="rounded-xl border p-3 space-y-2 bg-white transition-shadow hover:shadow-md cursor-pointer"
-      style={{
-        borderColor: tooOld ? "rgba(220,38,38,0.3)" : "rgb(226 232 240)",
-      }}
+      style={{ borderColor: tooOld ? "rgba(220,38,38,0.35)" : "rgb(226 232 240)" }}
       onClick={() => onSelect(lead)}
     >
-      {/* Nom + badge étape */}
-      <div className="flex items-center justify-between gap-2">
-        <div className="font-medium text-sm truncate" style={{ color: "rgb(30 41 59)" }}>
+      {/* Ligne 1 : point tricolore + nom + badge étape */}
+      <div className="flex items-center gap-2">
+        <TrafficDot lead={lead} />
+        <div className="font-medium text-sm flex-1 min-w-0 leading-tight break-words" style={{ color: "rgb(30 41 59)" }}>
           {nom}
         </div>
         <span
@@ -149,24 +281,42 @@ function LeadCard({
         </span>
       </div>
 
-      {/* Sujet */}
-      <div className="text-xs truncate" style={{ color: "rgb(100 116 139)" }}>
-        {lead.subject || "(Sans objet)"}
-      </div>
-
-      {/* Situation + solvabilité */}
+      {/* Ligne 2 : badge contrat + ratio solvabilité */}
       <div className="flex items-center gap-2 flex-wrap">
-        {situationLabel && (
-          <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}>
-            {situationLabel}
+        {sitStyle && (
+          <span className="text-xs px-2 py-0.5 rounded-full font-medium"
+            style={{ background: sitStyle.bg, color: sitStyle.color }}>
+            {sitStyle.label}
           </span>
         )}
         <SolvabilityBadge revenus={pd?.revenus_mensuels ?? null} loyer={pd?.loyer_max ?? null} />
-        {tooOld && hours !== null && (
-          <span className="text-xs font-semibold" style={{ color: "rgb(220 38 38)" }}>
-            ⏰ {Math.floor(hours / 24)}j
-          </span>
-        )}
+      </div>
+
+      {/* Ligne 3 : bien visé */}
+      {propertyName && (
+        <div className="text-xs truncate" style={{ color: "rgb(79 70 229)" }}>
+          🏠 {propertyName}
+        </div>
+      )}
+
+      {/* Ligne 4 : date + thread count + alerte réponse IA */}
+      <div className="flex items-center justify-between gap-2">
+        <span className="text-xs" style={{ color: tooOld ? "rgb(220 38 38)" : "rgb(148 163 184)" }}>
+          {daysAgoLabel(lead.received_at) ?? "—"}
+        </span>
+        <div className="flex items-center gap-2">
+          {(lead.thread_count ?? 1) > 1 && (
+            <span className="text-xs px-1.5 py-0.5 rounded-full"
+              style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}>
+              {lead.thread_count} emails
+            </span>
+          )}
+          {noAiReply && (
+            <span className="text-xs font-semibold" style={{ color: "rgb(220 38 38)" }}>
+              🔴
+            </span>
+          )}
+        </div>
       </div>
 
       {/* Résumé */}
@@ -176,7 +326,7 @@ function LeadCard({
         </div>
       )}
 
-      {/* ── BLOC 4 : Barre progression dossier (DOSSIER_DEMANDE / DOSSIER_RECU) ── */}
+      {/* Barre progression dossier (DOSSIER_DEMANDE / DOSSIER_RECU) */}
       {(etape === "DOSSIER_DEMANDE" || etape === "DOSSIER_RECU") && (() => {
         const atts = (lead.attachments ?? []) as any[];
         const totalDocs = 4;
@@ -193,21 +343,16 @@ function LeadCard({
           <div className="pt-1">
             <div className="flex items-center justify-between mb-1">
               <span className="text-xs" style={{ color: "rgb(100 116 139)" }}>Dossier</span>
-              <span className="text-xs font-medium" style={{ color: barColor }}>
-                {count}/{totalDocs} docs
-              </span>
+              <span className="text-xs font-medium" style={{ color: barColor }}>{count}/{totalDocs} docs</span>
             </div>
             <div className="w-full h-1.5 rounded-full overflow-hidden" style={{ background: "rgb(226 232 240)" }}>
-              <div
-                className="h-full rounded-full transition-all duration-500"
-                style={{ width: `${pct}%`, background: barColor }}
-              />
+              <div className="h-full rounded-full transition-all duration-500" style={{ width: `${pct}%`, background: barColor }} />
             </div>
           </div>
         );
       })()}
 
-      {/* ── BLOC 5 : Boutons visite effectuée / annulée ─────────────── */}
+      {/* Boutons visite effectuée / annulée */}
       {etape === "VISITE_CONFIRMEE" && (
         <div className="grid grid-cols-2 gap-1.5 pt-1">
           <button
@@ -262,15 +407,26 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
   const pd = lead.prospect_data;
   const etape = getEtapeFromLead(lead);
   const config = ETAPE_CONFIG[etape];
-  const nom = pd?.nom || (lead.sender || "Inconnu").replace(/<.*>/, "").trim();
+  const nom = extractDisplayName(lead);
   const revenus = pd?.revenus_mensuels ?? null;
   const loyer = pd?.loyer_max ?? null;
   const ratio = revenus && loyer ? (revenus / loyer) : null;
   const solvable = ratio ? ratio >= 3 : null;
+  const tl = getTrafficLight(lead);
+  const tlCfg = TRAFFIC_LIGHT_CONFIG[tl];
 
   const [timeline, setTimeline] = useState<Array<{ id: string; action_type: string; description: string | null; created_at: string }>>([]);
   const [noteText, setNoteText] = useState("");
   const [savingNote, setSavingNote] = useState(false);
+  const [summaryNote, setSummaryNote] = useState<string | null>(null);
+  const [generatingSummary, setGeneratingSummary] = useState(false);
+  const [exportingZip, setExportingZip] = useState(false);
+  const [portalStatus, setPortalStatus] = useState<{
+    hasToken: boolean;
+    lastSentAt: string | null;
+    portalUrl: string | null;
+  } | null>(null);
+  const [sendingPortal, setSendingPortal] = useState(false);
   const { toast } = useToast();
 
   // Portal state
@@ -323,7 +479,142 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
     }
   };
 
-  const spMap: Record<string, string> = { CDI: "CDI", CDD: "CDD", AUTO_ENTREPRENEUR: "Auto-entrepreneur", ETUDIANT: "Étudiant", RETRAITE: "Retraité" };
+  const sendPortalLink = async () => {
+    if (sendingPortal) return;
+    setSendingPortal(true);
+    try {
+      const res = await fetch("/api/portal/create-token", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ emailId: lead.id, sendEmail: true }),
+      });
+      const data = await res.json();
+      if (res.ok || res.status === 207) {
+        const sentAt = data.lastSentAt ?? new Date().toISOString();
+        setPortalStatus({ hasToken: true, lastSentAt: sentAt, portalUrl: data.portalUrl ?? null });
+        if (res.status === 207) {
+          toast("Lien créé mais envoi Gmail échoué — copiez le lien manuellement", "error");
+        } else {
+          const prospectEmail = data.prospectEmail ?? "le prospect";
+          toast(`Lien envoyé à ${prospectEmail} ✅`, "success");
+        }
+      } else {
+        toast("Erreur lors de la création du lien", "error");
+      }
+    } catch {
+      toast("Erreur réseau", "error");
+    } finally {
+      setSendingPortal(false);
+    }
+  };
+
+  const generateSummary = async () => {
+    if (generatingSummary) return;
+    setGeneratingSummary(true);
+    setSummaryNote(null);
+    try {
+      const res = await fetch(`/api/prospects/${lead.id}/generate-summary`, { method: "POST" });
+      if (res.ok) {
+        const data = await res.json();
+        setSummaryNote(data.summary ?? null);
+        toast("Note de synthèse générée ✅", "success");
+      } else {
+        toast("Erreur lors de la génération", "error");
+      }
+    } catch {
+      toast("Erreur réseau", "error");
+    } finally {
+      setGeneratingSummary(false);
+    }
+  };
+
+  const exportZip = async () => {
+    if (exportingZip) return;
+    setExportingZip(true);
+    try {
+      const res = await fetch(`/api/prospects/${lead.id}/export-zip`);
+      if (res.ok) {
+        const blob = await res.blob();
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement("a");
+        a.href = url;
+        const cd = res.headers.get("Content-Disposition") ?? "";
+        const fnMatch = cd.match(/filename="([^"]+)"/);
+        a.download = fnMatch?.[1] ?? `Dossier_${lead.id}.zip`;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+        toast("Dossier ZIP téléchargé 📦", "success");
+      } else {
+        const err = await res.json().catch(() => ({}));
+        toast(err.error === "NO_ATTACHMENTS" ? "Aucune pièce jointe à exporter" : "Erreur lors de l'export", "error");
+      }
+    } catch {
+      toast("Erreur réseau", "error");
+    } finally {
+      setExportingZip(false);
+    }
+  };
+
+  const spBadge: Record<string, { label: string; color: string; bg: string }> = {
+    CDI:               { label: "CDI",         color: "rgb(22 163 74)",  bg: "rgba(22,163,74,0.1)"  },
+    CDD:               { label: "CDD",         color: "rgb(234 88 12)", bg: "rgba(234,88,12,0.1)" },
+    AUTO_ENTREPRENEUR: { label: "Indépendant", color: "rgb(147 51 234)",bg: "rgba(147,51,234,0.1)" },
+    ETUDIANT:          { label: "Étudiant",    color: "rgb(2 132 199)", bg: "rgba(2,132,199,0.1)"  },
+    RETRAITE:          { label: "Retraité",    color: "rgb(100 116 139)",bg:"rgba(100,116,139,0.1)" },
+  };
+
+  const DOC_PROFILES: Record<string, { key: string; label: string }[]> = {
+    CDI: [
+      { key: "fiches_paie",     label: "Fiches de paie (3 mois)" },
+      { key: "contrat",         label: "Contrat de travail" },
+      { key: "avis_imposition", label: "Avis d'imposition" },
+      { key: "piece_identite",  label: "Pièce d'identité" },
+    ],
+    CDD: [
+      { key: "fiches_paie",     label: "Fiches de paie (3 mois)" },
+      { key: "contrat",         label: "Contrat de travail (+ durée)" },
+      { key: "avis_imposition", label: "Avis d'imposition" },
+      { key: "piece_identite",  label: "Pièce d'identité" },
+    ],
+    ETUDIANT: [
+      { key: "carte_etudiant",  label: "Carte étudiante" },
+      { key: "scolarite",       label: "Certificat de scolarité" },
+      { key: "piece_identite",  label: "Pièce d'identité" },
+      { key: "garant_id",       label: "Garant : pièce identité" },
+      { key: "garant_paie",     label: "Garant : fiches de paie" },
+    ],
+    AUTO_ENTREPRENEUR: [
+      { key: "kbis",            label: "Kbis (< 3 mois)" },
+      { key: "bilan",           label: "Bilans (3 dernières années)" },
+      { key: "releves",         label: "Relevés bancaires (3 mois)" },
+      { key: "piece_identite",  label: "Pièce d'identité" },
+    ],
+    RETRAITE: [
+      { key: "pension",         label: "Relevés de pension (3 mois)" },
+      { key: "avis_imposition", label: "Avis d'imposition" },
+      { key: "piece_identite",  label: "Pièce d'identité" },
+    ],
+  };
+
+  const spKey = pd?.situation_pro as string | undefined;
+  const docs = spKey ? (DOC_PROFILES[spKey] ?? DOC_PROFILES.CDI) : DOC_PROFILES.CDI;
+  const attachments: any[] = (lead as any).attachments ?? [];
+  const receivedKeys = new Set<string>();
+  attachments.forEach((att: any) => {
+    const docTypes = att.docTypes as Record<string, boolean> | undefined;
+    if (docTypes) Object.entries(docTypes).forEach(([k, v]) => { if (v) receivedKeys.add(k); });
+  });
+  const validatedKeys = new Set<string>();
+  attachments.forEach((att: any) => {
+    if (att.validated_by_human) {
+      const docTypes = att.docTypes as Record<string, boolean> | undefined;
+      if (docTypes) Object.entries(docTypes).forEach(([k, v]) => { if (v) validatedKeys.add(k); });
+    }
+  });
+  const validatedCount = docs.filter(d => validatedKeys.has(d.key)).length;
+  const receivedCount = docs.filter(d => receivedKeys.has(d.key)).length;
 
   return (
     <div className="fixed inset-0 z-50 flex justify-end" style={{ background: "rgba(15,23,42,0.4)" }} onClick={onClose}>
@@ -333,73 +624,70 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
       >
         {/* Header */}
         <div className="px-6 py-4 border-b flex items-center justify-between sticky top-0 bg-white z-10" style={{ borderColor: "rgb(226 232 240)" }}>
-          <div>
-            <div className="font-semibold text-base" style={{ color: "rgb(30 41 59)" }}>{nom}</div>
-            <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: config.bg, color: config.color, border: `1px solid ${config.border}` }}>
-              {config.label}
-            </span>
+          <div className="flex-1 min-w-0">
+            <div className="flex items-center gap-2 mb-1">
+              <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: tlCfg.dot, flexShrink: 0 }} />
+              <div className="font-semibold text-base truncate" style={{ color: "rgb(30 41 59)" }}>{nom}</div>
+            </div>
+            <div className="flex items-center gap-2">
+              <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: config.bg, color: config.color, border: `1px solid ${config.border}` }}>
+                {config.label}
+              </span>
+              <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: tlCfg.bg, color: tlCfg.color }}>
+                {tl === "AUTOPILOTE" ? "🟢" : tl === "DRAFT" ? "🟡" : "🔴"} {tlCfg.label}
+              </span>
+            </div>
           </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl">✕</button>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl ml-4">✕</button>
         </div>
 
         <div className="p-6 space-y-6 flex-1">
 
-          {/* IDENTITÉ */}
+          {/* BLOC IDENTITÉ */}
           <div className="space-y-3">
-            <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>Identité</h3>
-            <div className="grid grid-cols-2 gap-3">
-              {pd?.telephone && (
+            <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>👤 Identité</h3>
+            <div className="rounded-xl border p-4 space-y-3" style={{ borderColor: "rgb(226 232 240)" }}>
+              <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Téléphone</div>
-                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>📞 {pd.telephone}</div>
+                  <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Nom</div>
+                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+                    {pd?.nom && !pd.nom.includes("@") ? pd.nom : extractDisplayName(lead)}
+                  </div>
                 </div>
-              )}
-              {lead.sender && (
                 <div>
-                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Email</div>
-                  <div className="text-sm truncate" style={{ color: "rgb(71 85 105)" }}>{lead.sender.replace(/<.*>/, "").trim()}</div>
+                  <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Email</div>
+                  {lead.sender ? (() => {
+                    const emailAddr = lead.sender.replace(/.*<(.+)>.*/, "$1").trim();
+                    return (
+                      <a href={`mailto:${emailAddr}`}
+                        className="text-sm truncate block hover:underline"
+                        style={{ color: "rgb(79 70 229)" }}>
+                        {emailAddr}
+                      </a>
+                    );
+                  })() : <div className="text-sm" style={{ color: "rgb(148 163 184)" }}>—</div>}
                 </div>
-              )}
-              {pd?.situation_pro && (
                 <div>
-                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Situation pro</div>
-                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>{spMap[pd.situation_pro] ?? pd.situation_pro}</div>
+                  <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Téléphone</div>
+                  {pd?.telephone ? (
+                    <a href={`tel:${pd.telephone}`} className="text-sm font-medium hover:underline" style={{ color: "rgb(30 41 59)" }}>
+                      📞 {pd.telephone}
+                    </a>
+                  ) : <div className="text-sm" style={{ color: "rgb(148 163 184)" }}>—</div>}
                 </div>
-              )}
-              {revenus && (
                 <div>
-                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Revenus nets/mois</div>
-                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>{revenus.toLocaleString("fr-FR")} €</div>
+                  <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Situation pro</div>
+                  {pd?.situation_pro ? (() => {
+                    const s = spBadge[pd.situation_pro] ?? { label: pd.situation_pro, color: "rgb(100 116 139)", bg: "rgba(100,116,139,0.1)" };
+                    return (
+                      <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: s.bg, color: s.color }}>
+                        {s.label}
+                      </span>
+                    );
+                  })() : <div className="text-sm" style={{ color: "rgb(148 163 184)" }}>Inconnu</div>}
                 </div>
-              )}
-              {loyer && (
-                <div>
-                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Loyer visé</div>
-                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>{loyer.toLocaleString("fr-FR")} €/mois</div>
-                </div>
-              )}
-              {pd?.garant && (
-                <div>
-                  <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Garant</div>
-                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>{pd.garant}</div>
-                </div>
-              )}
-            </div>
-
-            {/* Ratio solvabilité */}
-            {ratio !== null && (
-              <div className="rounded-lg px-3 py-2 flex items-center gap-2" style={{
-                background: solvable ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.08)",
-                border: `1px solid ${solvable ? "rgba(22,163,74,0.2)" : "rgba(220,38,38,0.2)"}`,
-              }}>
-                <span className="font-bold" style={{ color: solvable ? "rgb(22 163 74)" : "rgb(220 38 38)" }}>
-                  {ratio.toFixed(1)}x
-                </span>
-                <span className="text-sm" style={{ color: solvable ? "rgb(22 163 74)" : "rgb(220 38 38)" }}>
-                  {solvable ? "✓ Solvable (≥ 3x)" : "⚠ Risque — revenus insuffisants"}
-                </span>
               </div>
-            )}
+            </div>
           </div>
 
           {/* DOCUMENTS REQUIS — selon situation_pro */}
@@ -481,22 +769,81 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
                     <span>{receivedCount}/{total} documents validés</span>
                     <span>{Math.round((receivedCount / Math.max(total, 1)) * 100)}%</span>
                   </div>
-                  <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: "rgba(226,232,240,0.6)" }}>
-                    <div
-                      className="h-full rounded-full transition-all duration-500"
-                      style={{
-                        width: `${Math.round((receivedCount / Math.max(total, 1)) * 100)}%`,
-                        background: dossierStatus === "COMPLET"
-                          ? "rgb(22 163 74)"
-                          : dossierStatus === "PARTIEL"
-                          ? "rgb(234 88 12)"
-                          : "rgb(220 38 38)",
-                      }}
-                    />
+                </div>
+                <div>
+                  <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Loyer visé</div>
+                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+                    {loyer ? `${loyer.toLocaleString("fr-FR")} €` : "—"}
+                  </div>
+                </div>
+                <div>
+                  <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Garant</div>
+                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+                    {pd?.garant === "OUI" ? "✅ Oui" : pd?.garant === "NON" ? "❌ Non" : pd?.garant === "A_CONFIRMER" ? "⚠ À confirmer" : "—"}
+                  </div>
+                </div>
+              </div>
+
+              {ratio !== null ? (
+                <div className="space-y-2">
+                  {/* Barre de progression colorée */}
+                  <div>
+                    <div className="flex justify-between text-xs mb-1" style={{ color: "rgb(100 116 139)" }}>
+                      <span>Ratio revenus / loyer</span>
+                      <span className="font-semibold" style={{
+                        color: ratio >= 3 ? "rgb(22 163 74)" : ratio >= 2 ? "rgb(234 88 12)" : "rgb(220 38 38)"
+                      }}>
+                        {ratio.toFixed(1)}x
+                      </span>
+                    </div>
+                    <div className="relative h-2 rounded-full overflow-hidden" style={{ background: "rgb(226 232 240)" }}>
+                      <div className="h-full rounded-full transition-all duration-500" style={{
+                        width: `${Math.min((ratio / 5) * 100, 100)}%`,
+                        background: ratio >= 3 ? "rgb(22,163,74)" : ratio >= 2 ? "rgb(234,88,12)" : "rgb(220,38,38)",
+                      }} />
+                      <div className="absolute top-0 h-full w-0.5" style={{ left: "60%", background: "rgb(79 70 229)", opacity: 0.5 }} />
+                    </div>
+                    <div className="flex justify-between text-xs mt-0.5" style={{ color: "rgb(148 163 184)" }}>
+                      <span>0x</span><span style={{ color: "rgb(79 70 229)" }}>Seuil 3x</span><span>5x+</span>
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-2 rounded-lg px-3 py-2 font-medium" style={{
+                    background: solvable ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.08)",
+                    color: solvable ? "rgb(22 163 74)" : "rgb(220 38 38)",
+                    fontSize: 13,
+                  }}>
+                    {solvable ? "✓ Solvable (≥ 3x)" : "✗ Insuffisant (< 3x)"}
+                  </div>
+                </div>
+              ) : (
+                <div className="text-xs py-2" style={{ color: "rgb(148 163 184)" }}>Revenus ou loyer non renseigné</div>
+              )}
+            </div>
+          </div>
+
+          {/* BLOC DOSSIER LOCATAIRE */}
+          {pd?.situation_pro && (
+            <div className="space-y-3">
+              <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>
+                📋 Dossier locataire
+              </h3>
+              <div className="rounded-xl border p-4 space-y-3" style={{ borderColor: "rgb(226 232 240)" }}>
+                {/* Barre de progression */}
+                <div>
+                  <div className="flex items-center justify-between text-xs mb-1" style={{ color: "rgb(100 116 139)" }}>
+                    <span>{validatedCount}/{docs.length} documents validés</span>
+                    <span>{Math.round((validatedCount / Math.max(docs.length, 1)) * 100)}%</span>
+                  </div>
+                  <div className="w-full h-2 rounded-full overflow-hidden" style={{ background: "rgb(226 232 240)" }}>
+                    <div className="h-full rounded-full transition-all duration-500" style={{
+                      width: `${Math.round((validatedCount / Math.max(docs.length, 1)) * 100)}%`,
+                      background: validatedCount >= docs.length ? "rgb(22,163,74)" : validatedCount > 0 ? "rgb(234,88,12)" : "rgb(220,38,38)",
+                    }} />
                   </div>
                 </div>
 
-                <div className="space-y-1">
+                {/* Checklist */}
+                <div className="space-y-1.5">
                   {docs.map(doc => {
                     const portalAtt = attachments.find(a => a.source === "portal" && a.docType === doc.key);
                     const gmailAtt = attachments.find(a => !a.source && a.docTypes?.[doc.key]);
@@ -586,9 +933,82 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
                     );
                   })}
                 </div>
+
+                {/* Bouton portail de dépôt */}
+                <div className="pt-2">
+                  {portalStatus?.lastSentAt ? (
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <span className="text-xs" style={{ color: "rgb(22 163 74)" }}>
+                        ✓ Lien envoyé le {new Date(portalStatus.lastSentAt).toLocaleDateString("fr-FR", { day: "numeric", month: "short" })}
+                      </span>
+                      {portalStatus.portalUrl && (
+                        <button
+                          onClick={() => { navigator.clipboard.writeText(portalStatus.portalUrl!); toast("Lien copié !", "success"); }}
+                          className="text-xs px-2 py-0.5 rounded-md"
+                          style={{ background: "rgba(22,163,74,0.08)", color: "rgb(22 163 74)" }}
+                        >
+                          📋 Copier
+                        </button>
+                      )}
+                      <button
+                        onClick={sendPortalLink}
+                        disabled={sendingPortal}
+                        className="text-xs px-2 py-0.5 rounded-md disabled:opacity-50"
+                        style={{ background: "rgba(100,116,139,0.08)", color: "rgb(100 116 139)" }}
+                      >
+                        {sendingPortal ? "Envoi…" : "↩ Renvoyer"}
+                      </button>
+                    </div>
+                  ) : (
+                    <button
+                      onClick={sendPortalLink}
+                      disabled={sendingPortal}
+                      className="text-xs px-3 py-1.5 rounded-lg font-medium disabled:opacity-50"
+                      style={{ background: "rgba(99,102,241,0.1)", color: "rgb(99 102 241)" }}
+                    >
+                      {sendingPortal ? "📎 Envoi…" : "📎 Envoyer le lien de dépôt"}
+                    </button>
+                  )}
+                </div>
+
+                {/* Boutons IA synthèse + ZIP export */}
+                <div className="flex flex-wrap gap-2 pt-2">
+                  {validatedCount >= 2 && (
+                    <button
+                      onClick={generateSummary}
+                      disabled={generatingSummary}
+                      className="text-xs px-3 py-1.5 rounded-lg font-medium disabled:opacity-50"
+                      style={{ background: "rgba(79,70,229,0.1)", color: "rgb(79 70 229)" }}
+                    >
+                      {generatingSummary ? "🤖 Génération…" : "🤖 Générer note de synthèse"}
+                    </button>
+                  )}
+                  {attachments.length > 0 && (
+                    <button
+                      onClick={exportZip}
+                      disabled={exportingZip}
+                      className="text-xs px-3 py-1.5 rounded-lg font-medium disabled:opacity-50"
+                      style={{ background: "rgba(100,116,139,0.1)", color: "rgb(100 116 139)" }}
+                    >
+                      {exportingZip ? "📦 Export…" : "📦 Exporter dossier complet"}
+                    </button>
+                  )}
+                </div>
+
+                {/* Note de synthèse IA */}
+                {summaryNote && (
+                  <div className="mt-3 rounded-xl border p-4 text-xs whitespace-pre-wrap"
+                    style={{ borderColor: "rgba(79,70,229,0.2)", background: "rgba(79,70,229,0.04)", color: "rgb(30 41 59)" }}>
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="text-xs font-semibold" style={{ color: "rgb(79 70 229)" }}>🤖 Note de synthèse IA</span>
+                      <button onClick={() => setSummaryNote(null)} className="text-slate-400 hover:text-slate-600 text-xs">✕</button>
+                    </div>
+                    {summaryNote}
+                  </div>
+                )}
               </div>
-            );
-          })()}
+            </div>
+          )}
 
           {/* ── PORTAIL DE DÉPÔT ──────────────────────────────────── */}
           <div className="space-y-2">
@@ -787,7 +1207,6 @@ export default function LeadsPage() {
   const [showRefused, setShowRefused] = useState(false);
   const [viewMode, setViewMode] = useState<"kanban" | "list">("kanban");
   const [properties, setProperties] = useState<PropertyInfo[]>([]);
-  // Filtres vue liste
   const [filterEtape, setFilterEtape] = useState<EtapeProcess | "">("");
   const [filterProperty, setFilterProperty] = useState<string>("");
   const [filterSolvable, setFilterSolvable] = useState<"" | "oui" | "non">("");
@@ -896,17 +1315,30 @@ export default function LeadsPage() {
 
     // Charger les biens pour les filtres
     try {
+      // Utiliser le nouveau route pipeline/list pour filtres + déduplication
+      const res = await fetch("/api/pipeline/list");
+      if (res.status === 401) { window.location.href = "/auth/login"; return; }
+      if (res.ok) {
+        const json = await res.json();
+        setLeads((json.leads ?? []) as Lead[]);
+      }
+
+      // Charger les biens pour les filtres
       const propsRes = await fetch("/api/properties");
       if (propsRes.ok) {
         const propsData = await propsRes.json();
         setProperties((propsData.properties ?? []).map((p: any) => ({ id: p.id, title: p.title, rent: p.rent })));
       }
     } catch { /* graceful */ }
-
     setLoading(false);
   }, []);
 
   useEffect(() => { fetchLeads(); }, [fetchLeads]);
+
+  const getPropertyName = (propertyId: string | null | undefined): string | null => {
+    if (!propertyId) return null;
+    return properties.find(p => p.id === propertyId)?.title ?? null;
+  };
 
   const handleVisiteEffectuee = async (id: string) => {
     const res = await fetch(`/api/leads/${id}/visite`, {
@@ -951,15 +1383,9 @@ export default function LeadsPage() {
   const stageLeads = (stage: EtapeProcess) => activeLeads.filter(l => getEtapeFromLead(l) === stage);
 
   const urgentCount = leads.filter(l => l.is_urgent).length;
-  const staleCount = leads.filter(l => { const h = hoursAgo(l.received_at); return h !== null && h > 48; }).length;
+  const alerteCount = leads.filter(l => getTrafficLight(l) === "ALERTE").length;
   const visiteProposeCount = stageLeads("VISITE_PROPOSEE").length + stageLeads("VISITE_CONFIRMEE").length;
   const dossierCount = stageLeads("DOSSIER_DEMANDE").length + stageLeads("DOSSIER_RECU").length;
-
-  // Vue liste avec filtres
-  const getPropertyTitle = (propertyId: string | null | undefined) => {
-    if (!propertyId) return null;
-    return properties.find(p => p.id === propertyId)?.title ?? null;
-  };
 
   const filteredListLeads = leads.filter(l => {
     if (filterEtape && getEtapeFromLead(l) !== filterEtape) return false;
@@ -986,9 +1412,9 @@ export default function LeadsPage() {
             <div>
               <h1 className="text-lg font-semibold" style={{ color: "rgb(30 41 59)" }}>Prospects</h1>
               <p className="text-xs mt-0.5" style={{ color: "rgb(148 163 184)" }}>
-                {activeLeads.length} actifs · 30 jours
+                {activeLeads.length} actifs · 60 jours
+                {alerteCount > 0 && <span className="ml-2 font-medium" style={{ color: "rgb(220 38 38)" }}>🔴 {alerteCount} alerte{alerteCount > 1 ? "s" : ""}</span>}
                 {urgentCount > 0 && <span className="ml-2 font-medium" style={{ color: "rgb(220 38 38)" }}>🔥 {urgentCount} urgent{urgentCount > 1 ? "s" : ""}</span>}
-                {staleCount > 0 && <span className="ml-2 font-medium" style={{ color: "rgb(220 38 38)" }}>⏰ {staleCount} sans réponse &gt;48h</span>}
               </p>
             </div>
             <div className="flex items-center gap-3">
@@ -1099,7 +1525,7 @@ export default function LeadsPage() {
                 <table className="w-full text-sm">
                   <thead>
                     <tr style={{ background: "rgb(248 250 252)", borderBottom: "1px solid rgb(226 232 240)" }}>
-                      {["Prospect", "Bien", "Revenus / Loyer / Ratio", "Étape", "Activité", "Actions"].map(h => (
+                      {["", "Prospect", "Bien", "Revenus / Loyer / Ratio", "Étape", "Activité", "Actions"].map(h => (
                         <th key={h} className="text-left text-xs font-semibold px-4 py-3" style={{ color: "rgb(100 116 139)" }}>
                           {h}
                         </th>
@@ -1111,50 +1537,40 @@ export default function LeadsPage() {
                       const etape = getEtapeFromLead(lead);
                       const config = ETAPE_CONFIG[etape];
                       const pd = lead.prospect_data;
-                      const nom = pd?.nom || (lead.sender || "Inconnu").replace(/<.*>/, "").trim();
+                      const nom = extractDisplayName(lead);
                       const revenus = pd?.revenus_mensuels ?? null;
                       const loyer = pd?.loyer_max ?? null;
                       const ratio = revenus && loyer ? (revenus / loyer).toFixed(1) : null;
                       const solvable = ratio ? parseFloat(ratio) >= 3 : null;
-                      const propertyTitle = getPropertyTitle(lead.property_id);
+                      const propertyTitle = getPropertyName(lead.property_id);
                       const hours = hoursAgo(lead.received_at);
-                      const spLabels: Record<string, string> = { CDI: "CDI", CDD: "CDD", AUTO_ENTREPRENEUR: "Auto.", ETUDIANT: "Étudiant", RETRAITE: "Retraité" };
+                      const spLabels: Record<string, string> = { CDI: "CDI", CDD: "CDD", AUTO_ENTREPRENEUR: "Indépendant", ETUDIANT: "Étudiant", RETRAITE: "Retraité" };
+                      const tl = getTrafficLight(lead);
+                      const tlDot = TRAFFIC_LIGHT_CONFIG[tl].dot;
                       return (
                         <tr
                           key={lead.id}
-                          className="cursor-pointer"
+                          className="cursor-pointer hover:bg-gray-50"
                           onClick={() => setSelectedLead(lead)}
-                          style={{
-                            borderBottom: i < filteredListLeads.length - 1 ? "1px solid rgb(241 245 249)" : undefined,
-                            background: "white",
-                          }}
+                          style={{ borderBottom: i < filteredListLeads.length - 1 ? "1px solid rgb(241 245 249)" : undefined }}
                         >
+                          {/* Point tricolore */}
+                          <td className="px-3 py-3">
+                            <span style={{ display: "inline-block", width: 8, height: 8, borderRadius: "50%", background: tlDot }} />
+                          </td>
                           {/* Prospect */}
                           <td className="px-4 py-3">
                             <div className="font-medium" style={{ color: "rgb(30 41 59)" }}>{nom}</div>
                             {pd?.situation_pro && (
-                              <div className="text-xs mt-0.5" style={{ color: "rgb(148 163 184)" }}>
-                                {spLabels[pd.situation_pro] ?? pd.situation_pro}
-                              </div>
-                            )}
-                            {pd?.telephone && (
-                              <div className="text-xs mt-0.5" style={{ color: "rgb(148 163 184)" }}>
-                                📞 {pd.telephone}
-                              </div>
+                              <div className="text-xs mt-0.5" style={{ color: "rgb(148 163 184)" }}>{spLabels[pd.situation_pro] ?? pd.situation_pro}</div>
                             )}
                           </td>
-
                           {/* Bien */}
                           <td className="px-4 py-3">
-                            {propertyTitle ? (
-                              <div className="text-xs font-medium" style={{ color: "rgb(79 70 229)" }}>
-                                🏠 {propertyTitle}
-                              </div>
-                            ) : (
-                              <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>—</div>
-                            )}
+                            {propertyTitle
+                              ? <div className="text-xs font-medium" style={{ color: "rgb(79 70 229)" }}>🏠 {propertyTitle}</div>
+                              : <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>—</div>}
                           </td>
-
                           {/* Revenus / Loyer / Ratio */}
                           <td className="px-4 py-3">
                             {revenus || loyer ? (
@@ -1162,20 +1578,16 @@ export default function LeadsPage() {
                                 {revenus && <div className="text-xs" style={{ color: "rgb(71 85 105)" }}>{revenus.toLocaleString("fr-FR")} €/mois</div>}
                                 {loyer && <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>Loyer : {loyer.toLocaleString("fr-FR")} €</div>}
                                 {ratio && (
-                                  <span className="text-xs px-1.5 py-0.5 rounded-full font-medium"
-                                    style={{
-                                      background: solvable ? "rgba(22,163,74,0.1)" : "rgba(220,38,38,0.1)",
-                                      color: solvable ? "rgb(22 163 74)" : "rgb(220 38 38)",
-                                    }}>
+                                  <span className="text-xs px-1.5 py-0.5 rounded-full font-medium" style={{
+                                    background: solvable ? "rgba(22,163,74,0.1)" : "rgba(220,38,38,0.1)",
+                                    color: solvable ? "rgb(22 163 74)" : "rgb(220 38 38)",
+                                  }}>
                                     {ratio}x {solvable ? "✓" : "✗"}
                                   </span>
                                 )}
                               </div>
-                            ) : (
-                              <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>—</span>
-                            )}
+                            ) : <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>—</span>}
                           </td>
-
                           {/* Étape */}
                           <td className="px-4 py-3">
                             <span className="text-xs px-2 py-1 rounded-full font-medium"
@@ -1183,41 +1595,25 @@ export default function LeadsPage() {
                               {config.label}
                             </span>
                           </td>
-
                           {/* Activité */}
                           <td className="px-4 py-3">
-                            {lead.received_at ? (
-                              <div className="text-xs" style={{ color: hours && hours > 48 ? "rgb(220 38 38)" : "rgb(100 116 139)" }}>
-                                {hours !== null && hours > 24
-                                  ? `Il y a ${Math.floor(hours / 24)}j`
-                                  : hours !== null
-                                  ? `Il y a ${hours}h`
-                                  : new Date(lead.received_at).toLocaleDateString("fr-FR")}
-                              </div>
-                            ) : <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>—</span>}
+                            <div className="text-xs" style={{ color: hours && hours > 48 ? "rgb(220 38 38)" : "rgb(100 116 139)" }}>
+                              {daysAgoLabel(lead.received_at) ?? "—"}
+                            </div>
                           </td>
-
                           {/* Actions */}
                           <td className="px-4 py-3">
                             <div className="flex gap-1.5">
                               <a
                                 href={`/emails?id=${lead.id}`}
+                                onClick={(e) => e.stopPropagation()}
                                 className="text-xs px-2.5 py-1.5 rounded-lg font-medium"
                                 style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}
                               >
                                 Voir
                               </a>
-                              {etape === "VISITE_CONFIRMEE" && (
-                                <button
-                                  onClick={() => handleVisiteEffectuee(lead.id)}
-                                  className="text-xs px-2.5 py-1.5 rounded-lg font-medium"
-                                  style={{ background: "rgba(22,163,74,0.1)", color: "rgb(22 163 74)" }}
-                                >
-                                  ✅ Visite
-                                </button>
-                              )}
                               <button
-                                onClick={() => handleMoveToStage(lead.id, "REFUSE")}
+                                onClick={(e) => { e.stopPropagation(); handleMoveToStage(lead.id, "REFUSE"); }}
                                 className="text-xs px-2.5 py-1.5 rounded-lg"
                                 style={{ background: "rgba(220,38,38,0.06)", color: "rgb(220 38 38)" }}
                               >
@@ -1273,6 +1669,7 @@ export default function LeadsPage() {
                           <LeadCard
                             key={lead.id}
                             lead={lead}
+                            propertyName={getPropertyName(lead.property_id)}
                             onVisiteEffectuee={handleVisiteEffectuee}
                             onVisiteAnnulee={handleVisiteAnnulee}
                             onMoveToStage={handleMoveToStage}
@@ -1298,6 +1695,7 @@ export default function LeadsPage() {
                       <LeadCard
                         key={lead.id}
                         lead={lead}
+                        propertyName={getPropertyName(lead.property_id)}
                         onVisiteEffectuee={handleVisiteEffectuee}
                         onVisiteAnnulee={handleVisiteAnnulee}
                         onMoveToStage={handleMoveToStage}
@@ -1312,16 +1710,16 @@ export default function LeadsPage() {
         </div>
       </div>
 
-        {/* Drawer prospect */}
-        {selectedLead && (
-          <ProspectDrawer
-            lead={selectedLead}
-            onClose={() => setSelectedLead(null)}
-            onMoveToStage={handleMoveToStage}
-            onVisiteEffectuee={handleVisiteEffectuee}
-            onVisiteAnnulee={handleVisiteAnnulee}
-          />
-        )}
+      {/* Drawer prospect */}
+      {selectedLead && (
+        <ProspectDrawer
+          lead={selectedLead}
+          onClose={() => setSelectedLead(null)}
+          onMoveToStage={handleMoveToStage}
+          onVisiteEffectuee={handleVisiteEffectuee}
+          onVisiteAnnulee={handleVisiteAnnulee}
+        />
+      )}
     </AppShell>
   );
 }

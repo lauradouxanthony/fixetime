@@ -15,17 +15,19 @@ function buildGmailLink(gmailMsgId: string): string {
   return `https://mail.google.com/mail/u/0/#inbox/${gmailMsgId}`;
 }
 
-function autoCheckDoc(filename: string): Record<string, boolean> {
-  const name = filename.toLowerCase();
-  const docs: Record<string, boolean> = {};
-  if (name.includes("paie") || name.includes("salaire") || name.includes("bulletin")) docs.fiches_paie = true;
-  if (name.includes("contrat") || name.includes("cdi") || name.includes("cdd") || name.includes("travail")) docs.contrat_travail = true;
-  if (name.includes("impos") || name.includes("avis") || name.includes("impot") || name.includes("fiscal")) docs.avis_imposition = true;
-  if (name.includes("identit") || name.includes("cni") || name.includes("passeport") || name.includes("carte")) docs.piece_identite = true;
-  if (name.includes("etudiant") || name.includes("scolarit") || name.includes("universite")) docs.carte_etudiant = true;
-  if (name.includes("kbis") || name.includes("siren") || name.includes("extrait")) docs.kbis = true;
-  if (name.includes("bilan") || name.includes("comptable")) docs.bilan = true;
-  return docs;
+function classifyDocument(filename: string): string {
+  const f = filename.toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
+  if (f.includes("paie") || f.includes("salaire") || f.includes("bulletin") || f.includes("fiche")) return "fiche_paie";
+  if (f.includes("contrat") || f.includes("cdi") || f.includes("cdd") || f.includes("emploi")) return "contrat_travail";
+  if (f.includes("impos") || f.includes("avis") || f.includes("impot") || f.includes("fiscal")) return "avis_imposition";
+  if (f.includes("identit") || f.includes("cni") || f.includes("passeport") || f.includes("carte") || f.includes(" id")) return "piece_identite";
+  if (f.includes("rib") || f.includes("bancaire") || f.includes("releve") || f.includes("compte")) return "releve_bancaire";
+  if (f.includes("etudiant") || f.includes("scolari") || f.includes("universite") || f.includes("ecole")) return "carte_etudiant";
+  if (f.includes("kbis") || f.includes("siret") || f.includes("entreprise")) return "kbis";
+  if (f.includes("garant") || f.includes("caution")) return "document_garant";
+  return "autre";
 }
 
 function extractAttachments(payload: any): { filename: string; mimeType: string; attachmentId: string; size: number }[] {
@@ -98,7 +100,7 @@ export async function GET() {
 
       if (atts.length > 0) {
         const gmailLink = buildGmailLink(gmailId);
-        const enriched = atts.map(att => ({ ...att, gmailLink, docTypes: autoCheckDoc(att.filename) }));
+        const enriched = atts.map(att => ({ ...att, gmailLink, docType: classifyDocument(att.filename), status: "EN_ATTENTE" }));
         await supabaseAdmin.from("emails").update({ attachments: enriched }).eq("id", email.id);
         updated++;
         results.push({ id: email.id, gmailId, pj: atts.length, action: "updated" });

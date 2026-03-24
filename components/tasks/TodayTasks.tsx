@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { usePathname } from "next/navigation";
 
 type Task = {
   id: string;
@@ -9,27 +10,45 @@ type Task = {
 };
 
 export function TodayTasks() {
+  const pathname = usePathname();
   const [tasks, setTasks] = useState<Task[]>([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
+  const abortRef = useRef<AbortController | null>(null);
+  const isMountedRef = useRef(true);
 
-  const fetchTasks = async () => {
+  const fetchTasks = useCallback(async () => {
+    if (pathname !== "/home") return;
+    abortRef.current?.abort();
+    const ctrl = new AbortController();
+    abortRef.current = ctrl;
     try {
-      const res = await fetch("/api/tasks/today");
+      const res = await fetch("/api/tasks/today", { signal: ctrl.signal });
       const json = await res.json();
-      setTasks(json.tasks ?? []);
+      if (isMountedRef.current && !ctrl.signal.aborted) {
+        setTasks(json.tasks ?? []);
+      }
     } catch (e) {
-      console.error("FETCH TASKS ERROR", e);
+      if (!(e instanceof DOMException && e.name === "AbortError")) {
+        console.error("FETCH TASKS ERROR", e);
+      }
     } finally {
-      setLoading(false);
+      if (isMountedRef.current && !ctrl.signal.aborted) setLoading(false);
     }
-  };
+  }, [pathname]);
 
   useEffect(() => {
+    if (pathname !== "/home") return;
+    isMountedRef.current = true;
     fetchTasks();
     const interval = setInterval(fetchTasks, 3000);
-    return () => clearInterval(interval);
-  }, []);
+    return () => {
+      isMountedRef.current = false;
+      clearInterval(interval);
+      abortRef.current?.abort();
+      abortRef.current = null;
+    };
+  }, [pathname, fetchTasks]);
 
   const completeTask = async (taskId: string) => {
     setBusyId(taskId);

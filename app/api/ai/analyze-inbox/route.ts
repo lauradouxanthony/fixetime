@@ -1,11 +1,20 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
-import { supabaseServer } from "@/lib/supabaseServer";
 import { getValidGoogleAccessToken } from "@/lib/google/getValidAccessToken";
+import { supabaseServer } from "@/lib/supabaseServer";
 import OpenAI from "openai";
+import { createCalendarEvent } from "@/lib/calendar/createEventUnified";
+import { sendGmailEmail as sendGoogleEmail } from "@/lib/google/sendEmail";
+import { sendOutlookEmail as sendMicrosoftEmail } from "@/lib/microsoft/sendEmail";
+import { logActivity } from "@/lib/activity/logActivity";
+import { fetchWithTimeout } from "@/lib/fetchWithTimeout";
+import { matchFaq, type FaqItem } from "@/lib/faq/matchFaq";
+import { setLastAction } from "@/lib/lead/lastAction";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
+
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 
 // ── Étapes du process immobilier (ordre de progression) ─────────────────────
 export const STEP_ORDER = [
@@ -114,9 +123,7 @@ function isManualRequest(req: Request) {
   return !!req.headers.get("cookie");
 }
 
-const openai = new OpenAI({
-  apiKey: process.env.OPENAI_API_KEY!,
-});
+/* ===================== OPENAI ===================== */
 
 function guessCategory(email: { subject?: string | null; sender?: string | null }): string {
   const s = (email.subject || "").toLowerCase();
@@ -171,7 +178,11 @@ function fallbackDecision(email: { subject?: string | null; sender?: string | nu
   const subject = (email.subject || "").toLowerCase();
   const sender = (email.sender || "").toLowerCase();
 
-  if (subject.includes("urgent") || subject.includes("asap") || subject.includes("demain")) {
+  if (
+    subject.includes("urgent") ||
+    subject.includes("asap") ||
+    subject.includes("demain")
+  ) {
     return { decision: "traiter", is_urgent: true, is_important: false };
   }
   if (subject.includes("réunion") || subject.includes("rdv")) {
@@ -182,6 +193,309 @@ function fallbackDecision(email: { subject?: string | null; sender?: string | nu
   }
   return { decision: "traiter", is_urgent: false, is_important: false };
 }
+function extractReplyOnly(raw: string) {
+  if (!raw) return "";
+
+  let t = String(raw);
+
+  // 1) coupe à partir des séparateurs de reply les plus fiables
+  const separators = [
+    /\n---+\s*message d['’]origine\s*---+\n/i,
+    /\n---+\s*original message\s*---+\n/i,
+    /\n\s*from:\s.+\n/i,
+    /\n\s*de\s*:\s.+\n/i,
+    /\n\s*sent:\s.+\n/i,
+    /\n\s*envoyé\s*:\s.+\n/i,
+    /\n\s*on\s.+\swrote:\s*\n/i,
+    /\n\s*le\s.+\sa écrit\s*:\s*\n/i, // OK le ... a écrit :
+  ];
+
+  for (const re of separators) {
+    const m = t.match(re);
+    if (m?.index != null && m.index > 0) {
+      t = t.slice(0, m.index);
+      break;
+    }
+  }
+
+  // 2) supprime les lignes citées ">"
+  t = t
+    .split("\n")
+    .filter((line) => !line.trim().startsWith(">"))
+    .join("\n");
+
+  // 3) trim + limite
+  return t.trim().slice(0, 800);
+}
+function maybeSlotReply(rawText: string) {
+  const clean = extractReplyOnly(rawText);
+  if (!clean) return false;
+
+  // On ne regarde QUE la vraie réponse (1ère ligne non vide)
+  const firstLine =
+    clean
+      .split("\n")
+      .map((l) => l.trim())
+      .find((l) => l.length > 0) ?? "";
+
+  const line = firstLine.toLowerCase();
+
+  // OK Cas "1" / "2" / "3" SEUL (evite T3, 3 pieces, etc.)
+  if (/^(?:choix|option)?\s*(1|2|3)\s*$/.test(line)) return true;
+
+  // OK Cas "je prends 2" / "je choisis 3"
+  if (/^je\s+(?:prends|choisis)\s+(?:le\s+)?(1|2|3)\s*$/.test(line)) return true;
+
+  // OK Cas "11h" / "11:00" sur la 1ere ligne (reponse courte)
+  if (/^(\d{1,2})(?:[:h])(\d{2})?\s*$/.test(line)) return true;
+
+  return false;
+}
+
+
+
+function detectSlotChoice(rawText: string, slots: string[]) {
+  const clean = extractReplyOnly(rawText);
+  if (!clean) return null;
+
+  // On ne prend pas que la 1ère ligne : on prend les 8 premières lignes non vides
+  const lines = clean
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.length > 0)
+    .slice(0, 8);
+
+  const joined = lines.join(" ").toLowerCase();
+
+  // 1) choix explicite "1" / "2" / "3" (ligne seule OU dans phrase)
+  // IMPORTANT : on prend le DERNIER match, car certains écrivent "j'hésite entre 1 et 2 => je prends 2"
+  const matches = Array.from(joined.matchAll(/\b(1|2|3)\b/g));
+  if (matches.length > 0) {
+    const last = matches[matches.length - 1];
+    const idx = Number(last[1]) - 1;
+    return slots[idx] ?? null;
+  }
+
+  // 2) fallback heure (si quelqu'un répond "11h")
+  const hourMatches = joined.match(/\b(\d{1,2})(?:[:h])(\d{2})?\b/g);
+  if (hourMatches) {
+    for (const slot of slots) {
+      const d = new Date(slot);
+      const sh = d.getHours();
+      const sm = d.getMinutes();
+
+      for (const hm of hourMatches) {
+        const normalized = hm.replace("h", ":");
+        const parts = normalized.split(":");
+        const h = Number(parts[0]);
+        const m2 = parts[1] ? Number(parts[1]) : 0;
+
+        if (h === sh && m2 === sm) return slot;
+      }
+    }
+  }
+
+  return null;
+}
+
+
+
+function removeAccents(s: string) {
+  return s.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+}
+function normalizeTokens(text: string): string[] {
+  const t = removeAccents(String(text || "").toLowerCase())
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .split(/\s+/)
+    .map((w) => w.trim())
+    .filter((w) => w.length > 1);
+  return [...new Set(t)];
+}
+function streetWithoutNumber(addr: string): string {
+  return removeAccents(String(addr || "").toLowerCase())
+    .replace(/^\d+\s*/, "")
+    .replace(/[^\p{L}\p{N}\s]/gu, " ")
+    .trim();
+}
+function extractPostalCode(addr: string): string | null {
+  const m = String(addr || "").match(/\b(\d{5})\b/);
+  return m ? m[1] : null;
+}
+function extractCity(addr: string): string {
+  const parts = String(addr || "").split(",").map((p) => p.trim());
+  const last = parts[parts.length - 1] || "";
+  return removeAccents(last.replace(/\d{5}\s*/, "").toLowerCase().trim());
+}
+
+function cleanNull(v: any): any {
+  if (v === null || v === undefined) return null;
+  if (typeof v === "string") {
+    const t = v.trim().toLowerCase();
+    if (t === "" || t === "null" || t === "undefined" || t === "n/a") return null;
+  }
+  return v;
+}
+
+function extractEmailAddress(sender: string | null) {
+  if (!sender) return null;
+
+  const m = sender.match(/<([^>]+)>/);
+  if (m?.[1]) return m[1].trim();
+
+  // fallback si c'est déjà une adresse
+  if (sender.includes("@") && !sender.includes(" ")) return sender.trim();
+
+  return null;
+}
+function formatSlotFR(iso: string) {
+  const d = new Date(iso);
+  return d.toLocaleString("fr-FR", {
+    weekday: "long",
+    day: "2-digit",
+    month: "long",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function buildSlotsEmailReply(slots: string[]) {
+  const s1 = slots[0] ? formatSlotFR(slots[0]) : "—";
+  const s2 = slots[1] ? formatSlotFR(slots[1]) : "—";
+  const s3 = slots[2] ? formatSlotFR(slots[2]) : "—";
+
+  return `Bonjour,
+
+Merci pour votre message. Pour organiser la visite, voici 3 créneaux disponibles :
+
+1) ${s1}
+2) ${s2}
+3) ${s3}
+
+Répondez simplement par 1, 2 ou 3 pour confirmer le créneau qui vous convient.
+
+Cordialement,
+L'équipe`;
+}
+
+
+/* ===================== TYPES ===================== */
+
+type DbEmail = {
+  id: string;
+  provider?: string | null;
+  provider_message_id?: string | null;
+  gmail_message_id?: string | null;
+
+  sender: string | null;
+  subject: string | null;
+  body: string | null;
+  received_at: string;
+
+  lead_status?: string | null;
+  lead_json?: any | null;
+};
+
+async function fetchGmailBody(
+  userId: string,
+  gmailMessageId: string
+): Promise<string | null> {
+  try {
+    const accessToken = await getValidGoogleAccessToken(userId);
+
+    const res = await fetchWithTimeout(
+      `https://gmail.googleapis.com/gmail/v1/users/me/messages/${gmailMessageId}?format=full`,
+      {
+        headers: {
+          Authorization: `Bearer ${accessToken}`,
+        },
+        timeoutMs: 6000,
+      }
+    );
+
+    if (!res.ok) return null;
+
+    const data = await res.json();
+
+    // Gmail body parsing (text/plain prioritaire)
+    const parts = data.payload?.parts ?? [];
+    for (const part of parts) {
+      if (part.mimeType === "text/plain" && part.body?.data) {
+        return Buffer.from(part.body.data, "base64").toString("utf-8");
+      }
+    }
+
+    // fallback body direct
+    if (data.payload?.body?.data) {
+      return Buffer.from(data.payload.body.data, "base64").toString("utf-8");
+    }
+
+    return null;
+  } catch (e: any) {
+    const errorMsg = e?.message ?? String(e);
+    if (errorMsg.includes("TIMEOUT")) {
+      console.error(`[ANALYZE] Gmail body fetch timeout: ${gmailMessageId}`);
+    } else {
+      console.error("[ANALYZE] Gmail body fetch failed", e);
+    }
+    return null;
+  }
+}
+import { getValidMicrosoftAccessToken } from "@/lib/microsoft/getValidAccessToken";
+
+async function fetchOutlookBody(userId: string, providerMessageId: string): Promise<string | null> {
+  try {
+    const accessToken = await getValidMicrosoftAccessToken(userId);
+
+    const res = await fetchWithTimeout(
+      `https://graph.microsoft.com/v1.0/me/messages/${providerMessageId}?$select=body`,
+      {
+        headers: { Authorization: `Bearer ${accessToken}` },
+        cache: "no-store",
+        timeoutMs: 6000,
+      }
+    );
+
+    if (!res.ok) return null;
+
+    const data = await res.json();
+    const content = data?.body?.content ?? null;
+    return typeof content === "string" ? content : null;
+  } catch (e: any) {
+    const errorMsg = e?.message ?? String(e);
+    if (errorMsg.includes("TIMEOUT")) {
+      console.error(`[ANALYZE] Outlook body fetch timeout: ${providerMessageId}`);
+    } else {
+      console.error("[ANALYZE] Outlook body fetch failed", e);
+    }
+    return null;
+  }
+}
+async function getRealVisitSlots(userId: string, durationMin: number) {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+  };
+  const cronKey = process.env.FIXETIME_INTERNAL_CRON_KEY;
+  if (cronKey) headers["x-fixetime-cron-key"] = cronKey;
+
+  const res = await fetchWithTimeout(`${process.env.NEXT_PUBLIC_SITE_URL}/api/availability/slots`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ duration_min: durationMin, user_id: userId }),
+    cache: "no-store",
+    timeoutMs: 6000,
+  });
+
+  if (!res.ok) {
+    const txt = await res.text().catch(() => "");
+    throw new Error(`SLOTS_FETCH_FAILED:${txt}`);
+  }
+
+  const j = await res.json();
+  const slots = Array.isArray(j?.slots) ? j.slots : [];
+  return slots as { start: string; end: string }[];
+}
+
+/* ===================== HANDLER ===================== */
 
 /**
  * Fusion cumulative de deux objets prospect_data.
@@ -290,6 +604,8 @@ function detectEtapeProcess(params: {
 export async function POST(req: Request) {
   const isCron = isInternalCron(req);
   const isManual = isManualRequest(req);
+  const isAnalyzeNow = req.headers.get("x-fixetime-analyze-now") === "true";
+
   let body: any = null;
   try { body = await req.json(); } catch {}
 
@@ -418,7 +734,14 @@ export async function POST(req: Request) {
         .eq("user_id", email.user_id)
         .maybeSingle();
 
-      const rules: any = settings?.email_rules ?? {};
+      const rules = (settings?.email_rules as any) ?? {};
+
+  /* ===================== ASSISTANT CHECK ===================== */
+  const { data: assistantSettings } = await supabaseAdmin
+    .from("settings_v1")
+    .select("assistant_enabled")
+    .eq("user_id", targetUserId)
+    .maybeSingle();
 
       // ── Règles utilisateur ────────────────────────────────────────────────
       let forcedDecision: "traiter" | "ignorer" | "planifier" | null = null;
@@ -1210,6 +1533,7 @@ Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}, Contenu: ${
       }
 
       analyzed++;
+      continue; // WARN super important : on ne lance PAS l'analyse IA derriere
     }
 
     console.log(`[ANALYZE-INBOX] Terminé : ${analyzed} emails classifiés`);

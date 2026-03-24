@@ -7,6 +7,11 @@ export async function GET(req: NextRequest) {
     const code = req.nextUrl.searchParams.get("code");
     const userId = req.nextUrl.searchParams.get("state"); // user_id Supabase
 
+    console.log("[GOOGLE_CALLBACK] CALLBACK_START", {
+      hasCode: !!code,
+      hasUserId: !!userId,
+    });
+
     if (!code || !userId) {
       return NextResponse.json(
         { error: "NO_CODE_OR_USER_ID" },
@@ -32,6 +37,10 @@ export async function GET(req: NextRequest) {
     const tokenData = await tokenRes.json();
 
     if (!tokenRes.ok) {
+      console.error("[GOOGLE_CALLBACK] TOKEN_EXCHANGE_ERROR", {
+        status: tokenRes.status,
+        body: tokenData,
+      });
       return NextResponse.json(
         { error: "GOOGLE_TOKEN_ERROR", details: tokenData },
         { status: 400 }
@@ -51,6 +60,9 @@ export async function GET(req: NextRequest) {
     const userInfo = await userInfoRes.json();
 
     if (!userInfo?.email) {
+      console.error("[GOOGLE_CALLBACK] NO_GOOGLE_EMAIL", {
+        userInfo,
+      });
       return NextResponse.json(
         { error: "NO_GOOGLE_EMAIL" },
         { status: 400 }

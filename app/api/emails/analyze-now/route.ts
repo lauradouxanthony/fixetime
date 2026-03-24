@@ -1,5 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
+import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { logActivity } from "@/lib/activity/logActivity";
 
 export async function POST(req: Request) {
   const t0 = Date.now();
@@ -82,3 +84,4 @@ export async function POST(req: Request) {
     return NextResponse.json({ error: "ANALYZE_NOW_FAILED" }, { status: 500 });
   }
 }
+
