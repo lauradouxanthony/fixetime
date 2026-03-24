@@ -17,6 +17,12 @@ function normalize(row: Record<string, unknown>) {
     available: row.available !== undefined ? Boolean(row.available) : true,
     required_docs: (row.required_docs ?? []) as unknown[],
     created_at: row.created_at as string,
+    animaux_acceptes: row.animaux_acceptes != null ? Boolean(row.animaux_acceptes) : false,
+    parking_inclus: row.parking_inclus != null ? Boolean(row.parking_inclus) : false,
+    charges_mensuelles: (row.charges_mensuelles ?? null) as number | null,
+    meuble: row.meuble != null ? Boolean(row.meuble) : false,
+    disponible_a_partir_de: (row.disponible_a_partir_de ?? null) as string | null,
+    notes_specifiques: (row.notes_specifiques ?? null) as string | null,
   };
 }
 
@@ -81,7 +87,8 @@ export async function POST(req: Request) {
     if (!user) return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
 
     const body = await req.json();
-    const { title, address, type, rent, description, available } = body;
+    const { title, address, type, rent, description, available,
+      animaux_acceptes, parking_inclus, charges_mensuelles, meuble, disponible_a_partir_de, notes_specifiques } = body;
 
     if (!title || !rent) {
       return NextResponse.json({ error: "TITLE_AND_RENT_REQUIRED" }, { status: 400 });
@@ -104,6 +111,12 @@ export async function POST(req: Request) {
     if (type !== undefined) insertData.type = type ?? null;
     if (description !== undefined) insertData.description = description?.trim() ?? null;
     if (available !== undefined) insertData.available = available !== false;
+    if (animaux_acceptes !== undefined) insertData.animaux_acceptes = Boolean(animaux_acceptes);
+    if (parking_inclus !== undefined) insertData.parking_inclus = Boolean(parking_inclus);
+    if (charges_mensuelles !== undefined) insertData.charges_mensuelles = charges_mensuelles ? parseInt(String(charges_mensuelles), 10) : null;
+    if (meuble !== undefined) insertData.meuble = Boolean(meuble);
+    if (disponible_a_partir_de !== undefined) insertData.disponible_a_partir_de = disponible_a_partir_de ?? null;
+    if (notes_specifiques !== undefined) insertData.notes_specifiques = notes_specifiques?.trim() ?? null;
 
     const { data, error } = await supabaseAdmin
       .from("properties")

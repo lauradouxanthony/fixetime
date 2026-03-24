@@ -217,15 +217,17 @@ ${multiPropWarning}WORKFLOW ÉTAPE ACTUELLE (${etapeProcess}) :
 ${etapeWorkflow}
 
 CONTEXTE AGENCE :
-- Critère de solvabilité : revenus ≥ ${multiplicateur}x le loyer
-- Seuil autopilote : revenus ≥ ${seuilAutopilote}x le loyer${bien ? `
+- Critère de solvabilité : revenus ≥ ${multiplicateur}x le loyer BRUT (hors charges)
+- Seuil autopilote : revenus ≥ ${seuilAutopilote}x le loyer BRUT
+- RÈGLE CHARGES : utiliser UNIQUEMENT le loyer brut pour le calcul. Ne JAMAIS inventer de charges (ex: 150€ imaginaire). Si charges inconnues → écrire "charges à confirmer" dans la réponse.${bien ? `
 
 BIEN CONCERNÉ :
 - Titre : ${(bien.title as string) ?? "?"}
 - Adresse : ${(bien.address as string) ?? "Non précisée"}
-- Loyer : ${(bien.loyer as number) ?? "?"}€ + charges ${(bien.charges as number) ?? "?"}€
-- Type : ${(bien.type as string) ?? "?"}
-- Animaux : ${bien.animaux_acceptes ? "Acceptés" : "Non acceptés"}` : ""}
+- Loyer : ${(bien.loyer as number) ?? "?"}€ + charges : ${bien.charges != null ? `${bien.charges}€/mois` : "inconnues (à confirmer — ne pas inventer de montant)"}
+- Type : ${(bien.type as string) ?? "?"}${bien.meuble ? " — Meublé" : " — Non meublé"}
+- Animaux : ${bien.animaux_acceptes ? "Acceptés" : "Non acceptés"}
+- Parking : ${bien.parking_inclus ? "Inclus" : "Non inclus"}${bien.disponible_a_partir_de ? `\n- Disponible à partir du : ${bien.disponible_a_partir_de}` : ""}${bien.notes_specifiques ? `\n- Notes : ${bien.notes_specifiques}` : ""}` : ""}
 ${faqContext ? `\nFAQ AGENCE :\n${faqContext}` : ""}
 
 FICHE PROSPECT (données déjà collectées — ne pas redemander ce qui est déjà renseigné) :
@@ -352,10 +354,14 @@ export async function POST(req: Request) {
     if (propertyId) {
       const { data: prop } = await supabaseAdmin
         .from("properties")
-        .select("id, title, address, loyer, charges, type, animaux_acceptes")
+        .select("id, title, address, rent, charges_mensuelles, type, animaux_acceptes, parking_inclus, meuble, disponible_a_partir_de, notes_specifiques")
         .eq("id", propertyId)
         .maybeSingle();
-      bien = prop as Record<string, unknown> | null;
+      // Normaliser rent → loyer pour compatibilité avec le prompt
+      if (prop) {
+        const p = prop as Record<string, unknown>;
+        bien = { ...p, loyer: p.rent, charges: p.charges_mensuelles };
+      }
     }
 
     // 8. Détection multi-bien si property_id null
@@ -420,7 +426,7 @@ Message : ${bodyText.substring(0, 2000)}`;
 
     // 12. Merge prospect_data (ne pas écraser les données existantes)
     const updatedPd: Record<string, unknown> = { ...pd };
-    const ext = parsed.extracted_data ?? {};
+    const ext = (parsed.extracted_data ?? {}) as Record<string, unknown>;
 
     if (ext.nom            && !pd.nom)             updatedPd.nom = ext.nom;
     if (ext.telephone      && !pd.telephone)        updatedPd.telephone = ext.telephone;

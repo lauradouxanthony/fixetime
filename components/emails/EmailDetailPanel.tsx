@@ -16,6 +16,24 @@ type PipelineMode = "DRAFT" | "AUTOPILOTE";
 
 /* ===================== HELPERS ===================== */
 
+type TrafficLight = "AUTOPILOTE" | "DRAFT" | "ALERTE";
+
+const TL_CFG: Record<TrafficLight, { color: string; bg: string; label: string; dot: string }> = {
+  AUTOPILOTE: { color: "rgb(22 163 74)",  bg: "rgba(22,163,74,0.1)",  label: "Autopilote", dot: "#16a34a" },
+  DRAFT:      { color: "rgb(234 88 12)",  bg: "rgba(234,88,12,0.1)",  label: "À valider",  dot: "#ea580c" },
+  ALERTE:     { color: "rgb(220 38 38)",  bg: "rgba(220,38,38,0.1)",  label: "Alerte",     dot: "#dc2626" },
+};
+
+function computeTrafficLight(email: Email | null): TrafficLight {
+  if (!email) return "DRAFT";
+  const pd = (email as any).prospect_data as Record<string, unknown> | null;
+  if (email.is_urgent) return "ALERTE";
+  if ((email as any).ai_reply) return "AUTOPILOTE";
+  if (pd?.etape_process === "DOSSIER_RECU") return "DRAFT";
+  if (email.category === "LOCATION") return "DRAFT";
+  return "DRAFT";
+}
+
 function getIntention(email: Email | null): "LOCATION" | "INFO" | "HORS_SUJET" | null {
   if (!email) return null;
   const c = (email.category || "").toUpperCase();
@@ -211,6 +229,103 @@ const DOCS = [
   { key: "avis_imposition", label: "Avis d'imposition" },
   { key: "piece_identite", label: "Pièce d'identité" },
 ];
+
+const DOC_TYPE_OPTIONS = [
+  { value: "fiches_paie", label: "Fiches de paie" },
+  { value: "contrat", label: "Contrat de travail" },
+  { value: "avis_imposition", label: "Avis d'imposition" },
+  { value: "piece_identite", label: "Pièce d'identité" },
+  { value: "kbis", label: "Kbis" },
+  { value: "bilan", label: "Bilan comptable" },
+  { value: "releves", label: "Relevés bancaires" },
+  { value: "carte_etudiant", label: "Carte étudiante" },
+  { value: "scolarite", label: "Certificat de scolarité" },
+  { value: "garant_id", label: "Garant : pièce d'identité" },
+  { value: "garant_paie", label: "Garant : fiches de paie" },
+  { value: "garant_impos", label: "Garant : avis d'imposition" },
+  { value: "pension", label: "Relevés de pension" },
+  { value: "autre", label: "Autre document" },
+];
+
+function DocPreviewModal({ att, gmailMessageId, emailId, onClose, onValidate, onReject, validationStatus, validating, docTypeOverrides, onChangeType, attIndex }: {
+  att: AttachmentInfo & Record<string, unknown>;
+  gmailMessageId: string;
+  emailId: string;
+  onClose: () => void;
+  onValidate: (att: AttachmentInfo) => void;
+  onReject: (att: AttachmentInfo) => void;
+  validationStatus: Record<string, DocValidationStatus>;
+  validating: string | null;
+  docTypeOverrides: Record<number, string>;
+  onChangeType: (idx: number, type: string) => void;
+  attIndex: number;
+}) {
+  const linkUrl: string | null = (att as any).gmailLink ?? (att as any).storage_url ?? null;
+  const vStatus = validationStatus[att.attachmentId] ?? "pending";
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4"
+      style={{ background: "rgba(0,0,0,0.5)" }}
+      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}>
+      <div className="bg-white rounded-2xl p-6 w-full max-w-md shadow-2xl space-y-4">
+        <div className="flex items-center justify-between">
+          <h3 className="text-base font-semibold truncate" style={{ color: "rgb(30 41 59)" }}>{att.filename}</h3>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl ml-2">✕</button>
+        </div>
+
+        {/* Sélect type */}
+        <div>
+          <label className="text-xs font-medium block mb-1" style={{ color: "rgb(100 116 139)" }}>Type de document</label>
+          <select
+            value={docTypeOverrides[attIndex] ?? ""}
+            onChange={(e) => onChangeType(attIndex, e.target.value)}
+            className="w-full rounded-lg border px-2 py-1.5 text-xs focus:outline-none"
+            style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+          >
+            <option value="">— Identifier le type —</option>
+            {DOC_TYPE_OPTIONS.map(o => (
+              <option key={o.value} value={o.value}>{o.label}</option>
+            ))}
+          </select>
+        </div>
+
+        {/* Lien aperçu */}
+        {linkUrl && (
+          <a href={linkUrl} target="_blank" rel="noopener noreferrer"
+            className="block text-center text-sm font-medium px-4 py-2 rounded-xl"
+            style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}>
+            Ouvrir le document →
+          </a>
+        )}
+
+        {/* Actions */}
+        {vStatus === "pending" && (
+          <div className="flex gap-2">
+            <button
+              disabled={!!validating}
+              onClick={() => { onValidate(att); onClose(); }}
+              className="flex-1 text-sm font-medium px-4 py-2 rounded-xl disabled:opacity-50"
+              style={{ background: "rgba(22,163,74,0.1)", color: "rgb(22 163 74)" }}>
+              ✅ Valider
+            </button>
+            <button
+              disabled={!!validating}
+              onClick={() => { onReject(att); onClose(); }}
+              className="flex-1 text-sm font-medium px-4 py-2 rounded-xl disabled:opacity-50"
+              style={{ background: "rgba(220,38,38,0.08)", color: "rgb(220 38 38)" }}>
+              ❌ Rejeter
+            </button>
+          </div>
+        )}
+        {vStatus !== "pending" && (
+          <p className="text-center text-sm font-medium" style={{ color: vStatus === "validated" ? "rgb(22 163 74)" : "rgb(220 38 38)" }}>
+            {vStatus === "validated" ? "✅ Validé" : "❌ Rejeté"}
+          </p>
+        )}
+      </div>
+    </div>
+  );
+}
 
 function DossierWidget({ body, attachments, gmailMessageId, emailId, portalHasToken }: {
   body: string | null | undefined;

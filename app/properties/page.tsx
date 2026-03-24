@@ -15,6 +15,12 @@ type Property = {
   available: boolean;
   created_at: string;
   prospect_count?: number;
+  animaux_acceptes: boolean;
+  parking_inclus: boolean;
+  charges_mensuelles: number | null;
+  meuble: boolean;
+  disponible_a_partir_de: string | null;
+  notes_specifiques: string | null;
 };
 
 const TYPE_LABELS: Record<string, string> = {
@@ -36,6 +42,12 @@ function PropertyForm({
   const [rent, setRent] = useState(String(initial?.rent ?? ""));
   const [description, setDescription] = useState(initial?.description ?? "");
   const [available, setAvailable] = useState(initial?.available !== false);
+  const [animauxAcceptes, setAnimauxAcceptes] = useState(initial?.animaux_acceptes ?? false);
+  const [parkingInclus, setParkingInclus] = useState(initial?.parking_inclus ?? false);
+  const [chargesMensuelles, setChargesMensuelles] = useState(String(initial?.charges_mensuelles ?? ""));
+  const [meuble, setMeuble] = useState(initial?.meuble ?? false);
+  const [disponibleAPartirDe, setDisponibleAPartirDe] = useState(initial?.disponible_a_partir_de ?? "");
+  const [notesSpecifiques, setNotesSpecifiques] = useState(initial?.notes_specifiques ?? "");
   const [saving, setSaving] = useState(false);
 
   const handleSubmit = async (e: React.FormEvent) => {
@@ -44,6 +56,12 @@ function PropertyForm({
     await onSave({
       title, address: address || null, type: type || null,
       rent: parseInt(rent, 10), description: description || null, available,
+      animaux_acceptes: animauxAcceptes,
+      parking_inclus: parkingInclus,
+      charges_mensuelles: chargesMensuelles ? parseInt(chargesMensuelles, 10) : null,
+      meuble,
+      disponible_a_partir_de: disponibleAPartirDe || null,
+      notes_specifiques: notesSpecifiques || null,
     });
     setSaving(false);
   };
@@ -88,6 +106,45 @@ function PropertyForm({
           <label htmlFor="available" className="text-sm" style={{ color: "rgb(71 85 105)" }}>
             Disponible à la location
           </label>
+        </div>
+
+        {/* ── FAQ par bien ── */}
+        <div className="col-span-2">
+          <div className="text-xs font-semibold uppercase tracking-wide mb-2 pt-1" style={{ color: "rgb(100 116 139)" }}>
+            FAQ / Infos rapides (injectées dans les réponses IA)
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="animaux" checked={animauxAcceptes}
+                onChange={(e) => setAnimauxAcceptes(e.target.checked)} className="rounded w-4 h-4" />
+              <label htmlFor="animaux" className="text-sm" style={{ color: "rgb(71 85 105)" }}>Animaux acceptés</label>
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="parking" checked={parkingInclus}
+                onChange={(e) => setParkingInclus(e.target.checked)} className="rounded w-4 h-4" />
+              <label htmlFor="parking" className="text-sm" style={{ color: "rgb(71 85 105)" }}>Parking inclus</label>
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="meuble" checked={meuble}
+                onChange={(e) => setMeuble(e.target.checked)} className="rounded w-4 h-4" />
+              <label htmlFor="meuble" className="text-sm" style={{ color: "rgb(71 85 105)" }}>Meublé</label>
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1" style={{ color: "rgb(71 85 105)" }}>Charges (€/mois)</label>
+              <input type="number" value={chargesMensuelles} onChange={(e) => setChargesMensuelles(e.target.value)}
+                placeholder="Ex: 80" className={inputCls} style={inputStyle} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1" style={{ color: "rgb(71 85 105)" }}>Disponible à partir du</label>
+              <input type="date" value={disponibleAPartirDe} onChange={(e) => setDisponibleAPartirDe(e.target.value)}
+                className={inputCls} style={inputStyle} />
+            </div>
+            <div>
+              <label className="block text-xs font-medium mb-1" style={{ color: "rgb(71 85 105)" }}>Notes spécifiques</label>
+              <input value={notesSpecifiques} onChange={(e) => setNotesSpecifiques(e.target.value)}
+                placeholder="Ex: Pas de colocation, 3ème étage…" className={inputCls} style={inputStyle} />
+            </div>
+          </div>
         </div>
       </div>
       <div className="flex gap-3 pt-1">
@@ -169,6 +226,16 @@ function PropertyCard({
         <p className="text-xs line-clamp-2" style={{ color: "rgb(100 116 139)" }}>
           {property.description}
         </p>
+      )}
+
+      {/* FAQ badges */}
+      {(property.animaux_acceptes || property.parking_inclus || property.meuble || property.charges_mensuelles != null) && (
+        <div className="flex flex-wrap gap-1.5">
+          {property.meuble && <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "rgba(79,70,229,0.07)", color: "rgb(79 70 229)" }}>Meublé</span>}
+          {property.animaux_acceptes && <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "rgba(34,197,94,0.1)", color: "rgb(22 163 74)" }}>Animaux ✓</span>}
+          {property.parking_inclus && <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "rgba(59,130,246,0.1)", color: "rgb(37 99 235)" }}>Parking ✓</span>}
+          {property.charges_mensuelles != null && <span className="text-xs px-2 py-0.5 rounded-full" style={{ background: "rgb(241 245 249)", color: "rgb(100 116 139)" }}>+{property.charges_mensuelles}€ ch.</span>}
+        </div>
       )}
 
       {/* Footer : prospects + actions */}

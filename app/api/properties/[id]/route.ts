@@ -28,6 +28,12 @@ export async function PATCH(
     if ("rent" in body) update.rent = parseInt(String(body.rent), 10);
     if ("description" in body) update.description = body.description;
     if ("available" in body) update.available = body.available;
+    if ("animaux_acceptes" in body) update.animaux_acceptes = Boolean(body.animaux_acceptes);
+    if ("parking_inclus" in body) update.parking_inclus = Boolean(body.parking_inclus);
+    if ("charges_mensuelles" in body) update.charges_mensuelles = body.charges_mensuelles ? parseInt(String(body.charges_mensuelles), 10) : null;
+    if ("meuble" in body) update.meuble = Boolean(body.meuble);
+    if ("disponible_a_partir_de" in body) update.disponible_a_partir_de = body.disponible_a_partir_de ?? null;
+    if ("notes_specifiques" in body) update.notes_specifiques = body.notes_specifiques?.trim() ?? null;
 
     if (Object.keys(update).length === 0) {
       return NextResponse.json({ error: "NO_FIELDS_TO_UPDATE" }, { status: 400 });
@@ -120,5 +126,11 @@ function normalizeRow(row: Record<string, unknown>) {
     available: row.available !== undefined ? Boolean(row.available) : true,
     required_docs: (row.required_docs ?? []) as unknown[],
     created_at: row.created_at as string,
+    animaux_acceptes: row.animaux_acceptes != null ? Boolean(row.animaux_acceptes) : false,
+    parking_inclus: row.parking_inclus != null ? Boolean(row.parking_inclus) : false,
+    charges_mensuelles: (row.charges_mensuelles ?? null) as number | null,
+    meuble: row.meuble != null ? Boolean(row.meuble) : false,
+    disponible_a_partir_de: (row.disponible_a_partir_de ?? null) as string | null,
+    notes_specifiques: (row.notes_specifiques ?? null) as string | null,
   };
 }

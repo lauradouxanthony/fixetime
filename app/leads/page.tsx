@@ -421,17 +421,10 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
   const [summaryNote, setSummaryNote] = useState<string | null>(null);
   const [generatingSummary, setGeneratingSummary] = useState(false);
   const [exportingZip, setExportingZip] = useState(false);
-  const [portalStatus, setPortalStatus] = useState<{
-    hasToken: boolean;
-    lastSentAt: string | null;
-    portalUrl: string | null;
-  } | null>(null);
+  const [portalStatus, setPortalStatus] = useState<PortalStatus | null>(null);
   const [sendingPortal, setSendingPortal] = useState(false);
   const { toast } = useToast();
 
-  // Portal state
-  const [portalStatus, setPortalStatus] = useState<PortalStatus | null>(null);
-  const [sendingPortal, setSendingPortal] = useState(false);
   const [localAttachments, setLocalAttachments] = useState<AttachmentItem[]>(
     () => ((lead as unknown as { attachments?: AttachmentItem[] }).attachments ?? [])
   );
@@ -752,7 +745,7 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
               ? { bg: "rgba(234,88,12,0.1)", color: "rgb(234 88 12)", label: `📋 Partiel (${receivedCount}/${total})` }
               : { bg: "rgba(220,38,38,0.08)", color: "rgb(220 38 38)", label: `⚠️ Incomplet (${receivedCount}/${total})` };
 
-            return (
+            return (<>
               <div className="space-y-2">
                 <div className="flex items-center justify-between">
                   <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>
@@ -818,8 +811,8 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
               ) : (
                 <div className="text-xs py-2" style={{ color: "rgb(148 163 184)" }}>Revenus ou loyer non renseigné</div>
               )}
-            </div>
-          </div>
+            </>);
+          })()}
 
           {/* BLOC DOSSIER LOCATAIRE */}
           {pd?.situation_pro && (

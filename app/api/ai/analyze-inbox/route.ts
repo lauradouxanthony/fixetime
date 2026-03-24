@@ -146,23 +146,30 @@ function guessCategory(email: { subject?: string | null; sender?: string | null 
     sender.includes("promo") || sender.includes("info@") && s.includes("offre")
   ) return "HORS_SUJET";
 
-  // HORS_SUJET — mots-clés sujet commerciaux
+  // HORS_SUJET — mots-clés sujet commerciaux (élargis)
   const horsSujetSubjectKw = [
-    "offre exclusive", "promotion", "découvrez", "gagnez", "gratuit",
+    "offre exclusive", "offre spéciale", "promotion", "découvrez", "gagnez", "gratuit",
     "abonnement", "commande", "facture", "reçu de paiement",
     "security alert", "alerte sécurité", "compte facebook", "compte google",
     "crypto", "bitcoin", "investissement", "trading",
+    "désabonner", "unsubscribe", "newsletter", "événement", "vous avez été invité",
+    "se désinscrire", "mise à jour de votre compte", "confirmez votre",
   ];
   if (horsSujetSubjectKw.some((k) => s.includes(k))) return "HORS_SUJET";
 
   // LOCATION — mots-clés immobiliers explicites UNIQUEMENT
+  // RÈGLE : "bail" seul ne suffit pas — nécessite un autre mot immobilier
   const locationKw = [
     "louer", "location", "appartement", "logement", "visite", "loyer",
-    "locataire", "bail", "t1", "t2", "t3", "chambre", "studio",
-    "surface", "m²", "charges", "caution", "agence", "propriétaire",
+    "locataire", "t1", "t2", "t3", "chambre", "studio",
+    "surface", "m²", "caution", "propriétaire",
     "candidature location", "dépôt de garantie", "quittance",
   ];
   if (locationKw.some((k) => s.includes(k))) return "LOCATION";
+  // "bail" uniquement si accompagné d'un autre mot immobilier
+  if (s.includes("bail") && ["louer", "location", "loyer", "appartement", "logement", "locataire"].some((k) => s.includes(k))) {
+    return "LOCATION";
+  }
 
   // INFO — questions générales
   if (
@@ -845,8 +852,10 @@ RÈGLES STRICTES pour "intention" — LIRE ATTENTIVEMENT :
 "HORS_SUJET" si UNE de ces conditions est vraie :
 - L'expéditeur contient : newsletter, no-reply, noreply, donotreply, marketing, promo, notification
 - L'expéditeur vient de : HelloFresh, Netflix, Revolut, Meta, Facebook, Google, LinkedIn, Twitter, Amazon, PayPal, Stripe, crypto, fintech, banque en ligne
-- Le sujet contient : offre, promotion, découvrez, gagnez, gratuit, abonnement, commande, facture, reçu, sécurité de votre compte, alerte, bitcoin, crypto, investissement, trading
+- Le sujet ou corps contient : offre, promotion, offre spéciale, découvrez, gagnez, gratuit, abonnement, commande, facture, reçu, sécurité de votre compte, alerte, bitcoin, crypto, investissement, trading
+- Le corps ou sujet contient : désabonner, unsubscribe, se désinscrire, newsletter, événement, vous avez été invité, mise à jour de votre compte, confirmez votre email
 - C'est un email transactionnel automatique (confirmation de commande, récapitulatif, etc.)
+- Le mot "bail" apparaît SEUL sans aucun autre mot immobilier (louer, location, loyer, appartement, logement, locataire) → HORS_SUJET
 
 "INFO" : question générale sur l'agence, les conditions, les prix — d'un particulier identifiable.
 
@@ -1069,16 +1078,18 @@ Réponds UNIQUEMENT en JSON valide. Si absent → null. Jamais d'explication.`,
                 content: `Email:
 "${content.slice(0, 3000)}"
 
-RÈGLES :
-- nom_prenom : nom complet du candidat dans le corps (signature, "je m'appelle", "je suis"). PAS l'email.
-- situation_pro : "CDI"|"CDD"|"AUTO_ENTREPRENEUR"|"ETUDIANT"|"RETRAITE"|null
-- revenus_mensuels : salaire NET mensuel en € que GAGNE le candidat. Ex: "3000€/mois" → 3000
-- loyer_max : loyer du BIEN à louer en €. Ex: "loyer de 850€" → 850
-- ATTENTION : revenus_mensuels >> loyer_max dans un dossier solvable
+RÈGLES STRICTES :
+- nom_prenom : prénom + nom complet du candidat (signature, "je m'appelle X", "je suis X", "Cordialement, X", "Bien à vous, X"). JAMAIS une adresse email.
+- telephone : numéro FR format 06, 07, +336, +337, 0033 — extraire tel quel sans transformation. null si absent.
+- situation_pro : "CDI"|"CDD"|"AUTO_ENTREPRENEUR"|"ETUDIANT"|"RETRAITE"|null — chercher : "en CDI", "contrat CDI", "salarié", "auto-entrepreneur", "freelance", "étudiant", "université", "retraité".
+- revenus_mensuels : salaire NET mensuel en € que GAGNE le candidat. Chercher : "je gagne X€", "salaire de X€", "revenus de X€", "X€ net/mois", "X€/mois", "X€ par mois", "X net mensuel". JAMAIS confondre avec le loyer demandé. null si absent.
+- loyer_max : loyer du BIEN à louer mentionné dans l'email. Ex: "loyer de 850€" → 850. DIFFÉRENT des revenus. null si absent.
 - animaux : true si oui, false si non, null si non mentionné
-- garant : "OUI"|"NON"|"A_CONFIRMER"|null
+- nb_personnes : nombre total de personnes dans le foyer (incluant le candidat), number|null
+- garant : "OUI"|"NON"|"A_CONFIRMER"|null — chercher : "garant", "caution solidaire", "se porter garant"
+- date_entree_souhaitee : date d'entrée souhaitée. Format ISO YYYY-MM-DD si date précise, sinon texte brut ("début juin", "au plus tôt", etc.), null si non mentionné
 
-JSON attendu:
+JSON attendu (TOUS les champs, null si absent) :
 {
   "nom_prenom": string|null,
   "telephone": string|null,
@@ -1087,7 +1098,8 @@ JSON attendu:
   "loyer_max": number|null,
   "animaux": boolean|null,
   "nb_personnes": number|null,
-  "garant": "OUI"|"NON"|"A_CONFIRMER"|null
+  "garant": "OUI"|"NON"|"A_CONFIRMER"|null,
+  "date_entree_souhaitee": string|null
 }`,
               },
             ],
@@ -1108,7 +1120,7 @@ JSON attendu:
             }
             delete parsed.date_emmenagement;
             prospectData = parsed;
-            console.log(`[BLOC1 EXTRACTION] Résultat OK: nom=${parsed.nom} situation=${parsed.situation_pro} revenus=${parsed.revenus_mensuels} loyer=${parsed.loyer_max}`);
+            console.log(`[BLOC1 EXTRACTION] Résultat OK: nom=${parsed.nom} tel=${parsed.telephone} situation=${parsed.situation_pro} revenus=${parsed.revenus_mensuels} loyer=${parsed.loyer_max} date_entree=${parsed.date_entree_souhaitee}`);
           }
         } catch (e) {
           console.warn("[ANALYZE-INBOX] Extraction prospect échouée:", e);
@@ -1118,6 +1130,37 @@ JSON attendu:
         if (isFollowUp && threadProspectData) {
           prospectData = mergeProspect(threadProspectData, prospectData);
           console.log(`[ANALYZE-INBOX] ↩️ Merge thread OK: ${JSON.stringify(prospectData)}`);
+        }
+
+        // Consolidation même expéditeur (cross-thread) : récupérer prospect_data d'emails précédents du même sender
+        {
+          const senderEmail = extractEmailAddress(email.sender);
+          if (senderEmail) {
+            try {
+              const { data: senderEmails } = await supabaseAdmin
+                .from("emails")
+                .select("prospect_data, received_at")
+                .eq("user_id", email.user_id)
+                .ilike("sender", `%${senderEmail}%`)
+                .eq("category", "LOCATION")
+                .neq("id", email.id)
+                .not("prospect_data", "is", null)
+                .order("received_at", { ascending: true })
+                .limit(10);
+
+              if (senderEmails && senderEmails.length > 0) {
+                let senderAccumulated: Record<string, unknown> = {};
+                for (const se of senderEmails) {
+                  senderAccumulated = mergeProspect(senderAccumulated, se.prospect_data as Record<string, unknown>);
+                }
+                // Merge : données expéditeur en base = base, extraction actuelle = incoming
+                prospectData = mergeProspect(senderAccumulated, prospectData);
+                console.log(`[ANALYZE-INBOX] ↩️ Merge same-sender (${senderEmail}): ${senderEmails.length} email(s) précédent(s) consolidés`);
+              }
+            } catch (e) {
+              console.warn("[ANALYZE-INBOX] Same-sender merge échoué:", e);
+            }
+          }
         }
 
         // ── DÉTECTION ÉTAPE PROCESS ────────────────────────────────────────
