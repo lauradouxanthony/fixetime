@@ -123,16 +123,34 @@ export async function POST(
 
     const { data: tokenRow } = await supabaseAdmin
       .from("document_portal_tokens")
-      .select("id, email_id, expires_at")
+      .select("id, email_id, expires_at, revoked")
       .eq("token", token)
       .maybeSingle();
 
     if (!tokenRow) {
       return NextResponse.json({ error: "TOKEN_NOT_FOUND" }, { status: 404 });
     }
+    if ((tokenRow as Record<string, unknown>).revoked === true) {
+      return NextResponse.json({ error: "TOKEN_REVOKED" }, { status: 410 });
+    }
     if (new Date(tokenRow.expires_at) < new Date()) {
       return NextResponse.json({ error: "TOKEN_EXPIRED" }, { status: 410 });
     }
+
+    // Log de l'upload portail (IP + User-Agent) dans prospect_timeline (fire-and-forget)
+    const ip =
+      req.headers.get("x-forwarded-for")?.split(",")[0]?.trim() ??
+      req.headers.get("x-real-ip") ??
+      "unknown";
+    const ua = req.headers.get("user-agent") ?? "unknown";
+    void supabaseAdmin
+      .from("prospect_timeline")
+      .insert({
+        email_id: tokenRow.email_id,
+        action_type: "PORTAL_UPLOAD_TENTE",
+        description: `Upload initié — IP: ${ip}`,
+        metadata: { ip, user_agent: ua, token_id: tokenRow.id },
+      });
 
     const formData = await req.formData();
     const file = formData.get("file") as File | null;

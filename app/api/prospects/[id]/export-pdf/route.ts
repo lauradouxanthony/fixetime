@@ -205,7 +205,69 @@ export async function GET(
       senderEmail ??
       "Candidat";
 
-    // ── 6. Génération PDF ─────────────────────────────────────────────────────
+    // ── 6. Note de synthèse IA (best-effort) ─────────────────────────────────
+    let syntheseIA: string | null = null;
+    try {
+      const apiKey = process.env.ANTHROPIC_API_KEY;
+      if (apiKey) {
+        const attachments = (emailRow as Record<string, unknown>).attachments as Array<Record<string, unknown>> ?? [];
+        const validatedAtts = attachments.filter((a) => a.validated_by_human === true);
+        const nom = (pd.nom as string | null) ?? candidatName;
+        const situationPro = (pd.situation_pro as string | null) ?? "non renseignée";
+        const revenusPd = typeof pd.revenus_mensuels === "number" ? pd.revenus_mensuels : typeof pd.revenus_mensuels === "string" ? parseFloat(pd.revenus_mensuels) : null;
+        const loyerPd = typeof pd.loyer_max === "number" ? pd.loyer_max : typeof pd.loyer_max === "string" ? parseFloat(pd.loyer_max) : null;
+        const ratioPd = revenusPd && loyerPd ? (revenusPd / loyerPd).toFixed(1) : "inconnu";
+        const garantPd = (pd.garant as string | null) ?? "non renseigné";
+        const etape = (pd.etape_process as string | null) ?? "NEW";
+        const docLines = validatedAtts.length > 0
+          ? validatedAtts.map((a) => `- ${(a.docType as string) ?? (a.filename as string) ?? "Document"} (validé ✓)`).join("\n")
+          : "Aucun document validé";
+
+        const summaryPrompt = `Tu es un assistant immobilier expert. Génère une note de synthèse concise pour un dossier de candidature locataire.
+
+CANDIDAT : ${nom}
+SITUATION PRO : ${situationPro}
+REVENUS NETS/MOIS : ${revenusPd ? `${revenusPd.toLocaleString("fr-FR")} €` : "non renseignés"}
+LOYER VISÉ : ${loyerPd ? `${loyerPd.toLocaleString("fr-FR")} €` : "non renseigné"}
+RATIO REVENUS/LOYER : ${ratioPd}x
+GARANT : ${garantPd}
+ÉTAPE ACTUELLE : ${etape}
+
+DOCUMENTS VALIDÉS :
+${docLines}
+
+Rédige la note de synthèse en français, structurée en 5 parties :
+1. Présentation du candidat (2-3 phrases)
+2. Analyse financière (solvabilité, ratio, commentaire)
+3. État du dossier (documents reçus et validés)
+4. Points d'attention ou risques
+5. Recommandation (valider / mettre en attente / refuser + justification brève)
+
+Sois factuel, précis et professionnel. Maximum 300 mots.`;
+
+        const aiRes = await fetch("https://api.anthropic.com/v1/messages", {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-api-key": apiKey,
+            "anthropic-version": "2023-06-01",
+          },
+          body: JSON.stringify({
+            model: "claude-haiku-4-5-20251001",
+            max_tokens: 1024,
+            messages: [{ role: "user", content: summaryPrompt }],
+          }),
+        });
+        if (aiRes.ok) {
+          const aiData = await aiRes.json();
+          syntheseIA = (aiData.content?.[0]?.text as string | null) ?? null;
+        }
+      }
+    } catch (synthErr) {
+      console.warn("[EXPORT_PDF] Synthèse IA échouée (non bloquant):", synthErr);
+    }
+
+    // ── 7. Génération PDF ─────────────────────────────────────────────────────
     const element = createElement(DossierPDF, {
       candidatName,
       email: senderEmail,
@@ -221,12 +283,13 @@ export async function GET(
       docs,
       timeline,
       generatedAt: new Date().toISOString(),
+      syntheseIA,
     });
 
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const pdfBuffer = await renderToBuffer(element as any);
 
-    // ── 7. Nom du fichier ─────────────────────────────────────────────────────
+    // ── 8. Nom du fichier ─────────────────────────────────────────────────────
     const safeName = candidatName
       .normalize("NFD")
       .replace(/[\u0300-\u036f]/g, "")

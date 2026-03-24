@@ -76,6 +76,13 @@ export async function POST(req: Request) {
             dateTime: end,
             timeZone: "Europe/Paris",
           },
+          reminders: {
+            useDefault: false,
+            overrides: [
+              { method: "email", minutes: 1440 }, // 24h avant
+              { method: "popup", minutes: 60 },   // 1h avant
+            ],
+          },
         }),
       },
       CREATE_EVENT_FETCH_TIMEOUT_MS

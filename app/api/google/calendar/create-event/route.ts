@@ -46,6 +46,13 @@ export async function POST(req: Request) {
     if (Array.isArray(attendees) && attendees.length > 0) {
       eventPayload.attendees = attendees.map((email: string) => ({ email }));
     }
+    eventPayload.reminders = {
+      useDefault: false,
+      overrides: [
+        { method: "email", minutes: 1440 }, // 24h avant
+        { method: "popup", minutes: 60 },   // 1h avant
+      ],
+    };
 
     const res = await fetch(
       "https://www.googleapis.com/calendar/v3/calendars/primary/events",

@@ -44,6 +44,8 @@ export interface DossierPDFProps {
   timeline: DossierTimelineEntry[];
   /** Date de génération ISO */
   generatedAt: string;
+  /** Note de synthèse IA (optionnelle) */
+  syntheseIA?: string | null;
 }
 
 // ── Couleurs ──────────────────────────────────────────────────────────────────
@@ -310,7 +312,9 @@ export function DossierPDF({
   docs,
   timeline,
   generatedAt,
+  syntheseIA,
 }: DossierPDFProps) {
+  const totalPages = syntheseIA ? 4 : 3;
   const dateStr = new Date(generatedAt).toLocaleDateString("fr-FR", {
     day: "numeric",
     month: "long",
@@ -412,7 +416,7 @@ export function DossierPDF({
           </View>
         )}
 
-        <Footer pageLabel="Page 1 / 3" />
+        <Footer pageLabel={`Page 1 / ${totalPages}`} />
       </Page>
 
       {/* ══════════════════════════════════════════════════════════════ */}
@@ -457,7 +461,7 @@ export function DossierPDF({
           </Text>
         </View>
 
-        <Footer pageLabel="Page 2 / 3" />
+        <Footer pageLabel={`Page 2 / ${totalPages}`} />
       </Page>
 
       {/* ══════════════════════════════════════════════════════════════ */}
@@ -493,8 +497,51 @@ export function DossierPDF({
           ))
         )}
 
-        <Footer pageLabel="Page 3 / 3" />
+        <Footer pageLabel={`Page 3 / ${totalPages}`} />
       </Page>
+
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {/* PAGE 4 — Note de synthèse IA (conditionnelle)                 */}
+      {/* ══════════════════════════════════════════════════════════════ */}
+      {syntheseIA ? (
+        <Page size="A4" style={styles.page}>
+          <View style={styles.header}>
+            <View>
+              <Text style={styles.headerTitle}>Note de synthèse IA</Text>
+              <Text style={styles.headerSub}>{candidatName}</Text>
+            </View>
+            <Text style={styles.headerDate}>FixTime</Text>
+          </View>
+
+          <Text style={styles.sectionTitle}>Analyse IA du dossier</Text>
+
+          <View style={{
+            backgroundColor: "#eff6ff",
+            borderRadius: 6,
+            padding: 14,
+            marginTop: 4,
+            borderLeftWidth: 3,
+            borderLeftColor: C.blue,
+          }}>
+            <Text style={{ fontSize: 9, color: C.slate, lineHeight: 1.6 }}>
+              {syntheseIA}
+            </Text>
+          </View>
+
+          <View style={{
+            marginTop: 16,
+            padding: 8,
+            backgroundColor: C.grayLight,
+            borderRadius: 4,
+          }}>
+            <Text style={{ fontSize: 7, color: C.gray }}>
+              Note générée automatiquement par FixTime IA le {dateStr}. Cette analyse est fournie à titre indicatif et ne remplace pas le jugement de l&apos;agent immobilier.
+            </Text>
+          </View>
+
+          <Footer pageLabel={`Page 4 / ${totalPages}`} />
+        </Page>
+      ) : null}
 
     </Document>
   );
