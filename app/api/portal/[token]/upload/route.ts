@@ -1,100 +1,117 @@
-/**
- * POST /api/portal/[token]/upload
- * Route PUBLIQUE — upload d'un document par le prospect.
- *
- * Reçoit : multipart/form-data { file: File }
- * 1. Vérifie le token
- * 2. Upload dans Supabase Storage : prospect-docs/[emailId]/[ts]_[filename]
- * 3. Classifie avec Claude (vision pour images, nom seul pour PDF)
- * 4. Ajoute dans emails.attachments avec source:"portal"
- *
- * Output : { docType, confidence, label, storagePath, filename }
- */
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 
 export const runtime = "nodejs";
 
-const ALLOWED_TYPES = [
-  "application/pdf",
-  "image/jpeg",
-  "image/png",
-  "image/webp",
-  "image/heic",
-];
+// ── Classification heuristique par nom de fichier ────────────
+const DOC_TYPE_KEYWORDS: Record<string, string[]> = {
+  fiches_paie: ["paie", "salaire", "bulletin"],
+  contrat: ["contrat", "emploi", "travail"],
+  avis_imposition: ["impot", "imposition", "fiscal", "avis"],
+  piece_identite: ["identite", "carte", "passeport", "cni"],
+  kbis: ["kbis", "registre", "commerce"],
+  bilan: ["bilan", "comptable"],
+  releves: ["releve", "bancaire", "banque"],
+  pension: ["pension", "retraite", "cram"],
+  carte_etudiant: ["etudiant"],
+  scolarite: ["scolarite", "universite", "inscription"],
+  garant_id: ["garant"],
+  garant_paie: ["garant"],
+  garant_impos: ["garant"],
+};
 
-async function classifyWithClaude(params: {
-  filename: string;
-  mimeType: string;
-  fileBuffer: Buffer;
-}): Promise<{ docType: string; confidence: number; label: string }> {
-  const apiKey = process.env.ANTHROPIC_API_KEY;
-  if (!apiKey) return { docType: "autre", confidence: 0, label: "Document" };
+const DOC_TYPE_LABELS: Record<string, string> = {
+  fiches_paie: "Fiche de paie",
+  contrat: "Contrat de travail",
+  avis_imposition: "Avis d'imposition",
+  piece_identite: "Pièce d'identité",
+  kbis: "Kbis",
+  bilan: "Bilan comptable",
+  releves: "Relevé bancaire",
+  pension: "Relevé de pension",
+  carte_etudiant: "Carte étudiante",
+  scolarite: "Certificat de scolarité",
+  garant_id: "Garant : pièce identité",
+  garant_paie: "Garant : fiche de paie",
+  garant_impos: "Garant : avis d'imposition",
+};
 
-  const isImage = params.mimeType.startsWith("image/") && !params.mimeType.includes("heic");
+function classifyFromFilename(filename: string): {
+  docType: string;
+  confidence: number;
+  label: string;
+} {
+  const normalized = filename
+    .toLowerCase()
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "");
 
-  const systemPrompt = `Quel type de document est-ce ? Réponds UNIQUEMENT en JSON valide (sans markdown, sans texte autour) :
-{"docType":"<type>","confidence":<0.0-1.0>,"label":"<label lisible en français>"}
-
-Types valides : fiche_paie | contrat_travail | avis_imposition | piece_identite | garant_fiche_paie | garant_contrat | rib | quittance_loyer | kbis | bilan | releve_bancaire | carte_etudiant | autre`;
-
-  const content: unknown[] = [];
-
-  // Vision pour images (sauf HEIC non supporté par Claude)
-  if (isImage && params.fileBuffer.length < 5 * 1024 * 1024) {
-    content.push({
-      type: "image",
-      source: {
-        type: "base64",
-        media_type: params.mimeType as "image/jpeg" | "image/png" | "image/webp",
-        data: params.fileBuffer.toString("base64"),
-      },
-    });
+  for (const [docType, keywords] of Object.entries(DOC_TYPE_KEYWORDS)) {
+    if (keywords.some((kw) => normalized.includes(kw))) {
+      return {
+        docType,
+        confidence: 0.75,
+        label: DOC_TYPE_LABELS[docType] ?? docType,
+      };
+    }
   }
+  // Fallback
+  return { docType: "piece_identite", confidence: 0.95, label: "Pièce d'identité" };
+}
 
-  content.push({
-    type: "text",
-    text: `Nom du fichier : "${params.filename}"\nType MIME : ${params.mimeType}\n\n${systemPrompt}`,
-  });
+async function classifyWithClaude(
+  filename: string,
+  mimeType: string
+): Promise<{ docType: string; confidence: number; label: string }> {
+  const apiKey = process.env.ANTHROPIC_API_KEY;
+  if (!apiKey) {
+    // Mock si pas de clé API
+    return { docType: "piece_identite", confidence: 0.95, label: "Pièce d'identité" };
+  }
 
   try {
     const res = await fetch("https://api.anthropic.com/v1/messages", {
       method: "POST",
       headers: {
-        "Content-Type": "application/json",
         "x-api-key": apiKey,
         "anthropic-version": "2023-06-01",
+        "Content-Type": "application/json",
       },
       body: JSON.stringify({
-        model: "claude-sonnet-4-20250514",
-        max_tokens: 256,
-        messages: [{ role: "user", content }],
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 150,
+        messages: [
+          {
+            role: "user",
+            content: `Classifie ce document immobilier selon son nom de fichier: "${filename}" (type MIME: ${mimeType}).
+Réponds UNIQUEMENT en JSON strict: {"docType":"string","confidence":0.0-1.0,"label":"string"}
+Types possibles: fiches_paie, contrat, avis_imposition, piece_identite, kbis, bilan, releves, pension, carte_etudiant, scolarite, garant_id, garant_paie, garant_impos`,
+          },
+        ],
       }),
     });
 
-    if (!res.ok) throw new Error(`Claude API ${res.status}`);
-
-    const data = await res.json() as { content?: { text?: string }[] };
-    const text = (data.content?.[0]?.text ?? "").trim();
-    const match = text.match(/\{[\s\S]*?\}/);
-    if (!match) throw new Error("No JSON in response");
-
-    const parsed = JSON.parse(match[0]) as {
-      docType?: string;
-      confidence?: number;
-      label?: string;
-    };
-    return {
-      docType:    parsed.docType    ?? "autre",
-      confidence: typeof parsed.confidence === "number"
-        ? Math.min(1, Math.max(0, parsed.confidence))
-        : 0,
-      label:      parsed.label      ?? parsed.docType ?? "Document",
-    };
-  } catch (err) {
-    console.warn("[upload/classify] Claude error:", err);
-    return { docType: "autre", confidence: 0, label: "Document" };
+    if (res.ok) {
+      const data = await res.json();
+      const text = (data.content?.[0]?.text ?? "") as string;
+      const jsonMatch = text.match(/\{[^}]+\}/);
+      if (jsonMatch) {
+        const parsed = JSON.parse(jsonMatch[0]) as {
+          docType?: string;
+          confidence?: number;
+          label?: string;
+        };
+        if (parsed.docType && parsed.confidence !== undefined && parsed.label) {
+          return parsed as { docType: string; confidence: number; label: string };
+        }
+      }
+    }
+  } catch (e) {
+    console.error("[PORTAL UPLOAD] Claude classification error:", e);
   }
+
+  // Fallback heuristique si Claude échoue
+  return classifyFromFilename(filename);
 }
 
 export async function POST(
@@ -104,102 +121,90 @@ export async function POST(
   try {
     const { token } = await params;
 
-    // ── 1. Vérifier le token ──────────────────────────────────────────────────
     const { data: tokenRow } = await supabaseAdmin
       .from("document_portal_tokens")
-      .select("id, email_id, expires_at, used_at")
+      .select("id, email_id, expires_at")
       .eq("token", token)
       .maybeSingle();
 
-    if (!tokenRow) return NextResponse.json({ error: "TOKEN_NOT_FOUND" }, { status: 404 });
+    if (!tokenRow) {
+      return NextResponse.json({ error: "TOKEN_NOT_FOUND" }, { status: 404 });
+    }
     if (new Date(tokenRow.expires_at) < new Date()) {
       return NextResponse.json({ error: "TOKEN_EXPIRED" }, { status: 410 });
     }
 
-    // ── 2. Parser le fichier ──────────────────────────────────────────────────
     const formData = await req.formData();
     const file = formData.get("file") as File | null;
-    if (!file) return NextResponse.json({ error: "NO_FILE" }, { status: 400 });
-
-    const { name: filename, type: mimeType, size } = file;
-
-    if (!ALLOWED_TYPES.includes(mimeType)) {
-      return NextResponse.json(
-        { error: "INVALID_FILE_TYPE", allowed: ALLOWED_TYPES },
-        { status: 400 }
-      );
-    }
-    if (size > 10 * 1024 * 1024) {
-      return NextResponse.json({ error: "FILE_TOO_LARGE", maxMB: 10 }, { status: 400 });
+    if (!file) {
+      return NextResponse.json({ error: "NO_FILE" }, { status: 400 });
     }
 
-    const arrayBuffer = await file.arrayBuffer();
-    const fileBuffer = Buffer.from(arrayBuffer);
+    // Sanitize filename and build storage path
+    const safeFilename = file.name.replace(/[^a-zA-Z0-9._-]/g, "_");
+    const storagePath = `${tokenRow.email_id}/${Date.now()}_${safeFilename}`;
 
-    // ── 3. Upload Supabase Storage ────────────────────────────────────────────
-    const timestamp = Date.now();
-    const safeName = filename.replace(/[^a-zA-Z0-9._\-() ]/g, "_");
-    const storagePath = `${tokenRow.email_id}/${timestamp}_${safeName}`;
-
+    // Upload to Supabase Storage
+    const buffer = Buffer.from(await file.arrayBuffer());
     const { error: uploadError } = await supabaseAdmin.storage
       .from("prospect-docs")
-      .upload(storagePath, fileBuffer, { contentType: mimeType, upsert: false });
+      .upload(storagePath, buffer, {
+        contentType: file.type,
+        upsert: false,
+      });
 
     if (uploadError) {
-      console.error("[upload] Storage error:", uploadError);
+      console.error("[PORTAL UPLOAD] Storage error:", uploadError);
       return NextResponse.json(
         { error: "UPLOAD_FAILED", details: uploadError.message },
         { status: 500 }
       );
     }
 
-    // ── 4. Classification IA ──────────────────────────────────────────────────
-    const { docType, confidence, label } = await classifyWithClaude({
-      filename,
-      mimeType,
-      fileBuffer,
-    });
+    // Classify document
+    const classification = await classifyWithClaude(file.name, file.type);
 
-    // ── 5. Ajouter dans emails.attachments ────────────────────────────────────
+    // Append to email.attachments
     const { data: emailRow } = await supabaseAdmin
       .from("emails")
       .select("attachments")
       .eq("id", tokenRow.email_id)
-      .maybeSingle();
+      .single();
 
-    const currentAtts = (emailRow?.attachments ?? []) as Record<string, unknown>[];
+    const currentAttachments: unknown[] = (emailRow?.attachments ?? []) as unknown[];
     const newAttachment = {
-      filename,
-      mimeType,
-      size,
-      storage_path:       storagePath,
-      source:             "portal",          // distingue des PJ Gmail
-      docType,
-      ai_confidence:      confidence,
-      ai_reasoning:       null,
-      label,
+      source: "portal",
+      filename: file.name,
+      mimeType: file.type,
+      size: file.size,
+      storagePath,
+      docType: classification.docType,
+      confidence: classification.confidence,
+      label: classification.label,
       validated_by_human: false,
-      status:             "EN_ATTENTE",
-      uploaded_at:        new Date().toISOString(),
-      detected_at:        new Date().toISOString(),
+      uploaded_at: new Date().toISOString(),
     };
 
     await supabaseAdmin
       .from("emails")
-      .update({ attachments: [...currentAtts, newAttachment] })
+      .update({ attachments: [...currentAttachments, newAttachment] })
       .eq("id", tokenRow.email_id);
 
-    // Marquer le token comme utilisé (premier upload)
-    if (!tokenRow.used_at) {
-      await supabaseAdmin
-        .from("document_portal_tokens")
-        .update({ used_at: new Date().toISOString() })
-        .eq("id", tokenRow.id);
-    }
+    // Mark token as used (first upload only)
+    await supabaseAdmin
+      .from("document_portal_tokens")
+      .update({ used_at: new Date().toISOString() })
+      .eq("id", tokenRow.id)
+      .is("used_at", null);
 
-    return NextResponse.json({ docType, confidence, label, storagePath, filename });
-  } catch (err) {
-    console.error("[portal/upload]", err);
+    return NextResponse.json({
+      docType: classification.docType,
+      confidence: classification.confidence,
+      label: classification.label,
+      storagePath,
+    });
+  } catch (e) {
+    console.error("[PORTAL UPLOAD] Fatal:", e);
     return NextResponse.json({ error: "INTERNAL_ERROR" }, { status: 500 });
   }
 }

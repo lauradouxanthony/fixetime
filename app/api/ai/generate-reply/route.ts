@@ -5,42 +5,15 @@ import OpenAI from "openai";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
-// ── 5a. Détection mécontentement ────────────────────────────────────────────
-const MECONTENTEMENT_KEYWORDS = [
-  "n'importe quoi", "scandale", "honte", "inadmissible",
-  "parler à quelqu'un", "parler a quelqu'un", "responsable", "inacceptable",
-  "avocat", "plainte",
-];
+/* ── Helpers heuristiques (fallback si prospect_data absent) ── */
 
-function detectMecontentement(body: string): boolean {
-  const lower = body.toLowerCase();
-  return MECONTENTEMENT_KEYWORDS.some((kw) => lower.includes(kw));
-}
-
-// ── 5b. Questions déjà posées dans le thread ────────────────────────────────
-type AlreadyAsked = {
-  situation: boolean;
-  revenus: boolean;
-  garant: boolean;
-};
-
-function detectAlreadyAsked(threadBodies: string[]): AlreadyAsked {
-  const all = threadBodies.join(" ").toLowerCase();
-  return {
-    situation: /situation\s*pro|situation\s*profess|cdi|cdd|étudiant|indépendant|freelance/i.test(all),
-    revenus: /revenu|salaire|gagne[sz]|touche[sz]/i.test(all),
-    garant: /garant|caution\s*solidaire/i.test(all),
-  };
-}
-
-/* ── Extraction heuristique depuis le corps (fallback si prospect_data absent) ── */
 function detectSituation(body: string): string | null {
   const l = body.toLowerCase();
-  if (l.includes("étudiant") || l.includes("etudiante") || l.includes("école") || l.includes("université")) return "etudiant";
-  if (l.includes("cdi")) return "cdi";
-  if (l.includes("cdd")) return "cdd";
-  if (l.includes("auto-entrepreneur") || l.includes("autoentrepreneur") || l.includes("freelance") || l.includes("indépendant")) return "auto";
-  if (l.includes("retraité") || l.includes("retraitée")) return "retraite";
+  if (l.includes("étudiant") || l.includes("etudiante") || l.includes("école") || l.includes("université")) return "ETUDIANT";
+  if (l.includes("cdi")) return "CDI";
+  if (l.includes("cdd")) return "CDD";
+  if (l.includes("auto-entrepreneur") || l.includes("autoentrepreneur") || l.includes("freelance") || l.includes("indépendant")) return "AUTO_ENTREPRENEUR";
+  if (l.includes("retraité") || l.includes("retraitée")) return "RETRAITE";
   return null;
 }
 
@@ -62,7 +35,7 @@ function extractMoney(body: string): { revenus: number | null; loyer: number | n
   }
   if (!revenus || !loyer) {
     const all = [...body.matchAll(/(\d[\d\s]*)\s*(?:€|euros?)/gi)]
-      .map((m) => parseFloat(m[1].replace(/\s/g, "")))
+      .map((m2) => parseFloat(m2[1].replace(/\s/g, "")))
       .filter((v) => v >= 200);
     if (!loyer && all[0]) loyer = all[0];
     if (!revenus && all[1]) revenus = all[1];
@@ -70,261 +43,206 @@ function extractMoney(body: string): { revenus: number | null; loyer: number | n
   return { revenus, loyer };
 }
 
-function extractNom(body: string): string {
+function extractNom(body: string): string | null {
   const m = body.match(/(?:je m['']appelle|je suis|prénom\s*:?\s*)([A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+(?:\s+[A-ZÀÂÄ][a-zàâäéèêëîïôùûüç]+)*)/);
   if (m?.[1]) return m[1].trim();
   const lines = body.split(/\r?\n/).map((l) => l.trim()).filter((l) => l.length > 2 && l.length < 45);
   const last = lines[lines.length - 1] ?? "";
   if (last.split(/\s+/).length >= 2 && !/[@.]/.test(last)) return last;
-  return "";
+  return null;
 }
 
-/* ── Cas de réponse selon l'étape du process ── */
-type ReplyCase =
-  | "qualification"      // QUALIFICATION → demander situation + revenus SEULEMENT
-  | "visite_proposee"    // VISITE_PROPOSEE → proposer créneaux, PAS de docs
-  | "etudiant"           // VISITE_PROPOSEE (étudiant) → garant + créneaux, PAS de docs
-  | "refuse"             // REFUSE → refus poli + suggestion garant
-  | "visite_confirmee"   // VISITE_CONFIRMEE → confirmer RDV + attendre visite
-  | "dossier_demande"    // DOSSIER_DEMANDE → envoyer liste de documents
-  | "dossier_recu";      // DOSSIER_RECU → accusé réception
+/* ── Détection ALERTE (avant appel IA, gratuit) ── */
 
-function determineCase(params: {
-  situation: string | null;
-  revenus: number | null;
-  loyer: number | null;
+const ALERTE_KEYWORDS = [
+  "avocat", "tribunal", "plainte", "discrimination", "racisme",
+  "scandaleux", "inacceptable", "je vais porter", "huissier", "juridique",
+];
+
+function detectAlerte(body: string): boolean {
+  const l = body.toLowerCase();
+  if (ALERTE_KEYWORDS.some((k) => l.includes(k))) return true;
+  if (/[!?]{3,}/.test(body)) return true;
+  const capsCount = (body.match(/[A-ZÀÂÄÉÈÊËÎÏÔÙÛÜ]/g)?.length ?? 0);
+  const capsRatio = capsCount / Math.max(body.replace(/\s/g, "").length, 1);
+  if (capsRatio > 0.35 && body.length > 50) return true;
+  return false;
+}
+
+/* ── Types de sortie ── */
+
+type ReplyMode = "AUTOPILOTE" | "DRAFT" | "ALERTE";
+type EtapeProcess =
+  | "NEW" | "QUALIFICATION" | "VISITE_PROPOSEE" | "VISITE_CONFIRMEE"
+  | "DOSSIER_DEMANDE" | "DOSSIER_RECU" | "VALIDE" | "REFUSE";
+
+interface ParsedReply {
+  reply: string | null;
+  mode: ReplyMode;
+  reason: string;
+  next_etape: EtapeProcess;
+  extracted_data: {
+    nom: string | null;
+    telephone: string | null;
+    situation_pro: string | null;
+    revenus_mensuels: number | null;
+    garant: string | null;
+  };
+}
+
+/* ── Construction du prompt système JSON ── */
+
+function buildSystemPrompt(params: {
+  nomAgence: string;
   multiplicateur: number;
-  etapeProcess: string | null;
-}): ReplyCase {
-  const { situation, revenus, loyer, multiplicateur, etapeProcess } = params;
-
-  // Les étapes avancées et manuelles priment toujours
-  if (etapeProcess === "DOSSIER_RECU")    return "dossier_recu";
-  if (etapeProcess === "DOSSIER_DEMANDE") return "dossier_demande";
-  if (etapeProcess === "VISITE_CONFIRMEE") return "visite_confirmee";
-  if (etapeProcess === "REFUSE")          return "refuse";
-
-  // Étape VISITE_PROPOSEE
-  if (etapeProcess === "VISITE_PROPOSEE") {
-    return situation === "etudiant" ? "etudiant" : "visite_proposee";
-  }
-
-  // Pas d'étape renseignée → déterminer depuis le profil
-  if (situation === "etudiant") return "etudiant";
-  if (revenus !== null && loyer !== null && loyer > 0 && revenus / loyer < multiplicateur) return "refuse";
-  if (!revenus || !loyer || !situation) return "qualification";
-  return "visite_proposee";
-}
-
-/* ── Builders de prompt selon le cas ── */
-function buildPrompt(params: {
-  cas: ReplyCase;
-  email: { sender: string | null; subject: string | null; body: string | null };
-  settings: {
-    nomAgence: string;
-    multiplicateur: number;
-    animaux: string;
-    garantObligatoire: Record<string, boolean>;
-    docsProfiles: { cdi: string[]; cdd: string[]; etudiant: string[]; auto: string[]; retraite: string[] };
-    faq: { question: string; reponse: string }[];
-    instructions: string;
-    heureDebut: number;
-    heureFin: number;
-    dureeVisite: number;
-  };
+  seuilAutopilote: number;
+  tonDeVoix: string;
+  instructions: string;
+  prioriteProfils: string;
+  heureDebut: number;
+  heureFin: number;
+  dureeVisite: number;
+  etapeProcess: string;
   prospect: {
-    nom: string;
-    situation: string | null;
-    revenus: number | null;
-    loyer: number | null;
+    nom: string | null;
+    telephone: string | null;
+    situation_pro: string | null;
+    revenus_mensuels: number | null;
+    loyer_max: number | null;
+    garant: string | null;
+    date_entree_souhaitee: string | null;
   };
-  alreadyAsked?: { situation: boolean; revenus: boolean; garant: boolean };
+  bien: Record<string, unknown> | null;
+  docsList: string[];
+  faqContext: string;
+  multipleProperties: Array<{ title: string }>;
 }): string {
-  const { cas, email, settings, prospect, alreadyAsked } = params;
-  const { nomAgence, multiplicateur, garantObligatoire, docsProfiles, instructions, heureDebut, heureFin, dureeVisite } = settings;
+  const {
+    nomAgence, multiplicateur, seuilAutopilote, tonDeVoix, instructions,
+    prioriteProfils, heureDebut, heureFin, dureeVisite, etapeProcess,
+    prospect, bien, docsList, faqContext, multipleProperties,
+  } = params;
 
-  const agenceLine = nomAgence ? `Agence : ${nomAgence}` : "Agence immobilière";
-  const nomProspect = prospect.nom || "Madame, Monsieur";
-  const instructLine = instructions ? `\nINSTRUCTIONS SPÉCIALES : ${instructions}` : "";
-  const emailCtx = `Email reçu :\nExpéditeur : ${email.sender}\nSujet : ${email.subject}\nContenu : ${email.body}`;
-  const sig = `Cordialement, L'équipe ${nomAgence || "de l'agence"}`;
+  const loyerBien = (bien?.loyer as number | null) ?? prospect.loyer_max;
 
-  // ── DOSSIER_RECU — accusé réception ────────────────────────────────────────
-  if (cas === "dossier_recu") {
-    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
+  const ratioStr = prospect.revenus_mensuels && loyerBien
+    ? ((prospect.revenus_mensuels) / (loyerBien)).toFixed(1)
+    : "?";
 
-Rédige un email bref et professionnel pour accuser réception des documents de ${nomProspect}.
+  const workflowByEtape: Record<string, string> = {
+    NEW: `ÉTAT NEW :
+- Analyser l'intention : question FAQ simple OU demande de visite/intérêt pour le bien
+- Si question FAQ (animaux, charges, ascenseur, parking, surface, étage, disponibilité) → répondre directement → mode AUTOPILOTE
+- Si intérêt pour le bien → demander nom, téléphone, situation professionnelle → mode DRAFT
+- Toujours finir par une question CTA (appel à l'action)
+- next_etape = QUALIFICATION si nom + situation_pro identifiés dans l'email, sinon NEW`,
 
-Contenu :
-- Remercier chaleureusement pour l'envoi du dossier
-- Confirmer la bonne réception de l'ensemble des pièces
-- Indiquer que le dossier va être étudié et qu'un retour sera communiqué rapidement
-- Ne pas s'engager sur un délai précis
-- Signature : ${sig}
+    QUALIFICATION: `ÉTAT QUALIFICATION :
+- Demander ce qui manque parmi : revenus_mensuels, garant, date_entree_souhaitee
+- Calculer solvabilité : revenus / loyer, critère agence = ${multiplicateur}x, seuil autopilote = ${seuilAutopilote}x
+- Si solvable ET CDI avec revenus ≥ ${seuilAutopilote}x le loyer → proposer visite → mode AUTOPILOTE → next_etape = VISITE_PROPOSEE
+- Si profil atypique (AUTO_ENTREPRENEUR, CDD, ETUDIANT) ou solvabilité entre 2.5x et ${seuilAutopilote}x → mode DRAFT
+- Si non solvable (revenus < ${multiplicateur}x loyer) → expliquer poliment, ne pas proposer de visite → mode DRAFT → next_etape = REFUSE
+- next_etape = VISITE_PROPOSEE si solvabilité validée`,
 
-${emailCtx}
+    VISITE_PROPOSEE: `ÉTAT VISITE_PROPOSEE :
+- Proposer 3 créneaux concrets à court terme (jours ouvrés, ${heureDebut}h-${heureFin}h, durée ${dureeVisite}min)
+- Si le prospect confirme un créneau dans son message → next_etape = VISITE_CONFIRMEE → mode AUTOPILOTE
+- Si pas de confirmation → next_etape = VISITE_PROPOSEE, relancer doucement`,
 
-Réponse (française, professionnelle, directement envoyable) :`;
-  }
+    VISITE_CONFIRMEE: `ÉTAT VISITE_CONFIRMEE :
+- Confirmer le rendez-vous de visite ou demander un retour après visite
+- Si le prospect dit qu'il est toujours intéressé → mentionner qu'un lien de dépôt de documents va être envoyé → next_etape = DOSSIER_DEMANDE → mode AUTOPILOTE
+- Sinon → next_etape = VISITE_CONFIRMEE`,
 
-  // ── DOSSIER_DEMANDE — envoyer liste de documents ──────────────────────────
-  if (cas === "dossier_demande") {
-    const sitKeyMap: Record<string, keyof typeof docsProfiles> = {
-      cdi: "cdi", cdd: "cdd", auto: "auto", retraite: "retraite", etudiant: "etudiant",
-    };
-    const sitKey: keyof typeof docsProfiles =
-      (prospect.situation ? (sitKeyMap[prospect.situation] ?? "cdi") : "cdi");
-    const docsList = (docsProfiles[sitKey] ?? docsProfiles.cdi).map(d => `• ${d}`).join("\n");
-    const needsGarant = prospect.situation && garantObligatoire[prospect.situation];
-    const garantLine = needsGarant ? "\n• Pour votre profil, un garant sera également requis (mêmes documents)." : "";
-    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
+    DOSSIER_DEMANDE: `ÉTAT DOSSIER_DEMANDE :
+- Documents attendus pour profil ${prospect.situation_pro ?? "CDI"} : ${docsList.join(", ")}
+- Si le prospect indique avoir envoyé les documents → confirmer réception, prévenir l'agent → next_etape = DOSSIER_RECU → mode DRAFT
+- Si pas de réponse ou retard → relancer poliment avec rappel du lien portail → next_etape = DOSSIER_DEMANDE`,
 
-Rédige un email chaleureux pour demander le dossier locataire à ${nomProspect}, suite à la visite.
+    DOSSIER_RECU: `ÉTAT DOSSIER_RECU :
+- Générer une note de synthèse dans "reply" : "Profil ${prospect.situation_pro ?? "?"}, ratio ${ratioStr}x, dossier complet"
+- Mode DRAFT OBLIGATOIRE — décision finale de l'agent requise
+- next_etape = VALIDE ou REFUSE selon les éléments du dossier`,
+  };
 
-Contenu :
-- Remercier ${nomProspect} pour la visite et l'intérêt pour le bien
-- Demander de transmettre les documents suivants pour constituer le dossier :
-${docsList}${garantLine}
-- Indiquer que la candidature sera examinée dès réception du dossier complet
-- Rester enthousiaste et professionnel
-- Signature : ${sig}
+  const etapeWorkflow = workflowByEtape[etapeProcess] ?? `ÉTAT ${etapeProcess} : Analyser l'email et répondre de façon appropriée à l'étape actuelle.`;
 
-${emailCtx}
-
-Réponse (française, professionnelle, directement envoyable) :`;
-  }
-
-  // ── VISITE_CONFIRMEE — confirmer RDV (pas de docs, attendre visite) ────────
-  if (cas === "visite_confirmee") {
-    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
-
-Rédige un email de confirmation de visite pour ${nomProspect}.
-
-Contenu :
-- Confirmer chaleureusement la visite (date/heure telles que mentionnées dans l'email reçu)
-- Indiquer l'adresse du bien si connue, sinon proposer un rappel
-- Préciser qu'un retour sera communiqué rapidement après la visite
-- NE PAS demander de documents — les documents seront demandés après la visite
-- Signature : ${sig}
-
-${emailCtx}
-
-Réponse (française, professionnelle, directement envoyable) :`;
-  }
-
-  // ── REFUSE — refus poli + suggestion garant ────────────────────────────────
-  if (cas === "refuse") {
-    const ratio = prospect.revenus && prospect.loyer
-      ? (prospect.revenus / prospect.loyer).toFixed(1)
-      : "insuffisant";
-    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
-
-Rédige un email professionnel, poli et respectueux pour décliner cette candidature.
-
-Contenu :
-- Remercier ${nomProspect} pour sa candidature et son intérêt
-- Expliquer poliment que le critère de solvabilité n'est pas atteint (revenus insuffisants pour couvrir ${multiplicateur}x le loyer, ratio actuel : ${ratio}x)
-- Suggérer la possibilité d'un garant solide (revenus ≥ ${multiplicateur}x le loyer) qui pourrait permettre de reconsidérer
-- Encourager à revenir vers l'agence si la situation évolue
-- NE PAS demander de documents
-- Rester positif et professionnel
-- Signature : ${sig}
-
-${emailCtx}
-
-Réponse (française, professionnelle, directement envoyable) :`;
-  }
-
-  // ── ETUDIANT — garant + créneaux, PAS de documents ────────────────────────
-  if (cas === "etudiant") {
-    const needsGarant = garantObligatoire["etudiant"] !== false;
-    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
-
-Rédige un email professionnel et bienveillant pour un candidat étudiant.
-
-Contenu :
-- Remercier ${nomProspect} pour son intérêt pour le bien
-- Expliquer que pour les étudiants, un garant (personne physique avec revenus stables ≥ ${multiplicateur}x le loyer) est ${needsGarant ? "obligatoire" : "fortement recommandé"}
-- Si l'email mentionne déjà un garant disponible : proposer 3 créneaux de visite (jours ouvrés entre ${heureDebut}h et ${heureFin}h, durée ${dureeVisite}min) et demander de confirmer le créneau préféré
-- Si aucun garant n'est mentionné : demander si ${nomProspect} dispose d'un garant avant d'aller plus loin
-- NE PAS demander de documents à ce stade — les documents seront demandés après la visite
-- Signature : ${sig}
-
-${emailCtx}
-
-Réponse (française, professionnelle, directement envoyable) :`;
-  }
-
-  // ── QUALIFICATION — demander UNE SEULE info manquante, ne pas répéter ─────
-  if (cas === "qualification") {
-    // 5b : ne pas re-poser une question déjà posée dans le thread
-    const missingList: string[] = [];
-    if (!prospect.situation && !alreadyAsked?.situation)
-      missingList.push("votre situation professionnelle (CDI, CDD, étudiant, indépendant, retraité…)");
-    if (!prospect.revenus && !alreadyAsked?.revenus)
-      missingList.push("vos revenus nets mensuels (en €)");
-
-    // 5c : CTA obligatoire — poser UNE seule question
-    const questionCTA = missingList.length > 0
-      ? `Poser EXACTEMENT cette question (une seule) : "${missingList[0]}"`
-      : `Confirmer que la candidature sera étudiée dès que possible et demander si ${nomProspect} a des questions`;
-
-    return `Tu es l'assistant de l'${agenceLine}.${instructLine}
-
-Rédige un email chaleureux et court.
-
-Contenu :
-- Remercier ${nomProspect} pour son intérêt
-- ${questionCTA}
-- NE PAS demander de documents à ce stade
-- Terminer par une question claire et une seule (pas deux questions à la fois)
-- Signature : ${sig}
-
-${emailCtx}
-
-Réponse (française, professionnelle, directement envoyable) :`;
-  }
-
-  // ── VISITE_PROPOSEE — solvable, proposer créneaux, PAS de documents ────────
-  const ratio = prospect.revenus && prospect.loyer
-    ? (prospect.revenus / prospect.loyer).toFixed(1)
-    : null;
-  const solvLine = ratio
-    ? ` Son profil présente un ratio de ${ratio}x (critère : ${multiplicateur}x).`
+  const multiPropWarning = multipleProperties.length > 1
+    ? `\nATTENTION — PLUSIEURS BIENS SANS PRÉCISION :
+Le prospect n'a pas précisé pour quel bien il écrit.
+Biens disponibles : ${multipleProperties.map((p) => p.title).join(", ")}
+Dans reply, demande OBLIGATOIREMENT : "Votre demande concerne-t-elle ${multipleProperties.map((p) => p.title).join(" ou ")} ?"
+Mode = DRAFT, next_etape = NEW\n`
     : "";
 
-  // 5d : ton adapté au profil
-  let tonLine = "professionnel et enthousiaste";
-  let extraInstructions = "";
-  if (prospect.situation === "cdi" && prospect.revenus && prospect.loyer && prospect.revenus / prospect.loyer >= 4) {
-    tonLine = "direct, concis et professionnel (profil très solvable)";
-  } else if (prospect.situation === "etudiant") {
-    tonLine = "bienveillant et rassurant";
-    extraInstructions = `\n- Mentionner qu'un garant sera nécessaire si ce n'est pas encore précisé`;
-  } else if (prospect.situation === "auto") {
-    tonLine = "professionnel";
-    extraInstructions = `\n- Mentionner qu'un dossier comptable complet sera requis (3 derniers bilans) en plus des pièces habituelles`;
+  return `Tu es l'assistant IA de l'agence immobilière "${nomAgence || "FixTime"}".
+Ton de voix : ${tonDeVoix}.${instructions ? `\nInstructions spéciales : ${instructions}` : ""}${prioriteProfils ? `\nPriorisation des profils : ${prioriteProfils}` : ""}
+
+Tu dois analyser l'email reçu et retourner UNIQUEMENT un JSON valide, sans aucun texte autour, avec cette structure exacte :
+{
+  "reply": "texte de la réponse à envoyer au prospect (en français, professionnel, prêt à être envoyé). null si mode ALERTE.",
+  "mode": "AUTOPILOTE" ou "DRAFT" ou "ALERTE",
+  "reason": "explication courte du mode choisi (1 phrase)",
+  "next_etape": "NEW" ou "QUALIFICATION" ou "VISITE_PROPOSEE" ou "VISITE_CONFIRMEE" ou "DOSSIER_DEMANDE" ou "DOSSIER_RECU" ou "VALIDE" ou "REFUSE",
+  "extracted_data": {
+    "nom": null ou string,
+    "telephone": null ou string,
+    "situation_pro": null ou "CDI" ou "CDD" ou "AUTO_ENTREPRENEUR" ou "ETUDIANT" ou "RETRAITE",
+    "revenus_mensuels": null ou number,
+    "garant": null ou "OUI" ou "NON" ou "A_CONFIRMER"
   }
+}
 
-  return `Tu es l'assistant de l'${agenceLine}.${instructLine}
+RÈGLES DE CLASSIFICATION DU MODE :
 
-Rédige un email ${tonLine} pour proposer une visite à ce candidat solvable.${solvLine}
+AUTOPILOTE (envoyer directement sans validation agent) :
+- Question FAQ simple : animaux, charges, ascenseur, parking, surface, étage, disponibilité
+- Confirmation de créneau de visite simple
+- Prospect CDI avec revenus ≥ ${seuilAutopilote}x le loyer${loyerBien ? ` (loyer = ${loyerBien}€, seuil = ${(seuilAutopilote * loyerBien).toFixed(0)}€/mois)` : ""}
+- Relance standard sans réponse
 
-Contenu :
-- Accueillir chaleureusement ${nomProspect}
-- Confirmer que son profil correspond à nos critères (sans rentrer dans les détails chiffrés)
-- Proposer 3 créneaux de visite concrets et réalistes à court terme (jours ouvrés, entre ${heureDebut}h et ${heureFin}h, durée ${dureeVisite}min)
-- Demander de confirmer le créneau préféré ou de proposer une autre disponibilité${extraInstructions}
-- NE PAS demander de documents — les documents seront demandés après la visite
-- Terminer par UNE seule question ou action claire (confirmation du créneau)
-- Signature : ${sig}
+DRAFT (l'agent valide avant envoi) :
+- Première réponse à un nouveau prospect (étape NEW)
+- Profil atypique : AUTO_ENTREPRENEUR, CDD, garant étranger, revenus variables
+- Solvabilité entre 2.5x et ${seuilAutopilote}x le loyer
+- Situation complexe ou ambiguë
 
-${emailCtx}
+ALERTE (arrêter immédiatement, ne pas envoyer, notifier l'agent) :
+- Mots détectés : avocat, tribunal, plainte, discrimination, racisme, scandaleux, inacceptable, je vais porter, huissier, juridique
+- Ton agressif : majuscules excessives, ponctuation multiple (!!!, ???)
+- Si ALERTE → reply = null
 
-Réponse (française, professionnelle, directement envoyable) :`;
+${multiPropWarning}WORKFLOW ÉTAPE ACTUELLE (${etapeProcess}) :
+${etapeWorkflow}
+
+CONTEXTE AGENCE :
+- Critère de solvabilité : revenus ≥ ${multiplicateur}x le loyer
+- Seuil autopilote : revenus ≥ ${seuilAutopilote}x le loyer${bien ? `
+
+BIEN CONCERNÉ :
+- Titre : ${(bien.title as string) ?? "?"}
+- Adresse : ${(bien.address as string) ?? "Non précisée"}
+- Loyer : ${(bien.loyer as number) ?? "?"}€ + charges ${(bien.charges as number) ?? "?"}€
+- Type : ${(bien.type as string) ?? "?"}
+- Animaux : ${bien.animaux_acceptes ? "Acceptés" : "Non acceptés"}` : ""}
+${faqContext ? `\nFAQ AGENCE :\n${faqContext}` : ""}
+
+FICHE PROSPECT (données déjà collectées — ne pas redemander ce qui est déjà renseigné) :
+${JSON.stringify({
+  nom: prospect.nom,
+  telephone: prospect.telephone,
+  situation_pro: prospect.situation_pro,
+  revenus_mensuels: prospect.revenus_mensuels,
+  garant: prospect.garant,
+  date_entree_souhaitee: prospect.date_entree_souhaitee,
+}, null, 2)}
+
+Signature email : Cordialement, L'équipe ${nomAgence || "de l'agence"}`;
 }
 
 /* ── Route handler ── */
+
 export async function POST(req: Request) {
   try {
     // 1. Auth
@@ -338,62 +256,40 @@ export async function POST(req: Request) {
 
     const { data: email, error } = await supabaseAdmin
       .from("emails")
-      .select("id, sender, subject, body, ai_reply, category, prospect_data")
+      .select("id, sender, subject, body, ai_reply, category, prospect_data, property_id")
       .eq("id", emailId)
       .eq("user_id", user.id)
       .single();
 
     if (error || !email) return NextResponse.json({ error: "EMAIL_NOT_FOUND" }, { status: 404 });
 
-    // 5a. Détection mécontentement — avant tout
-    const emailBody = email.body ?? "";
-    if (detectMecontentement(emailBody)) {
-      // Marquer is_urgent = true + log activity
-      await supabaseAdmin
-        .from("emails")
-        .update({ is_urgent: true })
-        .eq("id", email.id);
+    const bodyText = (email as unknown as { body: string | null }).body ?? "";
 
-      // Logger dans activity_log si la table existe (graceful)
-      try {
-        await supabaseAdmin.from("activity_log").insert({
-          email_id: email.id,
-          user_id: user.id,
-          type: "alerte_mecontentement",
-          actor: "ai",
-          metadata: { reason: "mecontentement_detected" },
-        });
-      } catch { /* table optionnelle */ }
-
-      console.log(`[generate-reply] MÉCONTENTEMENT détecté emailId=${emailId} → human_required`);
+    // 3. Détection ALERTE immédiate (avant appel IA, gratuit)
+    if (detectAlerte(bodyText)) {
+      const existingPdAlerte = ((email as unknown as { prospect_data: Record<string, unknown> | null }).prospect_data) ?? {};
+      await supabaseAdmin.from("emails").update({
+        prospect_data: { ...existingPdAlerte, alerte: true, alerte_at: new Date().toISOString() },
+      }).eq("id", email.id);
       return NextResponse.json({
-        action: "human_required",
-        reason: "mecontentement",
-        is_urgent: true,
-      });
+        reply: null,
+        mode: "ALERTE",
+        reason: "Message à caractère juridique ou agressif détecté — intervention humaine requise",
+        next_etape: (existingPdAlerte.etape_process as EtapeProcess) ?? "NEW",
+        extracted_data: { nom: null, telephone: null, situation_pro: null, revenus_mensuels: null, garant: null },
+      } satisfies ParsedReply);
     }
 
-    // 3. Anti-coût : réponse déjà générée
-    if (email.ai_reply && email.ai_reply.trim().length > 0) {
-      return NextResponse.json({ reply: email.ai_reply });
+    // 4. Anti-coût : réponse JSON déjà générée et valide
+    const cachedReply = (email as unknown as { ai_reply: string | null }).ai_reply ?? "";
+    if (cachedReply.trim().startsWith("{")) {
+      try {
+        const cached = JSON.parse(cachedReply) as ParsedReply;
+        if (cached.reply && cached.mode) return NextResponse.json(cached);
+      } catch { /* régénérer */ }
     }
 
-    // 5b. Récupérer les 6 derniers emails du thread (même sender)
-    const senderKey = (email.sender ?? "").replace(/.*<(.+)>.*/, "$1").trim().toLowerCase();
-    let threadBodies: string[] = [];
-    if (senderKey) {
-      const { data: threadEmails } = await supabaseAdmin
-        .from("emails")
-        .select("body, ai_reply")
-        .eq("user_id", user.id)
-        .ilike("sender", `%${senderKey}%`)
-        .order("received_at", { ascending: false })
-        .limit(6);
-      threadBodies = (threadEmails ?? []).flatMap((e: any) => [e.body ?? "", e.ai_reply ?? ""].filter(Boolean));
-    }
-    const alreadyAsked = detectAlreadyAsked(threadBodies);
-
-    // 4. Charger les settings
+    // 5. Charger les settings
     const { data: settingsRow } = await supabaseAdmin
       .from("settings_v1")
       .select("email_rules")
@@ -403,120 +299,160 @@ export async function POST(req: Request) {
     const rules = (settingsRow?.email_rules && typeof settingsRow.email_rules === "object")
       ? (settingsRow.email_rules as Record<string, unknown>) : {};
 
-    const locatif = (rules.ft_locatif as Record<string, unknown>) ?? {};
+    const locatif  = (rules.ft_locatif   as Record<string, unknown>) ?? {};
     const docsSection = (rules.ft_documents as Record<string, unknown>) ?? {};
-    const iaSection = (rules.ft_ia as Record<string, unknown>) ?? {};
-    const calSection = (rules.ft_calendrier as Record<string, unknown>) ?? {};
-    const faqSection = (rules.ft_faq as { question: string; reponse: string }[] | null) ?? [];
+    const iaSection   = (rules.ft_ia       as Record<string, unknown>) ?? {};
+    const calSection  = (rules.ft_calendrier as Record<string, unknown>) ?? {};
+    const faqSection  = (rules.ft_faq      as { question: string; reponse: string }[] | null) ?? [];
 
-    const settings = {
-      nomAgence: (locatif.nomAgence as string) ?? "",
-      multiplicateur: (locatif.multiplicateur as number) ?? 3,
-      animaux: (locatif.animaux as string) ?? "selon",
-      garantObligatoire: (locatif.garantObligatoire as Record<string, boolean>) ?? { cdd: true, auto: true, etudiant: true, retraite: false },
-      docsProfiles: {
-        cdi:     (docsSection.cdi     as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail", "Avis d'imposition", "Pièce d'identité"],
-        cdd:     (docsSection.cdd     as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail (durée + date de fin)", "Avis d'imposition", "Pièce d'identité"],
-        etudiant:(docsSection.etudiant as string[]) ?? ["Carte étudiante", "Certificat de scolarité", "Justificatif de garant", "Pièce d'identité"],
-        auto:    (docsSection.auto    as string[]) ?? ["Extrait Kbis", "Bilans comptables (2 dernières années)", "Avis d'imposition", "Pièce d'identité"],
-        retraite:(docsSection.retraite as string[]) ?? ["Relevés de pension (3 derniers mois)", "Avis d'imposition", "Pièce d'identité"],
-      },
-      faq: Array.isArray(faqSection) ? faqSection : [],
-      instructions: (iaSection.instructions as string) ?? "",
-      heureDebut: (calSection.heureDebut as number) ?? 9,
-      heureFin: (calSection.heureFin as number) ?? 18,
-      dureeVisite: (calSection.dureeVisite as number) ?? 60,
+    const nomAgence       = (locatif.nomAgence       as string)  ?? "";
+    const multiplicateur  = (locatif.multiplicateur  as number)  ?? 3;
+    const garantObligatoire = (locatif.garantObligatoire as Record<string, boolean>) ?? { CDD: true, AUTO_ENTREPRENEUR: true, ETUDIANT: true, RETRAITE: false };
+    const seuilAutopilote = (iaSection.seuil_autopilote as number) ?? 3.5;
+    const tonDeVoix       = (iaSection.ton_de_voix   as string)  ?? "Professionnel et formel";
+    const prioriteProfils = (iaSection.priorite_profils as string) ?? "";
+    const instructions    = (iaSection.instructions  as string)  ?? "";
+    const heureDebut      = (calSection.heureDebut   as number)  ?? 9;
+    const heureFin        = (calSection.heureFin     as number)  ?? 18;
+    const dureeVisite     = (calSection.dureeVisite  as number)  ?? 60;
+
+    const docsProfiles: Record<string, string[]> = {
+      CDI:              (docsSection.cdi      as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail", "Avis d'imposition", "Pièce d'identité"],
+      CDD:              (docsSection.cdd      as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail (durée + date de fin)", "Avis d'imposition", "Pièce d'identité"],
+      ETUDIANT:         (docsSection.etudiant as string[]) ?? ["Carte étudiante", "Certificat de scolarité", "Justificatif de garant", "Pièce d'identité"],
+      AUTO_ENTREPRENEUR:(docsSection.auto     as string[]) ?? ["Extrait Kbis", "Bilans comptables (2 dernières années)", "Avis d'imposition", "Pièce d'identité"],
+      RETRAITE:         (docsSection.retraite as string[]) ?? ["Relevés de pension (3 derniers mois)", "Avis d'imposition", "Pièce d'identité"],
     };
 
-    // 5. Construction du prompt selon l'intention et l'étape
-    const body = email.body ?? "";
-    const isLocation = (email.category || "").toUpperCase() === "LOCATION";
+    // 6. Données prospect
+    const pd = ((email as unknown as { prospect_data: Record<string, unknown> | null }).prospect_data) ?? {};
+    const etapeProcess = (pd.etape_process as string) ?? "NEW";
 
-    let prompt: string;
+    const { revenus: bodyRevenus, loyer: bodyLoyer } = extractMoney(bodyText);
+    const situationFallback = detectSituation(bodyText);
+    const nomFallback = extractNom(bodyText);
 
-    if (isLocation) {
-      const pd = (email as any).prospect_data as Record<string, unknown> | null;
+    const prospect = {
+      nom:                   (pd.nom             as string | null) ?? nomFallback,
+      telephone:             (pd.telephone        as string | null) ?? null,
+      situation_pro:         (pd.situation_pro    as string | null) ?? situationFallback,
+      revenus_mensuels:      (typeof pd.revenus_mensuels === "number" ? pd.revenus_mensuels : null) ?? bodyRevenus,
+      loyer_max:             (typeof pd.loyer_max === "number" ? pd.loyer_max : null) ?? bodyLoyer,
+      garant:                (pd.garant           as string | null) ?? null,
+      date_entree_souhaitee: (pd.date_entree_souhaitee as string | null) ?? null,
+    };
 
-      const situationProMap: Record<string, string> = {
-        ETUDIANT: "etudiant", CDI: "cdi", CDD: "cdd", AUTO_ENTREPRENEUR: "auto", RETRAITE: "retraite",
-      };
+    const sitPro = prospect.situation_pro;
+    const docsList = sitPro && docsProfiles[sitPro] ? docsProfiles[sitPro] : docsProfiles.CDI;
 
-      const situation = pd?.situation_pro
-        ? (situationProMap[String(pd.situation_pro)] ?? detectSituation(body))
-        : detectSituation(body);
+    // 7. Chargement du bien
+    let bien: Record<string, unknown> | null = null;
+    const propertyId = (email as unknown as { property_id: string | null }).property_id;
 
-      const pdRevenus = typeof pd?.revenus_mensuels === "number" ? pd.revenus_mensuels as number : null;
-      const pdLoyer = typeof pd?.loyer_max === "number" ? pd.loyer_max as number : null;
-      const { revenus: bodyRevenus, loyer: bodyLoyer } = extractMoney(body);
-      const revenus = pdRevenus ?? bodyRevenus;
-      const loyer = pdLoyer ?? bodyLoyer;
-
-      const nom = (typeof pd?.nom === "string" && pd.nom.trim().length > 0)
-        ? pd.nom.trim()
-        : extractNom(body);
-
-      // ← BLOC 2 : lire l'étape depuis prospect_data
-      const etapeProcess = (pd?.etape_process as string | null) ?? null;
-
-      const cas = determineCase({
-        situation,
-        revenus,
-        loyer,
-        multiplicateur: settings.multiplicateur,
-        etapeProcess,
-      });
-
-      console.log(`[generate-reply] emailId=${emailId} etape=${etapeProcess ?? "null"} cas=${cas} situation=${situation} revenus=${revenus} loyer=${loyer} nom="${nom}"`);
-
-      prompt = buildPrompt({
-        cas,
-        email: { sender: email.sender, subject: email.subject, body: email.body },
-        settings,
-        prospect: { nom, situation, revenus, loyer },
-        alreadyAsked,
-      });
-    } else {
-      // Email non-LOCATION : prompt générique professionnel
-      const contextLine = settings.nomAgence ? `Tu es l'assistant de l'${settings.nomAgence}.` : "Tu es l'assistant personnel d'un dirigeant très occupé.";
-      const instructLine = settings.instructions ? `\nINSTRUCTIONS SPÉCIALES : ${settings.instructions}` : "";
-      const faqContext = settings.faq.length > 0
-        ? `\nFAQ AGENCE (utilise ces réponses si pertinent) :\n${settings.faq.slice(0, 5).map((f) => `Q: ${f.question}\nR: ${f.reponse}`).join("\n\n")}`
-        : "";
-
-      prompt = `${contextLine}
-Rédige une réponse email professionnelle, claire, naturelle et prête à être envoyée.
-${instructLine}${faqContext}
-
-Règles :
-- Français professionnel
-- Ton humain, poli, efficace
-- Pas trop long
-- Adapté au CONTENU réel
-- Signature neutre : Cordialement, L'équipe ${settings.nomAgence || "de l'agence"}
-
-Email reçu :
-Expéditeur : ${email.sender}
-Sujet : ${email.subject}
-Contenu :
-${email.body || "Email sans contenu visible"}
-
-Réponse :`;
+    if (propertyId) {
+      const { data: prop } = await supabaseAdmin
+        .from("properties")
+        .select("id, title, address, loyer, charges, type, animaux_acceptes")
+        .eq("id", propertyId)
+        .maybeSingle();
+      bien = prop as Record<string, unknown> | null;
     }
 
-    // 6. Appel OpenAI
-    const completion = await openai.chat.completions.create({
-      model: "gpt-4o-mini",
-      messages: [{ role: "user", content: prompt }],
-      temperature: 0.4,
+    // 8. Détection multi-bien si property_id null
+    let multipleProperties: Array<{ id: string; title: string }> = [];
+    if (!propertyId) {
+      const { data: allProps } = await supabaseAdmin
+        .from("properties")
+        .select("id, title")
+        .eq("user_id", user.id);
+      if (allProps && allProps.length > 1) {
+        const emailText = `${(email as unknown as { subject: string | null }).subject ?? ""} ${bodyText}`.toLowerCase();
+        multipleProperties = (allProps as Array<{ id: string; title: string }>).filter(
+          (p) => p.title && emailText.includes(p.title.toLowerCase().substring(0, 8))
+        );
+      }
+    }
+
+    // 9. FAQ (max 5 entrées)
+    const faqContext = Array.isArray(faqSection)
+      ? faqSection.slice(0, 5).map((f) => `Q: ${f.question}\nR: ${f.reponse}`).join("\n\n")
+      : "";
+
+    // 10. Construction du prompt système
+    const systemPrompt = buildSystemPrompt({
+      nomAgence, multiplicateur, seuilAutopilote, tonDeVoix, instructions, prioriteProfils,
+      heureDebut, heureFin, dureeVisite, etapeProcess,
+      prospect, bien, docsList, faqContext, multipleProperties,
     });
 
-    const reply = completion.choices[0]?.message?.content?.trim() || null;
-    if (!reply) return NextResponse.json({ error: "AI_NO_REPLY" }, { status: 500 });
+    const sender = (email as unknown as { sender: string | null }).sender ?? "Inconnu";
+    const subject = (email as unknown as { subject: string | null }).subject ?? "Sans sujet";
 
-    // 7. Sauvegarde (anti-surcoût)
-    await supabaseAdmin.from("emails").update({ ai_reply: reply }).eq("id", email.id);
+    const userMessage = `Email reçu :
+Expéditeur : ${sender}
+Sujet : ${subject}
+Message : ${bodyText.substring(0, 2000)}`;
 
-    return NextResponse.json({ reply });
+    // 11. Appel OpenAI (JSON mode)
+    const completion = await openai.chat.completions.create({
+      model: "gpt-4o-mini",
+      messages: [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userMessage },
+      ],
+      temperature: 0.4,
+      response_format: { type: "json_object" },
+    });
+
+    const raw = completion.choices[0]?.message?.content?.trim() ?? "";
+
+    let parsed: ParsedReply;
+    try {
+      parsed = JSON.parse(raw) as ParsedReply;
+    } catch {
+      console.error("[generate-reply] JSON parse error:", raw);
+      return NextResponse.json({ error: "AI_JSON_PARSE_ERROR" }, { status: 500 });
+    }
+
+    if (!parsed.mode || !parsed.next_etape) {
+      return NextResponse.json({ error: "AI_INCOMPLETE_RESPONSE" }, { status: 500 });
+    }
+
+    // 12. Merge prospect_data (ne pas écraser les données existantes)
+    const updatedPd: Record<string, unknown> = { ...pd };
+    const ext = parsed.extracted_data ?? {};
+
+    if (ext.nom            && !pd.nom)             updatedPd.nom = ext.nom;
+    if (ext.telephone      && !pd.telephone)        updatedPd.telephone = ext.telephone;
+    if (ext.situation_pro  && !pd.situation_pro)    updatedPd.situation_pro = ext.situation_pro;
+    if (ext.revenus_mensuels != null && !pd.revenus_mensuels) updatedPd.revenus_mensuels = ext.revenus_mensuels;
+    if (ext.garant         && !pd.garant)           updatedPd.garant = ext.garant;
+
+    // Avancer l'étape si différente
+    if (parsed.next_etape && parsed.next_etape !== pd.etape_process) {
+      updatedPd.etape_process = parsed.next_etape;
+    }
+
+    // ALERTE → marquer dans la fiche
+    if (parsed.mode === "ALERTE") {
+      updatedPd.alerte = true;
+      updatedPd.alerte_at = new Date().toISOString();
+    }
+
+    // Vérifier garant obligatoire pour le profil
+    if (sitPro && garantObligatoire[sitPro] && !updatedPd.garant) {
+      updatedPd.garant = "A_CONFIRMER";
+    }
+
+    // Sauvegarder reply JSON + prospect_data mis à jour
+    await supabaseAdmin.from("emails").update({
+      ai_reply: JSON.stringify(parsed),
+      prospect_data: updatedPd,
+    }).eq("id", email.id);
+
+    console.log(`[generate-reply] emailId=${emailId} mode=${parsed.mode} etape=${pd.etape_process ?? "null"}→${parsed.next_etape}`);
+
+    return NextResponse.json(parsed);
   } catch (err) {
     console.error("GENERATE_REPLY_API_ERROR", err);
     return NextResponse.json({ error: "GENERATE_REPLY_FAILED" }, { status: 500 });

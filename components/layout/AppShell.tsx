@@ -57,11 +57,33 @@ function RealtimeWatcher() {
   return null;
 }
 
+/* ── Session keep-alive : refresh toutes les 10 minutes ── */
+function SessionKeepAlive() {
+  useEffect(() => {
+    const supabase = supabaseBrowser();
+    // Rafraîchir immédiatement au montage
+    supabase.auth.getSession().catch(() => {});
+
+    const interval = setInterval(() => {
+      supabase.auth.getSession().then(({ data }) => {
+        if (!data.session) {
+          // Session expirée → rediriger vers login
+          window.location.href = "/auth/login";
+        }
+      }).catch(() => {});
+    }, 10 * 60 * 1000); // toutes les 10 minutes
+
+    return () => clearInterval(interval);
+  }, []);
+  return null;
+}
+
 export default function AppShell({ children }: { children: ReactNode }) {
   return (
     <div className="h-screen flex overflow-hidden" style={{ background: "rgb(250 250 250)" }}>
       <Sidebar />
       <RealtimeWatcher />
+      <SessionKeepAlive />
       <GlobalSearch />
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {children}

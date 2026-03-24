@@ -212,237 +212,12 @@ const DOCS = [
   { key: "piece_identite", label: "Pièce d'identité" },
 ];
 
-const DOC_TYPE_OPTIONS = [
-  { value: "fiches_paie",     label: "Fiche de paie" },
-  { value: "contrat",         label: "Contrat de travail" },
-  { value: "avis_imposition", label: "Avis d'imposition" },
-  { value: "piece_identite",  label: "Pièce d'identité" },
-  { value: "garant_paie",     label: "Fiche de paie garant" },
-  { value: "autre",           label: "Autre" },
-];
-
-// ── Feux tricolores (compatible Email) ─────────────────────────────────────
-const MECONTENTEMENT_KWS = [
-  "n'importe quoi", "scandale", "honte", "inadmissible",
-  "parler à quelqu'un", "parler a quelqu'un", "responsable", "inacceptable",
-  "avocat", "plainte",
-];
-
-type TrafficLightStatus = "AUTOPILOTE" | "DRAFT" | "ALERTE";
-
-function computeTrafficLight(email: Email | null): TrafficLightStatus {
-  if (!email) return "AUTOPILOTE";
-  const pd = (email as any).prospect_data as Record<string, unknown> | null;
-  const body = (email.body ?? "").toLowerCase();
-  const receivedAt = email.received_at;
-  const hoursOld = receivedAt
-    ? Math.round((Date.now() - new Date(receivedAt).getTime()) / 3_600_000)
-    : null;
-
-  // 🔴 ALERTE
-  if (hoursOld !== null && hoursOld > 48) return "ALERTE";
-  if (MECONTENTEMENT_KWS.some((kw) => body.includes(kw))) return "ALERTE";
-  const rev = typeof pd?.revenus_mensuels === "number" ? pd.revenus_mensuels as number : null;
-  const loy = typeof pd?.loyer_max === "number" ? pd.loyer_max as number : null;
-  if (rev && loy && rev / loy < 2) return "ALERTE";
-
-  // 🟡 DRAFT
-  const atts = (email as any).attachments as any[] | null;
-  const hasUnvalidated = atts?.some((att: any) => {
-    const dt = att.docTypes as Record<string, boolean> | undefined;
-    return dt && Object.values(dt).some(Boolean) && !att.validated_by_human;
-  });
-  if (hasUnvalidated) return "DRAFT";
-  if ((pd?.etape_process as string) === "DOSSIER_RECU") return "DRAFT";
-  if ((pd?.situation_pro as string) === "AUTO_ENTREPRENEUR") return "DRAFT";
-  if (rev && loy && rev / loy >= 2 && rev / loy < 3) return "DRAFT";
-
-  return "AUTOPILOTE";
-}
-
-const TL_CFG: Record<TrafficLightStatus, { color: string; bg: string; dot: string; label: string }> = {
-  AUTOPILOTE: { color: "rgb(22 163 74)",  bg: "rgba(22,163,74,0.1)",  dot: "#16a34a", label: "Autopilote" },
-  DRAFT:      { color: "rgb(234 88 12)",  bg: "rgba(234,88,12,0.1)",  dot: "#ea580c", label: "À valider"  },
-  ALERTE:     { color: "rgb(220 38 38)",  bg: "rgba(220,38,38,0.1)",  dot: "#dc2626", label: "Alerte"     },
-};
-
-// ── Modal aperçu document ─────────────────────────────────────────────────────
-function DocPreviewModal({
-  att,
-  gmailMessageId,
-  emailId,
-  onClose,
-  onValidate,
-  onReject,
-  validationStatus,
-  validating,
-  docTypeOverrides,
-  onChangeType,
-  attIndex,
-}: {
-  att: AttachmentInfo & Record<string, unknown>;
-  gmailMessageId: string;
-  emailId: string;
-  onClose: () => void;
-  onValidate: (att: AttachmentInfo) => void;
-  onReject: (att: AttachmentInfo) => void;
-  validationStatus: Record<string, DocValidationStatus>;
-  validating: string | null;
-  docTypeOverrides: Record<number, string>;
-  onChangeType: (idx: number, val: string) => void;
-  attIndex: number;
-}) {
-  const isPdf = (att.mimeType as string)?.includes("pdf");
-  const isImage = (att.mimeType as string)?.startsWith("image/");
-  const aiConf = att.ai_confidence as number | null | undefined;
-  const aiReasoning = att.ai_reasoning as string | null | undefined;
-  const detectedType = docTypeOverrides[attIndex] ?? ((att as any).docType as string | null) ?? null;
-  const typeIsUnknown = !detectedType || detectedType === "autre";
-  const vStatus = validationStatus[att.attachmentId] ?? "pending";
-
-  const previewUrl = `/api/emails/download-attachment?gmailMessageId=${encodeURIComponent(gmailMessageId)}&attachmentId=${encodeURIComponent(att.attachmentId)}&filename=${encodeURIComponent(att.filename)}&mimeType=${encodeURIComponent((att.mimeType as string) ?? "")}&inline=true`;
-
-  const confidenceBadge = () => {
-    if (att.validated_by_human) return null;
-    if (aiConf === null || aiConf === undefined) return null;
-    const pct = Math.round((aiConf as number) * 100);
-    if (aiConf >= 0.7) {
-      return (
-        <span className="text-xs px-2 py-0.5 rounded-full font-medium"
-          style={{ background: "rgba(2,132,199,0.1)", color: "rgb(2 132 199)" }}>
-          🤖 IA : {pct}% — {DOC_TYPE_OPTIONS.find(o => o.value === detectedType)?.label ?? detectedType}
-        </span>
-      );
-    }
-    return (
-      <span className="text-xs px-2 py-0.5 rounded-full font-medium"
-        style={{ background: "rgba(234,88,12,0.1)", color: "rgb(234 88 12)" }}>
-        ⚠️ Doute IA : {pct}%{aiReasoning ? ` — ${aiReasoning}` : ""}
-      </span>
-    );
-  };
-
-  return (
-    <div
-      className="fixed inset-0 z-[60] flex items-center justify-center p-4"
-      style={{ background: "rgba(0,0,0,0.55)" }}
-      onClick={(e) => { if (e.target === e.currentTarget) onClose(); }}
-    >
-      <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] flex flex-col overflow-hidden">
-        {/* Header */}
-        <div className="px-5 py-4 border-b flex items-start justify-between gap-3"
-          style={{ borderColor: "rgb(226 232 240)" }}>
-          <div className="flex-1 min-w-0 space-y-1.5">
-            <div className="font-semibold text-sm truncate" style={{ color: "rgb(30 41 59)" }}>
-              {att.filename}
-            </div>
-            <div className="flex flex-wrap gap-1.5 items-center">
-              {confidenceBadge()}
-              {vStatus === "validated" && (
-                <span className="text-xs px-2 py-0.5 rounded-full font-medium"
-                  style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22,163,74)" }}>
-                  ✓ Validé
-                </span>
-              )}
-              {vStatus === "rejected" && (
-                <span className="text-xs px-2 py-0.5 rounded-full font-medium"
-                  style={{ background: "rgba(220,38,38,0.1)", color: "rgb(220,38,38)" }}>
-                  ✗ Rejeté
-                </span>
-              )}
-            </div>
-          </div>
-          <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl flex-shrink-0">✕</button>
-        </div>
-
-        {/* Preview area */}
-        <div className="flex-1 overflow-auto bg-gray-50 flex items-center justify-center min-h-[300px]">
-          {isPdf ? (
-            <iframe
-              src={previewUrl}
-              className="w-full h-full"
-              style={{ minHeight: "420px", border: "none" }}
-              title={att.filename}
-            />
-          ) : isImage ? (
-            // eslint-disable-next-line @next/next/no-img-element
-            <img src={previewUrl} alt={att.filename} className="max-w-full max-h-[420px] object-contain p-4" />
-          ) : (
-            <div className="text-center p-8">
-              <div className="text-4xl mb-3">📎</div>
-              <div className="text-sm mb-4" style={{ color: "rgb(100 116 139)" }}>
-                Aperçu non disponible pour ce type de fichier
-              </div>
-              <a
-                href={`/api/emails/download-attachment?gmailMessageId=${encodeURIComponent(gmailMessageId)}&attachmentId=${encodeURIComponent(att.attachmentId)}&filename=${encodeURIComponent(att.filename)}&mimeType=${encodeURIComponent((att.mimeType as string) ?? "")}`}
-                download={att.filename}
-                className="text-sm px-4 py-2 rounded-lg font-medium text-white"
-                style={{ background: "rgb(79 70 229)" }}
-              >
-                ⬇️ Télécharger
-              </a>
-            </div>
-          )}
-        </div>
-
-        {/* Change type */}
-        {typeIsUnknown && (
-          <div className="px-5 py-3 border-t" style={{ borderColor: "rgb(226 232 240)" }}>
-            <select
-              value={docTypeOverrides[attIndex] ?? ""}
-              onChange={(e) => onChangeType(attIndex, e.target.value)}
-              className="w-full rounded-lg border px-2 py-1.5 text-xs focus:outline-none"
-              style={{ borderColor: "rgb(234 88 12)", color: "rgb(30 41 59)" }}
-            >
-              <option value="">— Identifier le type de document —</option>
-              {DOC_TYPE_OPTIONS.map(o => (
-                <option key={o.value} value={o.value}>{o.label}</option>
-              ))}
-            </select>
-          </div>
-        )}
-
-        {/* Actions */}
-        <div className="px-5 py-3 border-t flex flex-wrap gap-2 justify-end"
-          style={{ borderColor: "rgb(226 232 240)" }}>
-          {vStatus === "pending" && (
-            <>
-              <button
-                disabled={!!validating}
-                onClick={() => { onValidate(att); onClose(); }}
-                className="text-xs px-3 py-1.5 rounded-lg font-medium disabled:opacity-50"
-                style={{ background: "rgba(22,163,74,0.1)", color: "rgb(22,163,74)" }}
-              >
-                {validating === att.attachmentId ? "…" : "✓ Valider le document"}
-              </button>
-              <button
-                disabled={!!validating}
-                onClick={() => { onReject(att); onClose(); }}
-                className="text-xs px-3 py-1.5 rounded-lg font-medium disabled:opacity-50"
-                style={{ background: "rgba(220,38,38,0.08)", color: "rgb(220,38,38)" }}
-              >
-                ✗ Rejeter
-              </button>
-            </>
-          )}
-          <button
-            onClick={onClose}
-            className="text-xs px-3 py-1.5 rounded-lg border"
-            style={{ borderColor: "rgb(226 232 240)", color: "rgb(71 85 105)" }}
-          >
-            Fermer
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
+function DossierWidget({ body, attachments, gmailMessageId, emailId, portalHasToken }: {
   body: string | null | undefined;
   attachments?: AttachmentInfo[];
   gmailMessageId?: string | null;
   emailId?: string;
+  portalHasToken?: boolean;
 }) {
   const { toast: notify } = useToast();
   const [docs, setDocs] = useState<Record<string, DocStatus>>(
@@ -767,9 +542,24 @@ function DossierWidget({ body, attachments, gmailMessageId, emailId }: {
         })}
       </div>
 
-      {/* ── BLOC 2 + 3 : Documents reçus avec validation manuelle + aperçu ── */}
-      {attachments && attachments.length > 0 && (
-        <div className="pt-3 border-t" style={{ borderColor: "rgb(226 232 240)" }}>
+      {/* ── BLOC 2 + 3 : Documents reçus avec validation manuelle ── */}
+      {portalHasToken ? (
+        <div className="mt-4 pt-3 border-t" style={{ borderColor: "rgb(226 232 240)" }}>
+          <div className="flex items-center gap-2 px-3 py-2 rounded-lg"
+            style={{ background: "rgba(79,70,229,0.06)", border: "1px solid rgba(79,70,229,0.15)" }}>
+            <span className="text-base">📎</span>
+            <div>
+              <p className="text-sm font-medium" style={{ color: "rgb(79 70 229)" }}>
+                Dossier sur portail
+              </p>
+              <p className="text-xs" style={{ color: "rgb(100 116 139)" }}>
+                Gérez les documents depuis la fiche prospect
+              </p>
+            </div>
+          </div>
+        </div>
+      ) : attachments && attachments.length > 0 && (
+        <div className="mt-4 pt-3 border-t" style={{ borderColor: "rgb(226 232 240)" }}>
           <div className="flex items-center gap-2 mb-3">
             <span className="text-sm font-semibold" style={{ color: "rgb(30 41 59)" }}>
               📎 Documents reçus
@@ -1467,6 +1257,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
   const [sending, setSending] = useState(false);
   const [reclassifyOpen, setReclassifyOpen] = useState(false);
   const [exportingPdf, setExportingPdf] = useState(false);
+  const [portalHasToken, setPortalHasToken] = useState(false);
 
   const intention = getIntention(email);
   const decision = email?.decision ?? fallbackDecision(email);
@@ -1484,6 +1275,13 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
     setEmailSent(false);
     setSending(false);
     setReclassifyOpen(false);
+    setPortalHasToken(false);
+    if (email?.id) {
+      fetch(`/api/portal/status?emailId=${email.id}`)
+        .then(r => r.ok ? r.json() : null)
+        .then(d => { if (d?.hasToken) setPortalHasToken(true); })
+        .catch(() => {});
+    }
   }, [email?.id]);
 
   // Fetch body à la demande
@@ -1729,6 +1527,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
             attachments={(email as any).attachments ?? []}
             gmailMessageId={email.gmail_message_id}
             emailId={email.id}
+            portalHasToken={portalHasToken}
           />
           <DocumentsTemplateWidget email={email} mode={mode} />
           <BookingWidget email={email} mode={mode} onApprove={handleBookingApprove} />

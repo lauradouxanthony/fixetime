@@ -128,23 +128,50 @@ function isManualRequest(req: Request) {
 function guessCategory(email: { subject?: string | null; sender?: string | null }): string {
   const s = (email.subject || "").toLowerCase();
   const sender = (email.sender || "").toLowerCase();
+
+  // HORS_SUJET en priorité — domaines commerciaux connus
+  const commercialDomains = [
+    "@hellofresh", "@netflix", "@revolut", "@facebookmail", "@meta.com",
+    "@google.com", "@linkedin", "@twitter.com", "@amazon", "@paypal",
+    "@stripe.com", "@notion.so", "@slack.com", "@crypto", "noreply@",
+    "no-reply@", "donotreply@", "newsletter@", "@newsletter",
+  ];
+  if (commercialDomains.some((d) => sender.includes(d))) return "HORS_SUJET";
+
+  // HORS_SUJET — patterns sender génériques
   if (
-    s.includes("location") || s.includes("louer") || s.includes("appartement") ||
-    s.includes("visite") || s.includes("logement") || s.includes("studio") ||
-    s.includes("loyer") || s.includes("locataire") || s.includes("candidature") ||
-    s.includes("dossier") || s.includes("bien") || s.includes("chambre")
-  ) return "LOCATION";
+    sender.includes("newsletter") || sender.includes("no-reply") ||
+    sender.includes("noreply") || sender.includes("donotreply") ||
+    sender.includes("notification") || sender.includes("marketing") ||
+    sender.includes("promo") || sender.includes("info@") && s.includes("offre")
+  ) return "HORS_SUJET";
+
+  // HORS_SUJET — mots-clés sujet commerciaux
+  const horsSujetSubjectKw = [
+    "offre exclusive", "promotion", "découvrez", "gagnez", "gratuit",
+    "abonnement", "commande", "facture", "reçu de paiement",
+    "security alert", "alerte sécurité", "compte facebook", "compte google",
+    "crypto", "bitcoin", "investissement", "trading",
+  ];
+  if (horsSujetSubjectKw.some((k) => s.includes(k))) return "HORS_SUJET";
+
+  // LOCATION — mots-clés immobiliers explicites UNIQUEMENT
+  const locationKw = [
+    "louer", "location", "appartement", "logement", "visite", "loyer",
+    "locataire", "bail", "t1", "t2", "t3", "chambre", "studio",
+    "surface", "m²", "charges", "caution", "agence", "propriétaire",
+    "candidature location", "dépôt de garantie", "quittance",
+  ];
+  if (locationKw.some((k) => s.includes(k))) return "LOCATION";
+
+  // INFO — questions générales
   if (
     s.includes("info") || s.includes("question") || s.includes("renseignement") ||
     s.includes("disponible") || s.includes("prix") || s.includes("tarif") ||
     s.includes("contact")
   ) return "INFO";
-  if (
-    sender.includes("newsletter") || sender.includes("no-reply") ||
-    sender.includes("noreply") || sender.includes("linkedin") ||
-    sender.includes("donotreply") || sender.includes("notification")
-  ) return "HORS_SUJET";
-  return "INFO";
+
+  return "INFO"; // doute → INFO plutôt que LOCATION
 }
 
 function fallbackDecision(email: { subject?: string | null; sender?: string | null }) {
@@ -808,10 +835,24 @@ ${agencyContext}
   "confirmed_datetime": "YYYY-MM-DDTHH:MM:SS" | null
 }
 
-RÈGLES STRICTES pour "intention" :
-- "LOCATION" : le message vient d'un PARTICULIER cherchant à LOUER un logement.
-- "INFO" : question générale sur l'agence ou les conditions de location.
-- "HORS_SUJET" : newsletter, publicité, email automatique, LinkedIn, réseaux sociaux.
+RÈGLES STRICTES pour "intention" — LIRE ATTENTIVEMENT :
+
+"LOCATION" UNIQUEMENT si TOUTES ces conditions sont remplies :
+- L'expéditeur est un particulier (pas une entreprise, marque ou service automatique)
+- Le message mentionne EXPLICITEMENT au moins un de ces mots : louer, location, appartement, logement, visite, loyer, locataire, bail, T1, T2, T3, chambre, studio, surface, m², charges, caution, agence immobilière, candidature, dossier locataire, propriétaire, quittance
+- Le message est une demande de location ou une réponse à une annonce immobilière
+
+"HORS_SUJET" si UNE de ces conditions est vraie :
+- L'expéditeur contient : newsletter, no-reply, noreply, donotreply, marketing, promo, notification
+- L'expéditeur vient de : HelloFresh, Netflix, Revolut, Meta, Facebook, Google, LinkedIn, Twitter, Amazon, PayPal, Stripe, crypto, fintech, banque en ligne
+- Le sujet contient : offre, promotion, découvrez, gagnez, gratuit, abonnement, commande, facture, reçu, sécurité de votre compte, alerte, bitcoin, crypto, investissement, trading
+- C'est un email transactionnel automatique (confirmation de commande, récapitulatif, etc.)
+
+"INFO" : question générale sur l'agence, les conditions, les prix — d'un particulier identifiable.
+
+EN CAS DE DOUTE entre LOCATION et HORS_SUJET → choisir HORS_SUJET.
+EN CAS DE DOUTE entre LOCATION et INFO → choisir INFO.
+JAMAIS classifier LOCATION un email marketing, publicitaire ou automatique.
 
 RÈGLES pour "decision" :
 - "TRAITER" si LOCATION ou INFO nécessitant une réponse
