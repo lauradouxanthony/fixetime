@@ -38,6 +38,9 @@ export async function createCalendarEvent(
               type: "required",
             }))
           : undefined,
+        // Rappel 1h avant la visite
+        reminderMinutesBeforeStart: 60,
+        isReminderOn: true,
       }),
     });
 
@@ -67,6 +70,15 @@ export async function createCalendarEvent(
   if (Array.isArray(args.attendees) && args.attendees.length > 0) {
     payload.attendees = args.attendees.map((email) => ({ email }));
   }
+
+  // Rappels : email 24h avant + popup 1h avant
+  payload.reminders = {
+    useDefault: false,
+    overrides: [
+      { method: "email", minutes: 1440 },
+      { method: "popup", minutes: 60 },
+    ],
+  };
 
   const res = await fetch("https://www.googleapis.com/calendar/v3/calendars/primary/events", {
     method: "POST",

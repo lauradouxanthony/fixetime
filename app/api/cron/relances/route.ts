@@ -208,7 +208,15 @@ export async function POST(req: NextRequest) {
               email_id: lead.id,
               action_type: "RELANCE",
               description: `Relance ${relanceCount}/3 — étape : ${etape} — mode : ${pipelineMode}`,
-              metadata: { etape, relance_count: relanceCount, mode: pipelineMode },
+              metadata: {
+                etape,
+                relance_count: relanceCount,
+                mode: pipelineMode,
+                message_label: RELANCE_MESSAGES[etape]
+                  ? `Template ${etape}`
+                  : "Template inconnu",
+                sent: pipelineMode === "AUTOPILOTE",
+              },
             });
           } catch { /* silencieux si table absente */ }
 
@@ -224,6 +232,22 @@ export async function POST(req: NextRequest) {
   return NextResponse.json({ processed, sent, drafted, errors: errors.length > 0 ? errors : undefined });
 }
 
-export async function GET() {
-  return NextResponse.json({ error: "Method Not Allowed — use POST" }, { status: 405 });
+/**
+ * GET /api/cron/relances
+ * Vercel Cron envoie des GET avec Authorization: Bearer CRON_SECRET.
+ * On délègue vers le POST handler après vérification de la clé.
+ */
+export async function GET(req: NextRequest) {
+  const auth = req.headers.get("authorization");
+  const cronHeader = req.headers.get("x-fixetime-cron-key");
+  const isAuthorized =
+    auth === `Bearer ${CRON_KEY}` ||
+    cronHeader === CRON_KEY ||
+    CRON_KEY === "";
+  if (!isAuthorized) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
+  }
+  // Crée une requête POST synthétique et délègue
+  const postReq = new NextRequest(req.url, { method: "POST", headers: req.headers });
+  return POST(postReq);
 }

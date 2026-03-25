@@ -1239,6 +1239,17 @@ JSON attendu (TOUS les champs, null si absent) :
 
         if (!prospectData) prospectData = {};
         prospectData.etape_process = newEtape;
+
+        // Log ETAPE_CHANGE si l'étape a réellement changé
+        if (newEtape && newEtape !== currentEtape) {
+          void supabaseAdmin.from("prospect_timeline").insert({
+            user_id: email.user_id,
+            email_id: email.id,
+            action_type: "ETAPE_CHANGE",
+            description: `Transition : ${currentEtape ?? "NEW"} → ${newEtape}`,
+            metadata: { from: currentEtape ?? "NEW", to: newEtape },
+          });
+        }
       }
 
       // ── BLOC 2F : Résumé IA enrichi pour les emails LOCATION ─────────────

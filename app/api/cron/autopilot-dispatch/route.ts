@@ -581,3 +581,23 @@ export async function POST(req: Request) {
 
   return NextResponse.json(response);
 }
+
+/**
+ * GET /api/cron/autopilot-dispatch
+ * Vercel Cron envoie des GET avec Authorization: Bearer CRON_SECRET.
+ * On délègue vers le POST handler après vérification de la clé.
+ */
+export async function GET(req: Request) {
+  const auth = req.headers.get("authorization");
+  const key = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
+  const expected =
+    process.env.FIXETIME_INTERNAL_CRON_KEY ||
+    process.env.CRON_SECRET ||
+    "dev123";
+  if (key !== expected) {
+    return NextResponse.json({ success: false, error: "unauthorized" }, { status: 401 });
+  }
+  // Crée une requête POST synthétique et délègue
+  const postReq = new Request(req.url, { method: "POST", headers: req.headers });
+  return POST(postReq);
+}

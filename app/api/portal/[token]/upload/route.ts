@@ -224,6 +224,21 @@ export async function POST(
       })
       .eq("id", tokenRow.email_id);
 
+    // Log DOCUMENT_RECU dans prospect_timeline
+    void supabaseAdmin.from("prospect_timeline").insert({
+      user_id: emailRow?.user_id ?? null,
+      email_id: tokenRow.email_id,
+      action_type: "DOCUMENT_RECU",
+      description: `${classification.label} déposé via portail`,
+      metadata: {
+        filename: file.name,
+        docType: classification.docType,
+        confidence: classification.confidence,
+        source: "portal",
+        storage_path: storagePath,
+      },
+    });
+
     // Mark token as used (first upload only)
     await supabaseAdmin
       .from("document_portal_tokens")

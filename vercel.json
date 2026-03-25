@@ -2,7 +2,15 @@
   "crons": [
     {
       "path": "/api/cron/sync-emails",
-      "schedule": "0 * * * *"
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/autopilot-dispatch",
+      "schedule": "* * * * *"
+    },
+    {
+      "path": "/api/cron/relances",
+      "schedule": "0 9 * * *"
     }
   ]
 }
