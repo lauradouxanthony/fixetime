@@ -1,6 +1,7 @@
 import { supabaseServer } from "@/lib/supabaseServer";
 import { redirect } from "next/navigation";
 import DashboardClient from "@/components/dashboard/DashboardClient";
+import AppShell from "@/components/layout/AppShell";
 
 export default async function HomePage() {
   const supabase = await supabaseServer();
@@ -8,6 +9,9 @@ export default async function HomePage() {
 
   if (!data.user) redirect("/auth/login");
 
-  // Guard provider (Gmail/Outlook) géré par (app)/layout → redirect /onboarding si aucun token
-  return <DashboardClient />;
+  return (
+    <AppShell>
+      <DashboardClient />
+    </AppShell>
+  );
 }
