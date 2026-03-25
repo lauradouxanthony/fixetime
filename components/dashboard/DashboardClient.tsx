@@ -13,30 +13,16 @@ import {
   PieChart,
   Pie,
   Cell,
-  LineChart,
-  Line,
-  Legend,
 } from "recharts";
 import { SkeletonCard } from "@/components/ui/Skeleton";
 import { useToast } from "@/components/ui/Toast";
 
 type DashboardData = {
   metrics: {
-    // Legacy
     leadsActifs: number;
     rdvSemaine: number;
     dossierComplets: number;
     tauxReponseIA: number;
-    // BLOC 6 — ROI KPIs
-    emailsRecusMois: number;
-    leadsQualifies: number;
-    visitesConfirmees: number;
-    tauxEmailVisite: number;
-    // Métriques IA
-    tempsMoyenReponseIA: number;
-    relancesAuto: number;
-    heuresEconomisees: number;
-    emailsTraitesIA: number;
   };
   intentions: { LOCATION: number; INFO: number; HORS_SUJET: number };
   graph30: { label: string; date: string; leads: number; rdv: number }[];
@@ -47,8 +33,6 @@ type DashboardData = {
     received_at: string | null;
     is_urgent: boolean | null;
     summary: string | null;
-    prospect_data?: Record<string, unknown> | null;
-    property_id?: string | null;
   }[];
   prochainRdv: {
     id: string;
@@ -158,9 +142,6 @@ export default function DashboardClient() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
-  const [period, setPeriod] = useState<"7d" | "30d">("30d");
-  const [loadingTimeseries, setLoadingTimeseries] = useState(false);
-  const [chartData, setChartData] = useState<{ date: string; prospects: number; qualified: number; booked: number }[]>([]);
   const { toast } = useToast();
 
   const fetchData = useCallback(async () => {
@@ -194,9 +175,6 @@ export default function DashboardClient() {
                 <SkeletonCard className="border-0 p-0 shadow-none" />
               </div>
             ))}
-          </div>
-          <div className="rounded-xl border bg-white p-4" style={{ borderColor: "rgb(226 232 240)" }}>
-            <div className="h-16 animate-pulse rounded-lg" style={{ background: "rgb(241 245 249)" }} />
           </div>
           <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
             <div className="lg:col-span-2 rounded-xl border bg-white p-4" style={{ borderColor: "rgb(226 232 240)" }}>
@@ -254,102 +232,37 @@ export default function DashboardClient() {
           </Link>
         </div>
 
-        {/* ── LIGNE 1 : KPIs ROI ── */}
+        {/* ── MÉTRIQUES ── */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-3 stagger-children">
           <MetricCard
-            label="Emails reçus ce mois"
-            target={metrics.emailsRecusMois}
-            icon="📬"
-            accent="rgb(79 70 229)"
-            sub="tous types confondus"
-          />
-          <MetricCard
-            label="Leads qualifiés"
-            target={metrics.leadsQualifies}
-            icon="✅"
-            accent="rgb(22 163 74)"
-            sub="situation + revenus renseignés"
-          />
-          <MetricCard
-            label="Visites confirmées"
-            target={metrics.visitesConfirmees}
+            label="Leads actifs"
+            target={metrics.leadsActifs}
             icon="🏠"
-            accent="rgb(2 132 199)"
-            sub="30 derniers jours"
+            accent="rgb(79 70 229)"
+            sub="LOCATION 30j"
           />
           <MetricCard
-            label="Taux email → visite"
-            target={metrics.tauxEmailVisite}
-            unit="%"
-            icon="📈"
-            accent="rgb(234 88 12)"
-            sub={`sur ${metrics.emailsRecusMois > 0 ? metrics.emailsRecusMois : "—"} emails LOCATION`}
+            label="RDV cette semaine"
+            target={metrics.rdvSemaine}
+            icon="📅"
+            accent="rgb(22 163 74)"
+            sub="7 prochains jours"
           />
-        </div>
-
-        {/* ── LIGNE 2 : Métriques IA ── */}
-        <div
-          className="rounded-xl border p-4 bg-white animate-fade-in"
-          style={{ borderColor: "rgb(226 232 240)", boxShadow: "0 1px 3px rgba(0,0,0,0.06)" }}
-        >
-          <div className="text-xs font-semibold uppercase tracking-wide mb-3" style={{ color: "rgb(100 116 139)" }}>
-            🤖 Performance IA
-          </div>
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-            {/* Temps moyen réponse */}
-            <div className="flex items-center gap-3">
-              <div
-                className="w-10 h-10 rounded-xl flex items-center justify-center text-lg flex-shrink-0"
-                style={{ background: "rgba(79,70,229,0.1)" }}
-              >
-                ⚡
-              </div>
-              <div>
-                <div className="text-xs" style={{ color: "rgb(100 116 139)" }}>Temps moyen réponse IA</div>
-                <div className="text-xl font-bold tabular-nums" style={{ color: "rgb(79 70 229)" }}>
-                  {metrics.tempsMoyenReponseIA}
-                  <span className="text-sm font-medium ml-1" style={{ color: "rgb(100 116 139)" }}>min</span>
-                </div>
-                <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>cron toutes les 5 min</div>
-              </div>
-            </div>
-            {/* Relances auto */}
-            <div className="flex items-center gap-3">
-              <div
-                className="w-10 h-10 rounded-xl flex items-center justify-center text-lg flex-shrink-0"
-                style={{ background: "rgba(22,163,74,0.1)" }}
-              >
-                🔁
-              </div>
-              <div>
-                <div className="text-xs" style={{ color: "rgb(100 116 139)" }}>Relances automatiques</div>
-                <div className="text-xl font-bold tabular-nums" style={{ color: "rgb(22 163 74)" }}>
-                  {metrics.relancesAuto}
-                  <span className="text-sm font-medium ml-1" style={{ color: "rgb(100 116 139)" }}>envoyées</span>
-                </div>
-                <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>30 derniers jours</div>
-              </div>
-            </div>
-            {/* Heures économisées */}
-            <div className="flex items-center gap-3">
-              <div
-                className="w-10 h-10 rounded-xl flex items-center justify-center text-lg flex-shrink-0"
-                style={{ background: "rgba(234,88,12,0.1)" }}
-              >
-                🕐
-              </div>
-              <div>
-                <div className="text-xs" style={{ color: "rgb(100 116 139)" }}>Heures économisées</div>
-                <div className="text-xl font-bold tabular-nums" style={{ color: "rgb(234 88 12)" }}>
-                  {metrics.heuresEconomisees}
-                  <span className="text-sm font-medium ml-1" style={{ color: "rgb(100 116 139)" }}>h</span>
-                </div>
-                <div className="text-xs" style={{ color: "rgb(148 163 184)" }}>
-                  {metrics.emailsTraitesIA} emails traités × 5 min
-                </div>
-              </div>
-            </div>
-          </div>
+          <MetricCard
+            label="Dossiers complets"
+            target={metrics.dossierComplets}
+            icon="📋"
+            accent="rgb(2 132 199)"
+            sub="docs détectés"
+          />
+          <MetricCard
+            label="Taux réponse IA"
+            target={metrics.tauxReponseIA}
+            unit="%"
+            icon="🤖"
+            accent="rgb(234 88 12)"
+            sub="emails traités"
+          />
         </div>
 
         {/* ── GRAPHIQUE + DONUT ── */}
@@ -428,72 +341,6 @@ export default function DashboardClient() {
               </AreaChart>
             </ResponsiveContainer>
           </div>
-        </div>
-
-      {/* EMPTY STATE ou CHARTS + FUNNEL + FEED */}
-      {(data?.metrics?.leadsActifs ?? 0) === 0 && (data?.metrics?.emailsRecusMois ?? 0) === 0 ? (
-        <section className="rounded-2xl border border-slate-800 bg-slate-900/60 p-8">
-          <h3 className="text-lg font-semibold text-white">Aucune donnée sur la période</h3>
-          <p className="mt-2 text-sm text-slate-400">
-            Connectez Gmail/Outlook puis cliquez sur Synchroniser.
-          </p>
-          <a
-            href="/emails"
-            className="inline-block mt-4 rounded-lg bg-sky-600 px-4 py-2 text-sm font-semibold text-white hover:bg-sky-500"
-          >
-            Aller aux emails →
-          </a>
-        </section>
-      ) : (
-        <>
-      {/* CHARTS */}
-      <section className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        {/* Line chart: Prospects vs Qualified vs Booked */}
-        <div className="rounded-2xl border border-slate-800 bg-slate-900/60 p-5">
-          <div className="flex items-center justify-between mb-4">
-            <h3 className="text-sm font-semibold text-white">Évolution quotidienne</h3>
-            <div className="flex gap-2">
-              <button
-                onClick={() => setPeriod("7d")}
-                className={`px-2 py-1 rounded text-xs ${period === "7d" ? "bg-blue-600 text-white" : "bg-slate-800 text-slate-300"}`}
-              >
-                7j
-              </button>
-              <button
-                onClick={() => setPeriod("30d")}
-                className={`px-2 py-1 rounded text-xs ${period === "30d" ? "bg-blue-600 text-white" : "bg-slate-800 text-slate-300"}`}
-              >
-                30j
-              </button>
-            </div>
-          </div>
-          {loadingTimeseries ? (
-            <div className="h-64 flex items-center justify-center text-slate-500 text-sm">Chargement...</div>
-          ) : chartData.length > 0 ? (
-            <ResponsiveContainer width="100%" height={280}>
-              <LineChart data={chartData}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#374151" />
-                <XAxis dataKey="date" stroke="#9CA3AF" fontSize={12} />
-                <YAxis stroke="#9CA3AF" fontSize={12} />
-                <Tooltip
-                  contentStyle={{ backgroundColor: "#0F172A", border: "1px solid #334155", borderRadius: "8px", padding: "12px" }}
-                  labelStyle={{ color: "#F3F4F6", fontWeight: 600, marginBottom: "8px" }}
-                  itemStyle={{ color: "#E2E8F0", padding: "4px 0" }}
-                />
-                <Legend 
-                  wrapperStyle={{ paddingTop: "20px" }}
-                  iconType="line"
-                  iconSize={12}
-                />
-                <Line type="monotone" dataKey="prospects" stroke="#60A5FA" strokeWidth={2} name="Prospects" />
-                <Line type="monotone" dataKey="qualified" stroke="#FBBF24" strokeWidth={2} name="Qualifiés" />
-                <Line type="monotone" dataKey="booked" stroke="#10B981" strokeWidth={2} name="Visites" />
-              </LineChart>
-            </ResponsiveContainer>
-          ) : (
-            <div className="h-64 flex items-center justify-center text-slate-500 text-sm">Aucune donnée disponible</div>
-          )}
-        </div>
 
           {/* Donut intentions 7j */}
           <div
@@ -549,7 +396,7 @@ export default function DashboardClient() {
               </>
             )}
           </div>
-        </section>
+        </div>
 
         {/* ── ACTIONS REQUISES + PROCHAINS RDV ── */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -586,54 +433,6 @@ export default function DashboardClient() {
                   const hoursAgo = e.received_at
                     ? Math.round((Date.now() - new Date(e.received_at).getTime()) / 3_600_000)
                     : null;
-                  const pd = e.prospect_data ?? {};
-                  const etape = (pd.etape_process as string) ?? "NEW";
-                  const revenus = pd.revenus_mensuels as number | null;
-                  const loyer = pd.loyer_max as number | null;
-                  const ratio = revenus && loyer ? revenus / loyer : null;
-
-                  // Calcul priorité
-                  let priorityDot = "🟢";
-                  let priorityLabel = "Info";
-                  let priorityColor = "rgb(22 163 74)";
-                  let priorityBg = "rgba(22,163,74,0.08)";
-                  let actionLabel = "Nouveau prospect à qualifier";
-
-                  const isDossierComplet = etape === "DOSSIER_RECU" || etape === "VALIDE";
-                  const isVisiteConfirmee = etape === "VISITE_CONFIRMEE";
-                  const isSolvable = ratio !== null && ratio >= 3;
-                  const isQualified = etape !== "NEW" && !!pd.situation_pro;
-
-                  if (e.is_urgent || isDossierComplet || (isVisiteConfirmee && hoursAgo !== null && hoursAgo > 2)) {
-                    priorityDot = "🔴";
-                    priorityLabel = "Urgent";
-                    priorityColor = "rgb(220 38 38)";
-                    priorityBg = "rgba(220,38,38,0.08)";
-                    actionLabel = isDossierComplet
-                      ? "Dossier complet — validation requise"
-                      : isVisiteConfirmee
-                      ? "Visite confirmée — préparer le RDV"
-                      : "En attente de réponse urgente";
-                  } else if (isQualified && isSolvable) {
-                    priorityDot = "🟡";
-                    priorityLabel = "À traiter";
-                    priorityColor = "rgb(161 98 7)";
-                    priorityBg = "rgba(234,179,8,0.1)";
-                    actionLabel = "Prospect qualifié solvable — proposer visite";
-                  } else if (hoursAgo !== null && hoursAgo > 24) {
-                    priorityDot = "🟡";
-                    priorityLabel = "Relance";
-                    priorityColor = "rgb(161 98 7)";
-                    priorityBg = "rgba(234,179,8,0.1)";
-                    actionLabel = `Sans réponse depuis ${Math.floor(hoursAgo / 24)}j`;
-                  } else {
-                    actionLabel = e.summary ?? "Nouveau prospect — qualifier";
-                  }
-
-                  const nomProspect = (pd.nom as string | null)
-                    ?? e.sender?.replace(/<.*>/, "").trim()
-                    ?? "Prospect";
-
                   return (
                     <Link
                       key={e.id}
@@ -642,33 +441,30 @@ export default function DashboardClient() {
                     >
                       <Avatar name={e.sender} />
                       <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className="text-xs">{priorityDot}</span>
-                          <span className="text-sm font-medium truncate" style={{ color: "rgb(30 41 59)" }}>
-                            {nomProspect}
-                          </span>
-                        </div>
-                        <div className="text-xs mt-0.5 truncate" style={{ color: "rgb(100 116 139)" }}>
-                          {actionLabel}
+                        <div className="text-sm font-medium truncate" style={{ color: "rgb(30 41 59)" }}>
+                          {e.subject || "(Sans objet)"}
                         </div>
                         <div className="flex items-center gap-1.5 mt-0.5 flex-wrap">
-                          {hoursAgo !== null && (
-                            <span className="text-xs" style={{ color: "rgb(148 163 184)" }}>
-                              {hoursAgo < 1 ? "À l'instant" : hoursAgo < 24 ? `Il y a ${hoursAgo}h` : `${Math.floor(hoursAgo / 24)}j`}
-                            </span>
+                          {e.is_urgent && (
+                            <span className="text-xs font-medium" style={{ color: "rgb(220 38 38)" }}>🔴 Urgent</span>
                           )}
-                          {ratio !== null && (
-                            <span className="text-xs" style={{ color: isSolvable ? "rgb(22 163 74)" : "rgb(220 38 38)" }}>
-                              · Ratio {ratio.toFixed(1)}x
+                          {hoursAgo !== null && (
+                            <span
+                              className="text-xs"
+                              style={{ color: hoursAgo > 24 ? "rgb(220 38 38)" : "rgb(148 163 184)" }}
+                            >
+                              {hoursAgo > 24
+                                ? `⚠️ ${Math.floor(hoursAgo / 24)}j sans réponse`
+                                : `Il y a ${hoursAgo}h`}
                             </span>
                           )}
                         </div>
                       </div>
                       <span
                         className="text-xs px-2 py-0.5 rounded-full font-medium flex-shrink-0"
-                        style={{ background: priorityBg, color: priorityColor }}
+                        style={{ background: "rgba(234,88,12,0.1)", color: "rgb(194 65 12)" }}
                       >
-                        {priorityLabel}
+                        À traiter
                       </span>
                     </Link>
                   );
@@ -803,9 +599,6 @@ export default function DashboardClient() {
             )}
           </div>
         </div>
-
-        </>
-      )}
 
       </div>
     </div>
