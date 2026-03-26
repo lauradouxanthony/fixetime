@@ -24,13 +24,11 @@ const TL_CFG: Record<TrafficLight, { color: string; bg: string; label: string; d
   ALERTE:     { color: "rgb(220 38 38)",  bg: "rgba(220,38,38,0.1)",  label: "Alerte",     dot: "#dc2626" },
 };
 
-function computeTrafficLight(email: Email | null): TrafficLight {
+function computeTrafficLight(email: Email | null, mode: PipelineMode = "DRAFT"): TrafficLight {
   if (!email) return "DRAFT";
-  const pd = (email as any).prospect_data as Record<string, unknown> | null;
   if (email.is_urgent) return "ALERTE";
-  if ((email as any).ai_reply) return "AUTOPILOTE";
-  if (pd?.etape_process === "DOSSIER_RECU") return "DRAFT";
-  if (email.category === "LOCATION") return "DRAFT";
+  // Le badge reflète le vrai mode pipeline de l'utilisateur, pas seulement la présence d'une réponse IA
+  if (mode === "AUTOPILOTE") return "AUTOPILOTE";
   return "DRAFT";
 }
 
@@ -344,7 +342,29 @@ function DocPreviewModal({ att, gmailMessageId, emailId, onClose, onValidate, on
   );
 }
 
-function DossierWidget({ body, attachments, gmailMessageId, emailId, portalHasToken }: {
+function DossierWidget({ emailId }: {
+  body?: string | null | undefined;
+  attachments?: AttachmentInfo[];
+  gmailMessageId?: string | null;
+  emailId?: string;
+  portalHasToken?: boolean;
+}) {
+  // Version simplifiée : renvoi vers la fiche prospect complète
+  return (
+    <Section title="Dossier locataire">
+      <a
+        href={emailId ? `/leads?email=${emailId}` : "/leads"}
+        className="flex items-center gap-2 w-full py-2.5 px-4 rounded-lg text-sm font-medium transition-colors"
+        style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)", border: "1px solid rgba(79,70,229,0.15)" }}
+      >
+        📋 Voir le dossier complet →
+      </a>
+    </Section>
+  );
+}
+
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+function _DossierWidgetFull_UNUSED({ body, attachments, gmailMessageId, emailId, portalHasToken }: {
   body: string | null | undefined;
   attachments?: AttachmentInfo[];
   gmailMessageId?: string | null;
@@ -1067,6 +1087,10 @@ function BookingWidget({
 
   return (
     <Section title="Proposer une visite">
+      {/* Créneaux issus de l'agenda local (Google Calendar synchronisé) */}
+      <p className="text-xs mb-2" style={{ color: "rgb(148 163 184)" }}>
+        📅 Créneaux libres depuis votre agenda Google Calendar
+      </p>
       <div className="space-y-2 mb-3">
         {slots.length === 0 && (
           <p className="text-sm" style={{ color: "rgb(100 116 139)" }}>Calcul des créneaux…</p>
@@ -1541,7 +1565,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
 
       {/* ── En-tête email ── */}
       {(() => {
-        const tl = computeTrafficLight(email);
+        const tl = computeTrafficLight(email, mode);
         const tlCfg = TL_CFG[tl];
         return (
           <div className="rounded-xl border p-4 bg-white" style={{ borderColor: "rgb(226 232 240)" }}>
@@ -1578,7 +1602,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
               // Nom : priorité prospect_data.nom (si pas un email), sinon extraire du format Gmail
               const nameFromSender = senderStr.match(/^(.+?)\s*<[^>]+>$/)?.[1]?.trim().replace(/^["']|["']$/g, "") ?? null;
               const displayName =
-                pdNom && !pdNom.includes("@")
+                pdNom && String(pdNom) !== "null" && !pdNom.includes("@")
                   ? pdNom
                   : nameFromSender && nameFromSender.length >= 2 && !nameFromSender.includes("@")
                   ? nameFromSender

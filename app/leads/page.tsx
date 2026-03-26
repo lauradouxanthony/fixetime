@@ -240,8 +240,8 @@ function extractDisplayName(lead: Lead): string {
   const prenom = (pd as Record<string, unknown> | null)?.prenom as string | null | undefined;
   if (pd?.nom && prenom) return `${prenom} ${pd.nom}`;
 
-  // 2. Données IA : nom seul (ignorer si ça ressemble à un email)
-  if (pd?.nom && !pd.nom.includes("@")) return pd.nom;
+  // 2. Données IA : nom seul (ignorer si ça ressemble à un email ou si stocké comme "null")
+  if (pd?.nom && String(pd.nom) !== "null" && !pd.nom.includes("@")) return pd.nom;
 
   // 3. Extraire le nom depuis le format Gmail "Name <email@domain.com>"
   const nameMatch = sender.match(/^(.+?)\s*<[^>]+>$/);
@@ -1279,6 +1279,9 @@ export default function LeadsPage() {
     "newsletter", "désabonner", "unsubscribe", "invitation",
     "vous avez été", "confirmez votre", "reçu de paiement",
     "commande", "facture", "récapitulatif", "livraison",
+    // Assurances & services financiers
+    "garantie", "assurance", "bris de glaces", "mutuelle",
+    "prévoyance", "spécialement pour vous", "devis",
   ];
 
   function hasImmoSubject(lead: Lead): boolean {
@@ -1296,8 +1299,8 @@ export default function LeadsPage() {
     // Exclure immédiatement les sujets parasites connus
     if (isParasiteSubject(lead)) return false;
     const pd = lead.prospect_data;
-    // Valide si données prospect extraites
-    if (pd?.nom && String(pd.nom).trim().length > 0) return true;
+    // Valide si données prospect extraites (ignorer la valeur string "null")
+    if (pd?.nom && String(pd.nom) !== "null" && String(pd.nom).trim().length > 0) return true;
     if (pd?.situation_pro) return true;
     if (pd?.revenus_mensuels) return true;
     // Valide si sujet immobilier

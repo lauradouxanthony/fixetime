@@ -36,12 +36,11 @@ export async function GET() {
     const since = new Date();
     since.setDate(since.getDate() - 60); // 60 jours pour capturer plus de prospects
 
-    // 1. Requête principale — emails LOCATION seulement
+    // 1. Requête principale — tous les emails récents (qualification faite côté JS)
     const { data: rows, error } = await supabaseAdmin
       .from("emails")
       .select("id, sender, subject, summary, body, received_at, category, is_urgent, is_important, classification_reason, prospect_data, attachments, property_id, ai_reply")
       .eq("user_id", user.id)
-      .eq("category", "LOCATION")
       .gte("received_at", since.toISOString())
       .order("received_at", { ascending: false })
       .limit(500);
@@ -49,10 +48,15 @@ export async function GET() {
     if (error) return NextResponse.json({ error: error.message }, { status: 500 });
     if (!rows) return NextResponse.json({ leads: [] });
 
-    // 2. Filtrage côté serveur — exclure les expéditeurs marketing/notifications
+    // 2. Filtrage côté serveur — exclure spam + ne garder que les prospects qualifiés
+    //    Un email est qualifié si : catégorie LOCATION OU prospect_data.nom non-null
+    //    (couvre les emails mal classifiés avant une mise à jour de l'IA)
     const filtered = rows.filter((row) => {
       const sender = (row.sender ?? "").toLowerCase();
-      return !SPAM_SENDERS.some((spam) => sender.includes(spam));
+      if (SPAM_SENDERS.some((spam) => sender.includes(spam))) return false;
+      const pd = (row.prospect_data as Record<string, unknown> | null);
+      const hasProspectName = pd?.nom && String(pd.nom) !== "null" && String(pd.nom).trim().length > 0;
+      return row.category === "LOCATION" || hasProspectName;
     });
 
     // 3. Déduplication par sender — garder 1 email par prospect (le plus avancé)
