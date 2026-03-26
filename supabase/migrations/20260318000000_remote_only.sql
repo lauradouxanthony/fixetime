@@ -1,0 +1,1 @@
+-- remote only migration (applied directly in Supabase dashboard)
