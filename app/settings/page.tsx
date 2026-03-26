@@ -525,8 +525,8 @@ function TabDocuments() {
 function TabFaq() {
   const { toast } = useToast();
   const [entries, setEntries] = useState<FaqEntry[]>([
-    { id: "1", question: "Les charges sont-elles comprises ?", reponse: "Non, les charges sont en supplément." },
-    { id: "2", question: "Animaux acceptés ?", reponse: "Selon le propriétaire, à préciser lors de la visite." },
+    { id: "1", question: "Comment se déroule la visite ?", reponse: "La visite dure environ 30 minutes, accompagnée de notre agent. Munissez-vous d'une pièce d'identité." },
+    { id: "2", question: "Quels documents faut-il fournir pour constituer un dossier ?", reponse: "Les 3 dernières fiches de paie, le contrat de travail, le dernier avis d'imposition et une pièce d'identité." },
   ]);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
@@ -582,9 +582,14 @@ function TabFaq() {
     <div className="space-y-4">
       <Card title="Questions / Réponses fréquentes">
         <div className="flex items-start justify-between gap-3">
-          <p className="text-xs flex-1" style={{ color: "rgb(100 116 139)" }}>
-            L'IA utilise ces réponses pour traiter les emails de type "Info" automatiquement.
-          </p>
+          <div className="flex-1 space-y-1">
+            <p className="text-xs font-medium" style={{ color: "rgb(71 85 105)" }}>
+              Renseignez ici uniquement les questions générales sur votre agence (processus, documents requis, signature…).
+            </p>
+            <p className="text-xs" style={{ color: "rgb(148 163 184)" }}>
+              Les infos spécifiques à chaque bien (animaux, charges, ascenseur, disponibilité) se configurent directement dans la fiche de chaque bien.
+            </p>
+          </div>
           <button
             onClick={generateFaq}
             disabled={generating}
@@ -610,11 +615,11 @@ function TabFaq() {
             <div key={entry.id} className="rounded-lg border p-3 space-y-2 animate-fade-in" style={{ borderColor: "rgb(226 232 240)" }}>
               <div>
                 <Label>Question</Label>
-                <Input value={entry.question} onChange={(v) => update(entry.id, "question", v)} placeholder="Ex: Charges comprises ?" />
+                <Input value={entry.question} onChange={(v) => update(entry.id, "question", v)} placeholder="Ex: Comment se déroule la visite ?" />
               </div>
               <div>
                 <Label>Réponse de l'IA</Label>
-                <Input value={entry.reponse} onChange={(v) => update(entry.id, "reponse", v)} placeholder="Ex: Les charges sont de 80€/mois." />
+                <Input value={entry.reponse} onChange={(v) => update(entry.id, "reponse", v)} placeholder="Ex: La visite dure environ 30 minutes, accompagnée de notre agent." />
               </div>
               <button onClick={() => remove(entry.id)} className="text-xs" style={{ color: "rgb(220 38 38)" }}>
                 Supprimer

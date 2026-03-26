@@ -18,10 +18,9 @@ export async function PATCH(
     const body = await req.json();
     const update: Record<string, unknown> = {};
 
-    // title → name (colonne actuelle) + title (post-migration)
+    // title → name (seule colonne existante en base)
     if ("title" in body) {
       update.name = body.title;
-      update.title = body.title; // sera ignoré si colonne n'existe pas encore
     }
     if ("address" in body) update.address = body.address;
     if ("type" in body) update.type = body.type;
@@ -48,12 +47,18 @@ export async function PATCH(
       .single();
 
     if (error) {
-      // Retry sans les colonnes potentiellement manquantes
+      // Retry sans les colonnes potentiellement manquantes (colonne title absente, etc.)
       console.error("[PROPERTY_PATCH] First attempt failed:", error.message);
       const safeUpdate: Record<string, unknown> = {};
       if ("title" in body) safeUpdate.name = body.title;
       if ("address" in body) safeUpdate.address = body.address;
       if ("rent" in body) safeUpdate.rent = parseInt(String(body.rent), 10);
+      if ("animaux_acceptes" in body) safeUpdate.animaux_acceptes = Boolean(body.animaux_acceptes);
+      if ("parking_inclus" in body) safeUpdate.parking_inclus = Boolean(body.parking_inclus);
+      if ("charges_mensuelles" in body) safeUpdate.charges_mensuelles = body.charges_mensuelles ? parseInt(String(body.charges_mensuelles), 10) : null;
+      if ("meuble" in body) safeUpdate.meuble = Boolean(body.meuble);
+      if ("disponible_a_partir_de" in body) safeUpdate.disponible_a_partir_de = body.disponible_a_partir_de ?? null;
+      if ("notes_specifiques" in body) safeUpdate.notes_specifiques = body.notes_specifiques?.trim() ?? null;
 
       if (Object.keys(safeUpdate).length > 0) {
         const { data: d2, error: e2 } = await supabaseAdmin
