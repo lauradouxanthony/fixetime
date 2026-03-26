@@ -100,12 +100,17 @@ function PropertyForm({
             rows={3} placeholder="Caractéristiques, étage, charges…"
             className={`${inputCls} resize-none`} style={inputStyle} />
         </div>
-        <div className="col-span-2 flex items-center gap-3">
-          <input type="checkbox" id="available" checked={available}
-            onChange={(e) => setAvailable(e.target.checked)} className="rounded w-4 h-4" />
-          <label htmlFor="available" className="text-sm" style={{ color: "rgb(71 85 105)" }}>
-            Disponible à la location
-          </label>
+        <div className="col-span-2">
+          <div className="flex items-center gap-3">
+            <input type="checkbox" id="available" checked={available}
+              onChange={(e) => setAvailable(e.target.checked)} className="rounded w-4 h-4" />
+            <label htmlFor="available" className="text-sm font-medium" style={{ color: "rgb(71 85 105)" }}>
+              ✅ Bien actif — accepter les candidatures
+            </label>
+          </div>
+          <p className="text-xs mt-1 ml-7" style={{ color: "rgb(148 163 184)" }}>
+            La date de disponibilité effective est définie dans le champ ci-dessous.
+          </p>
         </div>
 
         {/* ── FAQ par bien ── */}
