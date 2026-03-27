@@ -251,7 +251,7 @@ BIEN CONCERNÉ :
 - Loyer : ${(bien.loyer as number) ?? "?"}€ + charges : ${bien.charges != null ? `${bien.charges}€/mois` : "inconnues (à confirmer — ne pas inventer de montant)"}
 - Type : ${(bien.type as string) ?? "?"}${bien.meuble ? " — Meublé" : " — Non meublé"}
 - Animaux : ${bien.animaux_acceptes ? "Acceptés" : "Non acceptés"}
-- Parking : ${bien.parking_inclus ? "Inclus" : "Non inclus"}${bien.disponible_a_partir_de ? `\n- Disponible à partir du : ${bien.disponible_a_partir_de}` : ""}${bien.notes_specifiques ? `\n- Notes : ${bien.notes_specifiques}` : ""}` : ""}
+- Parking : ${bien.parking_inclus ? "Inclus" : "Non inclus"}${bien.disponible_a_partir_de ? `\n- Disponible à partir du : ${bien.disponible_a_partir_de}` : ""}${bien.description ? `\n- Description : ${bien.description}` : ""}${bien.notes_specifiques ? `\n- Notes : ${bien.notes_specifiques}` : ""}` : ""}
 ${faqContext ? `\nFAQ AGENCE (questions générales uniquement — processus, signature, documents) :\n${faqContext}` : ""}
 
 RÈGLE ABSOLUE — QUESTIONS SPÉCIFIQUES AU BIEN :
@@ -388,7 +388,7 @@ export async function POST(req: Request) {
     if (propertyId) {
       const { data: prop } = await supabaseAdmin
         .from("properties")
-        .select("id, title, address, rent, charges_mensuelles, type, animaux_acceptes, parking_inclus, meuble, disponible_a_partir_de, notes_specifiques")
+        .select("id, title, address, rent, charges_mensuelles, type, animaux_acceptes, parking_inclus, meuble, disponible_a_partir_de, notes_specifiques, description")
         .eq("id", propertyId)
         .maybeSingle();
       // Normaliser rent → loyer pour compatibilité avec le prompt
@@ -403,7 +403,7 @@ export async function POST(req: Request) {
     if (!propertyId) {
       const { data: allProps } = await supabaseAdmin
         .from("properties")
-        .select("id, title, address, rent, charges_mensuelles, type, animaux_acceptes, parking_inclus, meuble, disponible_a_partir_de, notes_specifiques")
+        .select("id, title, address, rent, charges_mensuelles, type, animaux_acceptes, parking_inclus, meuble, disponible_a_partir_de, notes_specifiques, description")
         .eq("user_id", user.id);
 
       if (allProps && allProps.length > 0) {

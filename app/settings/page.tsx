@@ -912,14 +912,13 @@ function TabIA() {
 
   const save = async () => {
     setSaving(true);
-    const [modeRes, iaOk] = await Promise.all([
-      fetch("/api/settings", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ pipeline_mode: mode }),
-      }),
-      saveSection("ia", { instructions, ton_de_voix: tonDeVoix, priorite_profils: prioriteProfils, seuil_autopilote: seuilAutopilote, blacklist_senders: blacklistText.split("\n").map(s => s.trim()).filter(Boolean) }),
-    ]);
+    // Séquentiel pour éviter la race condition (les deux font read-then-write sur email_rules)
+    const modeRes = await fetch("/api/settings", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pipeline_mode: mode }),
+    });
+    const iaOk = await saveSection("ia", { instructions, ton_de_voix: tonDeVoix, priorite_profils: prioriteProfils, seuil_autopilote: seuilAutopilote, blacklist_senders: blacklistText.split("\n").map(s => s.trim()).filter(Boolean) });
     setSaving(false);
     const modeOk = modeRes.ok;
     if (modeOk && iaOk) {
