@@ -167,7 +167,7 @@ function SolvabiliteWidget({ body, prospectData, propertyId }: {
           />
         </div>
         <div>
-          <label className="text-xs mb-1 block" style={{ color: "rgb(100 116 139)" }}>Loyer demandé (€/mois)</label>
+          <label className="text-xs mb-1 block" style={{ color: "rgb(100 116 139)" }}>Loyer du bien (€/mois)</label>
           <input
             type="number"
             value={loyer}

@@ -1085,7 +1085,6 @@ RÈGLES STRICTES :
 - telephone : numéro FR format 06, 07, +336, +337, 0033 — extraire tel quel sans transformation. null si absent.
 - situation_pro : "CDI"|"CDD"|"AUTO_ENTREPRENEUR"|"ETUDIANT"|"RETRAITE"|null — chercher : "en CDI", "contrat CDI", "salarié", "auto-entrepreneur", "freelance", "étudiant", "université", "retraité".
 - revenus_mensuels : salaire NET mensuel en € que GAGNE le candidat. Chercher : "je gagne X€", "salaire de X€", "revenus de X€", "X€ net/mois", "X€/mois", "X€ par mois", "X net mensuel". JAMAIS confondre avec le loyer demandé. null si absent.
-- loyer_max : loyer du BIEN à louer mentionné dans l'email. Ex: "loyer de 850€" → 850. DIFFÉRENT des revenus. null si absent.
 - animaux : true si oui, false si non, null si non mentionné
 - nb_personnes : nombre total de personnes dans le foyer (incluant le candidat), number|null
 - garant : "OUI"|"NON"|"A_CONFIRMER"|null — chercher : "garant", "caution solidaire", "se porter garant"
@@ -1097,7 +1096,6 @@ JSON attendu (TOUS les champs, null si absent) :
   "telephone": string|null,
   "situation_pro": "CDI"|"CDD"|"AUTO_ENTREPRENEUR"|"ETUDIANT"|"RETRAITE"|null,
   "revenus_mensuels": number|null,
-  "loyer_max": number|null,
   "animaux": boolean|null,
   "nb_personnes": number|null,
   "garant": "OUI"|"NON"|"A_CONFIRMER"|null,

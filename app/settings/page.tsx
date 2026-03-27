@@ -107,6 +107,18 @@ function SaveButton({ onClick, saved, loading }: { onClick: () => void; saved: b
 }
 
 /* ── TAB 1 : RÈGLES LOCATIVES ── */
+const ALL_CHAMPS_QUALIFICATION = [
+  { key: "situation_pro",         label: "Situation professionnelle (CDI/CDD/etc)", defaultOn: true },
+  { key: "revenus_mensuels",      label: "Revenus nets mensuels", defaultOn: true },
+  { key: "garant",                label: "Garant", defaultOn: true },
+  { key: "animaux",               label: "Animaux", defaultOn: true },
+  { key: "nb_personnes",          label: "Nombre de personnes dans le foyer", defaultOn: false },
+  { key: "date_entree_souhaitee", label: "Date d'entrée souhaitée", defaultOn: false },
+  { key: "duree_location",        label: "Durée de location souhaitée", defaultOn: false },
+  { key: "vehicule",              label: "Véhicule (pour parking)", defaultOn: false },
+];
+const DEFAULT_CHAMPS = ALL_CHAMPS_QUALIFICATION.filter(c => c.defaultOn).map(c => c.key);
+
 function TabLocatif() {
   const { toast } = useToast();
   const [nomAgence, setNomAgence] = useState("");
@@ -116,13 +128,14 @@ function TabLocatif() {
   const [garantObligatoire, setGarantObligatoire] = useState({ cdd: true, auto: true, etudiant: true, retraite: false });
   const [animaux, setAnimaux] = useState<"oui" | "non" | "selon">("selon");
   const [docs, setDocs] = useState({ fiches_paie: true, contrat: true, avis_imposition: true, piece_identite: true, rib: false });
+  const [champsQualification, setChampsQualification] = useState<string[]>(DEFAULT_CHAMPS);
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     loadSection("locatif", {
       nomAgence: "", typesBiens, multiplicateur: 3, profils,
-      garantObligatoire, animaux: "selon", docs,
+      garantObligatoire, animaux: "selon", docs, champsQualification: DEFAULT_CHAMPS,
     }).then((d: Record<string, unknown>) => {
       if (d.nomAgence !== undefined) setNomAgence(d.nomAgence as string);
       if (d.typesBiens) setTypesBiens(d.typesBiens as typeof typesBiens);
@@ -131,13 +144,14 @@ function TabLocatif() {
       if (d.garantObligatoire) setGarantObligatoire(d.garantObligatoire as typeof garantObligatoire);
       if (d.animaux) setAnimaux(d.animaux as typeof animaux);
       if (d.docs) setDocs(d.docs as typeof docs);
+      if (Array.isArray(d.champsQualification)) setChampsQualification(d.champsQualification as string[]);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const save = async () => {
     setSaving(true);
-    const ok = await saveSection("locatif", { nomAgence, typesBiens, multiplicateur, profils, garantObligatoire, animaux, docs });
+    const ok = await saveSection("locatif", { nomAgence, typesBiens, multiplicateur, profils, garantObligatoire, animaux, docs, champsQualification });
     setSaving(false);
     if (ok) {
       setSaved(true);
@@ -289,6 +303,28 @@ function TabLocatif() {
                 className="accent-indigo-600"
               />
               <span className="text-sm" style={{ color: "rgb(30 41 59)" }}>{d.label}</span>
+            </label>
+          ))}
+        </div>
+      </Card>
+
+      <Card title="📝 Informations à collecter">
+        <p className="text-xs" style={{ color: "rgb(100 116 139)" }}>
+          Champs que l'IA demandera lors de la qualification d'un prospect.
+        </p>
+        <div className="space-y-2">
+          {ALL_CHAMPS_QUALIFICATION.map((c) => (
+            <label key={c.key} className="flex items-center gap-2 cursor-pointer px-3 py-2 rounded-lg" style={{ border: "1px solid rgb(226 232 240)" }}>
+              <input
+                type="checkbox"
+                checked={champsQualification.includes(c.key)}
+                onChange={(e) => {
+                  if (e.target.checked) setChampsQualification([...champsQualification, c.key]);
+                  else setChampsQualification(champsQualification.filter((k) => k !== c.key));
+                }}
+                className="accent-indigo-600"
+              />
+              <span className="text-sm" style={{ color: "rgb(30 41 59)" }}>{c.label}</span>
             </label>
           ))}
         </div>

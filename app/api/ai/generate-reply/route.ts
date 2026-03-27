@@ -117,11 +117,13 @@ function buildSystemPrompt(params: {
   docsList: string[];
   faqContext: string;
   multipleProperties: Array<{ title: string }>;
+  champsQualification: string[];
 }): string {
   const {
     nomAgence, multiplicateur, seuilAutopilote, tonDeVoix, instructions,
     prioriteProfils, heureDebut, heureFin, dureeVisite, etapeProcess,
     garantObligatoire, prospect, bien, docsList, faqContext, multipleProperties,
+    champsQualification,
   } = params;
 
   const loyerBien = (bien?.loyer as number | null) ?? prospect.loyer_max;
@@ -139,7 +141,7 @@ function buildSystemPrompt(params: {
 - next_etape = QUALIFICATION si nom + situation_pro identifiés dans l'email, sinon NEW`,
 
     QUALIFICATION: `ÉTAT QUALIFICATION :
-- Demander ce qui manque parmi : revenus_mensuels, garant, date_entree_souhaitee
+- Demander ce qui manque parmi : ${champsQualification.join(", ")}
 - Calculer solvabilité : revenus / loyer, critère agence = ${multiplicateur}x, seuil autopilote = ${seuilAutopilote}x
 - Si solvable ET CDI avec revenus ≥ ${seuilAutopilote}x le loyer → proposer visite → mode AUTOPILOTE → next_etape = VISITE_PROPOSEE
 - Si profil atypique (AUTO_ENTREPRENEUR, CDD, ETUDIANT) ou solvabilité entre 2.5x et ${seuilAutopilote}x → mode DRAFT
@@ -317,6 +319,10 @@ export async function POST(req: Request) {
     const nomAgence       = (locatif.nomAgence       as string)  ?? "";
     const multiplicateur  = (locatif.multiplicateur  as number)  ?? 3;
     const garantObligatoire = (locatif.garantObligatoire as Record<string, boolean>) ?? { CDD: true, AUTO_ENTREPRENEUR: true, ETUDIANT: true, RETRAITE: false };
+    const DEFAULT_CHAMPS_QUALIFICATION = ["situation_pro", "revenus_mensuels", "garant", "animaux"];
+    const champsQualification: string[] = Array.isArray(locatif.champsQualification)
+      ? (locatif.champsQualification as string[])
+      : DEFAULT_CHAMPS_QUALIFICATION;
     const seuilAutopilote = (iaSection.seuil_autopilote as number) ?? 3.5;
     const tonDeVoix       = (iaSection.ton_de_voix   as string)  ?? "Professionnel et formel";
     const prioriteProfils = (iaSection.priorite_profils as string) ?? "";
@@ -416,7 +422,7 @@ export async function POST(req: Request) {
     const systemPrompt = buildSystemPrompt({
       nomAgence, multiplicateur, seuilAutopilote, tonDeVoix, instructions, prioriteProfils,
       heureDebut, heureFin, dureeVisite, etapeProcess, garantObligatoire,
-      prospect, bien, docsList, faqContext, multipleProperties,
+      prospect, bien, docsList, faqContext, multipleProperties, champsQualification,
     });
 
     const sender = (email as unknown as { sender: string | null }).sender ?? "Inconnu";

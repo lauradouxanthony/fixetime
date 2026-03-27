@@ -444,23 +444,35 @@ function LeadCard({
 }
 
 /* ─── ProspectDrawer ─── */
-function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVisiteAnnulee }: {
+function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVisiteAnnulee, propertyRent, champsQualification }: {
   lead: Lead;
   onClose: () => void;
   onMoveToStage: (id: string, etape: EtapeProcess) => void;
   onVisiteEffectuee: (id: string) => void;
   onVisiteAnnulee: (id: string) => void;
+  propertyRent?: number | null;
+  champsQualification?: string[];
 }) {
   const pd = lead.prospect_data;
   const etape = getEtapeFromLead(lead);
   const config = ETAPE_CONFIG[etape];
   const nom = extractDisplayName(lead);
   const revenus = pd?.revenus_mensuels ?? null;
-  const loyer = pd?.loyer_max ?? null;
+  const loyer = propertyRent ?? null;  // loyer du bien (property.rent), pas du prospect
   const ratio = revenus && loyer ? (revenus / loyer) : null;
   const solvable = ratio ? ratio >= 3 : null;
   const tl = getTrafficLight(lead);
   const tlCfg = TRAFFIC_LIGHT_CONFIG[tl];
+
+  // Compteur de qualification
+  const activeChamps = champsQualification ?? DEFAULT_CHAMPS_QUALIFICATION;
+  const pdAny = pd as Record<string, unknown> | null;
+  const champsRemplis = activeChamps.filter(k => {
+    const v = pdAny?.[k];
+    return v !== null && v !== undefined && String(v).trim() !== "" && String(v) !== "null";
+  });
+  const qualifScore = champsRemplis.length;
+  const qualifTotal = activeChamps.length;
 
   const [timeline, setTimeline] = useState<Array<{ id: string; action_type: string; description: string | null; created_at: string }>>([]);
   const [noteText, setNoteText] = useState("");
@@ -676,6 +688,12 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
               <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: tlCfg.bg, color: tlCfg.color }}>
                 {tl === "AUTOPILOTE" ? "🟢" : tl === "DRAFT" ? "🟡" : "🔴"} {tlCfg.label}
               </span>
+              <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{
+                background: qualifScore >= qualifTotal ? "rgba(22,163,74,0.1)" : qualifScore >= 2 ? "rgba(234,88,12,0.1)" : "rgba(226,232,240,0.6)",
+                color: qualifScore >= qualifTotal ? "rgb(22 163 74)" : qualifScore >= 2 ? "rgb(234 88 12)" : "rgb(100 116 139)",
+              }}>
+                {qualifScore}/{qualifTotal} infos
+              </span>
             </div>
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl ml-4">✕</button>
@@ -810,12 +828,14 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
                     <span>{Math.round((receivedCount / Math.max(total, 1)) * 100)}%</span>
                   </div>
                 </div>
-                <div>
-                  <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Loyer visé</div>
-                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
-                    {loyer ? `${loyer.toLocaleString("fr-FR")} €` : "—"}
+                {propertyRent && (
+                  <div>
+                    <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Loyer du bien</div>
+                    <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+                      {propertyRent.toLocaleString("fr-FR")} €/mois
+                    </div>
                   </div>
-                </div>
+                )}
                 <div>
                   <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Garant</div>
                   <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
@@ -1241,6 +1261,8 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
   );
 }
 
+const DEFAULT_CHAMPS_QUALIFICATION = ["situation_pro", "revenus_mensuels", "garant", "animaux"];
+
 export default function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
   const [loading, setLoading] = useState(true);
@@ -1251,6 +1273,7 @@ export default function LeadsPage() {
   const [filterProperty, setFilterProperty] = useState<string>("");
   const [filterSolvable, setFilterSolvable] = useState<"" | "oui" | "non">("");
   const [selectedLead, setSelectedLead] = useState<Lead | null>(null);
+  const [champsQualification, setChampsQualification] = useState<string[]>(DEFAULT_CHAMPS_QUALIFICATION);
   const { toast } = useToast();
 
   const ETAPE_ORDER: Partial<Record<string, number>> = {
@@ -1393,6 +1416,14 @@ export default function LeadsPage() {
       if (propsRes.ok) {
         const propsData = await propsRes.json();
         setProperties((propsData.properties ?? []).map((p: any) => ({ id: p.id, title: p.title, rent: p.rent })));
+      }
+
+      // Charger les champs de qualification configurés
+      const settingsRes = await fetch("/api/settings", { cache: "no-store" });
+      if (settingsRes.ok) {
+        const sd = await settingsRes.json();
+        const champs = sd?.email_rules?.ft_locatif?.champsQualification;
+        if (Array.isArray(champs) && champs.length > 0) setChampsQualification(champs);
       }
     } catch { /* graceful */ }
     setLoading(false);
@@ -1783,6 +1814,8 @@ export default function LeadsPage() {
           onMoveToStage={handleMoveToStage}
           onVisiteEffectuee={handleVisiteEffectuee}
           onVisiteAnnulee={handleVisiteAnnulee}
+          propertyRent={properties.find(p => p.id === (selectedLead as any).property_id)?.rent ?? null}
+          champsQualification={champsQualification}
         />
       )}
     </AppShell>
