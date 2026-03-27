@@ -1299,16 +1299,20 @@ export default function LeadsPage() {
     const pd = lead.prospect_data;
     const etape = (pd as Record<string, unknown> | null)?.etape_process as string | null | undefined;
     const hasRealName = !!(pd?.nom && String(pd.nom) !== "null" && String(pd.nom).trim().length > 0);
-    const hasFinancialData = !!(pd?.situation_pro || pd?.revenus_mensuels);
+    const hasSituationPro = !!(pd?.situation_pro);
+    const hasFinancialData = hasSituationPro || !!(pd?.revenus_mensuels);
 
-    // FIX 2 — En phase dossier, exiger des données financières
-    // (évite que des contacts internes apparaissent en "Dossier reçu")
+    // RÈGLE ABSOLUE — nom + situation_pro → toujours valide
+    // Court-circuite TOUS les autres filtres (sender, domaine, sujet, étape)
+    if (hasRealName && hasSituationPro) return true;
+
+    // En phase dossier sans règle absolue → exiger des données financières
+    // (évite que des contacts internes sans dossier apparaissent en "Dossier reçu")
     if (etape === "DOSSIER_RECU" || etape === "DOSSIER_DEMANDE") {
       return hasFinancialData;
     }
 
-    // FIX 1 — Si l'IA a extrait un nom réel, c'est un prospect identifié
-    // → valide AVANT le filtre parasite (le sujet peut contenir "offre", "garantie", etc.)
+    // Nom seul (sans situation_pro) → valide avant filtre parasite
     if (hasRealName) return true;
 
     // Sans nom IA → filtres de sécurité classiques

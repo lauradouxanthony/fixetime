@@ -114,9 +114,15 @@ export async function GET() {
         }
       }
 
+      // Le spread { ...mergedPd, ...row.prospect_data } propage les nulls et
+      // écrase les valeurs reconstruites. On ne garde que les entrées non-null du row.
+      const rowPdNonNull = Object.fromEntries(
+        Object.entries((row.prospect_data as Record<string, unknown>) ?? {})
+          .filter(([, v]) => v !== null && v !== undefined)
+      );
       return {
         ...row,
-        prospect_data: { ...mergedPd, ...(row.prospect_data as Record<string, unknown> ?? {}) },
+        prospect_data: { ...mergedPd, ...rowPdNonNull },
         thread_count: group.length,
       };
     });

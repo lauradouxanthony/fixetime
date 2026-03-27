@@ -251,11 +251,37 @@ export default function PipelinePage() {
     return { location, info, horssujet, total: emails.length };
   }, [emails]);
 
+  // Mots-clés immobiliers pour qualification des emails LOCATION
+  const IMMO_KW = ["visite", "location", "louer", "appartement", "logement",
+    "t1", "t2", "t3", "chambre", "studio", "loyer", "bail",
+    "locataire", "demande", "candidature", "intéressé", "appart"];
+
+  // Un email LOCATION est qualifié s'il a au moins une donnée prospect
+  // ou un mot immobilier dans le sujet. Masque les pubs/webinaires mal classifiés.
+  function isLocationQualified(email: Email): boolean {
+    const pd = (email as any).prospect_data as Record<string, unknown> | null;
+    if (!pd) return true; // pas encore analysé → afficher
+    const nom = pd.nom as string | null | undefined;
+    if (nom && String(nom) !== "null" && String(nom).trim().length > 0) return true;
+    if (pd.situation_pro) return true;
+    if (pd.revenus_mensuels) return true;
+    const s = (email.subject ?? "").toLowerCase();
+    return IMMO_KW.some((kw) => s.includes(kw));
+  }
+
   const filteredEmails = useMemo(() => {
     let list = emails;
-    // BLOC 3C : masquer HORS_SUJET par défaut (sauf si filtre explicite ou showHorsSujet)
+    // Masquer HORS_SUJET par défaut (sauf si filtre explicite ou showHorsSujet)
     if (!showHorsSujet && intentionFilter === "all") {
       list = list.filter((e) => e.category !== "HORS_SUJET");
+    }
+    // Masquer les emails LOCATION sans qualification prospect
+    // (pubs, webinaires, commandes mal classifiées comme LOCATION)
+    if (intentionFilter !== "INFO" && intentionFilter !== "HORS_SUJET") {
+      list = list.filter((e) => {
+        if ((e.category ?? "").toUpperCase() !== "LOCATION") return true;
+        return isLocationQualified(e);
+      });
     }
     if (!search.trim()) return list;
     const q = search.toLowerCase();
