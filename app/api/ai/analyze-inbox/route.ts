@@ -806,6 +806,27 @@ export async function POST(req: Request) {
       const ftAgence = rules.ft_agence ?? {};
       const ftFaq: { question: string; reponse: string }[] = rules.ft_faq ?? [];
 
+      // ── Blacklist expéditeurs ─────────────────────────────────────────────
+      const blacklistSenders: string[] = Array.isArray(ftIa.blacklist_senders) ? ftIa.blacklist_senders as string[] : [];
+      const senderLower = (email.sender ?? "").toLowerCase();
+      const isBlacklisted = blacklistSenders.some((entry: string) => {
+        const e = entry.trim().toLowerCase();
+        return e.length > 0 && senderLower.includes(e);
+      });
+      if (isBlacklisted) {
+        await supabaseAdmin.from("emails").update({
+          category: "HORS_SUJET",
+          classification_reason: "Expéditeur blacklisté",
+          decision: "ignorer",
+          estimated_time: 0,
+          recommended_action: "archive",
+          summary: "Expéditeur ignoré selon les règles de l'agent.",
+        }).eq("id", email.id);
+        analyzed++;
+        console.log(`[BLACKLIST] ${email.sender} → HORS_SUJET`);
+        continue;
+      }
+
       const multiplicateur = ftLocatif.multiplicateur ?? 3;
       const agenceName = ftAgence.name ?? "l'agence";
       const zones = ftIa.zones ?? "";

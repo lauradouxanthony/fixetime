@@ -863,6 +863,7 @@ function TabIA() {
   const [tonDeVoix, setTonDeVoix] = useState<"Professionnel et formel" | "Chaleureux et dynamique" | "Neutre et efficace">("Professionnel et formel");
   const [prioriteProfils, setPrioriteProfils] = useState("");
   const [seuilAutopilote, setSeuilAutopilote] = useState(3.5);
+  const [blacklistText, setBlacklistText] = useState("");
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
@@ -890,6 +891,7 @@ function TabIA() {
         if (ia.ton_de_voix) setTonDeVoix(ia.ton_de_voix as typeof tonDeVoix);
         if (ia.priorite_profils) setPrioriteProfils(ia.priorite_profils as string);
         if (typeof ia.seuil_autopilote === "number") setSeuilAutopilote(ia.seuil_autopilote);
+        if (Array.isArray(ia.blacklist_senders)) setBlacklistText((ia.blacklist_senders as string[]).join("\n"));
         setPreviewParams({
           nomAgence: locatif.nomAgence || "",
           multiplicateur: locatif.multiplicateur || 3,
@@ -916,7 +918,7 @@ function TabIA() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ pipeline_mode: mode }),
       }),
-      saveSection("ia", { instructions, ton_de_voix: tonDeVoix, priorite_profils: prioriteProfils, seuil_autopilote: seuilAutopilote }),
+      saveSection("ia", { instructions, ton_de_voix: tonDeVoix, priorite_profils: prioriteProfils, seuil_autopilote: seuilAutopilote, blacklist_senders: blacklistText.split("\n").map(s => s.trim()).filter(Boolean) }),
     ]);
     setSaving(false);
     const modeOk = modeRes.ok;
@@ -1044,6 +1046,20 @@ function TabIA() {
         <p className="text-xs mt-1" style={{ color: "rgb(148 163 184)" }}>
           Autopilote activé si revenus ≥ {seuilAutopilote}x le loyer (CDI requis)
         </p>
+      </Card>
+
+      <Card title="🚫 Expéditeurs à ignorer">
+        <p className="text-xs" style={{ color: "rgb(100 116 139)" }}>
+          Ces expéditeurs seront automatiquement classés HORS_SUJET sans appel IA. Un email ou domaine par ligne.
+        </p>
+        <textarea
+          value={blacklistText}
+          onChange={(e) => setBlacklistText(e.target.value)}
+          rows={4}
+          placeholder={"erwanndixit@gmail.com\n@newsletter.com\ninfo@"}
+          className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none resize-none font-mono"
+          style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+        />
       </Card>
 
       {/* Preview prompt collapsible */}

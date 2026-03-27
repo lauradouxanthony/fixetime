@@ -1398,6 +1398,16 @@ function BienConcerneWidget({ propertyId }: { propertyId: string | null }) {
   );
 }
 
+/** Extrait le texte de réponse depuis ai_reply — supporte JSON legacy et texte brut */
+function parseAiReplyText(raw: string | null): string | null {
+  if (!raw) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    if (typeof parsed?.reply === "string") return parsed.reply;
+  } catch { /* not JSON — already plain text */ }
+  return raw;
+}
+
 /* ===================== COMPONENT PRINCIPAL ===================== */
 
 export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | null; mode?: PipelineMode }) {
@@ -1424,7 +1434,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
 
   useEffect(() => {
     setBody(email?.body ?? null);
-    setAiReply((email as any)?.ai_reply ?? null);
+    setAiReply(parseAiReplyText((email as any)?.ai_reply ?? null));
     setReplyOpen(false);
     setShowFullBody(false);
     setEmailSent(false);
