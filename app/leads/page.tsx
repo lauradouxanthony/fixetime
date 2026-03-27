@@ -1296,14 +1296,24 @@ export default function LeadsPage() {
 
   /** Un prospect est valide si au moins une condition de qualification est remplie */
   function isValidProspect(lead: Lead): boolean {
-    // Exclure immédiatement les sujets parasites connus
-    if (isParasiteSubject(lead)) return false;
     const pd = lead.prospect_data;
-    // Valide si données prospect extraites (ignorer la valeur string "null")
-    if (pd?.nom && String(pd.nom) !== "null" && String(pd.nom).trim().length > 0) return true;
-    if (pd?.situation_pro) return true;
-    if (pd?.revenus_mensuels) return true;
-    // Valide si sujet immobilier
+    const etape = (pd as Record<string, unknown> | null)?.etape_process as string | null | undefined;
+    const hasRealName = !!(pd?.nom && String(pd.nom) !== "null" && String(pd.nom).trim().length > 0);
+    const hasFinancialData = !!(pd?.situation_pro || pd?.revenus_mensuels);
+
+    // FIX 2 — En phase dossier, exiger des données financières
+    // (évite que des contacts internes apparaissent en "Dossier reçu")
+    if (etape === "DOSSIER_RECU" || etape === "DOSSIER_DEMANDE") {
+      return hasFinancialData;
+    }
+
+    // FIX 1 — Si l'IA a extrait un nom réel, c'est un prospect identifié
+    // → valide AVANT le filtre parasite (le sujet peut contenir "offre", "garantie", etc.)
+    if (hasRealName) return true;
+
+    // Sans nom IA → filtres de sécurité classiques
+    if (isParasiteSubject(lead)) return false;
+    if (hasFinancialData) return true;
     if (hasImmoSubject(lead)) return true;
     return false;
   }

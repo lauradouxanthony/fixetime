@@ -77,11 +77,24 @@ function computeScore(email: Email): number {
  *
  * À score égal → plus récent en premier.
  */
+function hasProspectQualification(email: Email): boolean {
+  const pd = (email as any).prospect_data as Record<string, unknown> | null;
+  if (!pd) return false;
+  const nom = pd.nom as string | null | undefined;
+  return !!(
+    (nom && String(nom) !== "null" && nom.trim().length > 0) ||
+    pd.situation_pro ||
+    pd.revenus_mensuels
+  );
+}
+
 function sortEmails(emails: Email[]): Email[] {
   const getGroup = (email: Email): number => {
     const cat = (email.category || "").toUpperCase();
     if (!cat && !email.decision) return 2;          // non analysé
-    if (cat === "LOCATION" && computeScore(email) >= 8) return 0;
+    // Leads chauds : LOCATION score ≥ 8 ET données prospect qualifiantes
+    // (évite que pubs/webinaires marqués is_important remontent en groupe 0)
+    if (cat === "LOCATION" && computeScore(email) >= 8 && hasProspectQualification(email)) return 0;
     if (cat === "LOCATION") return 1;
     if (cat === "INFO") return 3;
     if (cat === "HORS_SUJET") return 4;
