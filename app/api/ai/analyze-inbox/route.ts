@@ -1180,7 +1180,9 @@ JSON attendu (TOUS les champs, null si absent) :
 
         // ── BLOC 3 : Matching propriété ──────────────────────────────────────
         const userProperties = await getUserProperties(email.user_id);
-        const propertyMatch = matchPropertyFromEmail(content, email.subject ?? null, userProperties);
+        // Filtrer uniquement les biens actifs (available !== false)
+        const activeProperties = userProperties.filter((p: any) => p.available !== false);
+        const propertyMatch = matchPropertyFromEmail(content, email.subject ?? null, activeProperties);
         let matchedPropertyId: string | null = null;
         let matchedRent: number | null = null;
 
@@ -1188,14 +1190,14 @@ JSON attendu (TOUS les champs, null si absent) :
           matchedPropertyId = propertyMatch.propertyId;
           matchedRent = propertyMatch.rent;
           console.log(`[BLOC3] Bien matché: ${matchedPropertyId} (loyer: ${matchedRent}€)`);
-        } else if (userProperties.length === 0) {
-          console.log(`[BLOC3] Aucun bien configuré pour user ${email.user_id}`);
-        } else if (userProperties.length > 1) {
+        } else if (activeProperties.length === 0) {
+          console.log(`[BLOC3] Aucun bien actif configuré pour user ${email.user_id}`);
+        } else if (activeProperties.length > 1) {
           // Plusieurs biens, aucun match → note pour l'autopilote
-          console.log(`[BLOC3] ${userProperties.length} biens, aucun match précis`);
+          console.log(`[BLOC3] ${activeProperties.length} biens actifs, aucun match précis`);
           if (!prospectData) prospectData = {};
           prospectData.plusieurs_biens_disponibles = true;
-          prospectData.biens_disponibles = userProperties.map((p) => `${p.title}${p.address ? ` (${p.address})` : ""} — ${p.rent}€/mois`);
+          prospectData.biens_disponibles = activeProperties.map((p) => `${p.title}${p.address ? ` (${p.address})` : ""} — ${p.rent}€/mois`);
         }
 
         const revenus = (prospectData?.revenus_mensuels as number | null) ?? null;
@@ -1316,20 +1318,23 @@ JSON attendu (TOUS les champs, null si absent) :
       };
 
       // Merge DB non-destructif pour les champs normaux + avancement pour etape_process
+      // Fetch existing email once for prospect_data merge + property_id check
+      const { data: existingEmail } = await supabaseAdmin
+        .from("emails")
+        .select("prospect_data, property_id")
+        .eq("id", email.id)
+        .maybeSingle();
+
       if (prospectData) {
-        const { data: existingEmail } = await supabaseAdmin
-          .from("emails")
-          .select("prospect_data, property_id")
-          .eq("id", email.id)
-          .maybeSingle();
         const existing = ((existingEmail as any)?.prospect_data as Record<string, unknown> | null) ?? {};
         const mergedFinal = mergeProspect(existing, prospectData);
         (mainUpdate as any).prospect_data = mergedFinal;
+      }
 
-        // BLOC 3 : Mettre à jour property_id si non déjà renseigné
-        if (matchedPropertyId && !(existingEmail as any)?.property_id) {
-          (mainUpdate as any).property_id = matchedPropertyId;
-        }
+      // BLOC 3 : Mettre à jour property_id si non déjà renseigné (indépendant de prospectData)
+      if (matchedPropertyId && !(existingEmail as any)?.property_id) {
+        (mainUpdate as any).property_id = matchedPropertyId;
+        console.log(`[BLOC3] property_id assigné: ${matchedPropertyId}`);
       }
 
       try {
