@@ -118,12 +118,13 @@ function buildSystemPrompt(params: {
   faqContext: string;
   multipleProperties: Array<{ title: string }>;
   champsQualification: string[];
+  customQuestion: string;
 }): string {
   const {
     nomAgence, multiplicateur, seuilAutopilote, tonDeVoix, instructions,
     prioriteProfils, heureDebut, heureFin, dureeVisite, etapeProcess,
     garantObligatoire, prospect, bien, docsList, faqContext, multipleProperties,
-    champsQualification,
+    champsQualification, customQuestion,
   } = params;
 
   const loyerBien = (bien?.loyer as number | null) ?? prospect.loyer_max;
@@ -216,7 +217,7 @@ ALERTE (arrêter immédiatement, ne pas envoyer, notifier l'agent) :
 - Ton agressif : majuscules excessives, ponctuation multiple (!!!, ???)
 - Si ALERTE → reply = null
 
-${multiPropWarning}WORKFLOW ÉTAPE ACTUELLE (${etapeProcess}) :
+${customQuestion ? `QUESTION SUPPLÉMENTAIRE À POSER AU PROSPECT : ${customQuestion}\n\n` : ""}${multiPropWarning}WORKFLOW ÉTAPE ACTUELLE (${etapeProcess}) :
 ${etapeWorkflow}
 
 CONTEXTE AGENCE :
@@ -323,6 +324,7 @@ export async function POST(req: Request) {
     const champsQualification: string[] = Array.isArray(locatif.champsQualification)
       ? (locatif.champsQualification as string[])
       : DEFAULT_CHAMPS_QUALIFICATION;
+    const customQuestion = typeof locatif.customQuestion === "string" ? locatif.customQuestion.trim() : "";
     const seuilAutopilote = (iaSection.seuil_autopilote as number) ?? 3.5;
     const tonDeVoix       = (iaSection.ton_de_voix   as string)  ?? "Professionnel et formel";
     const prioriteProfils = (iaSection.priorite_profils as string) ?? "";
@@ -422,7 +424,7 @@ export async function POST(req: Request) {
     const systemPrompt = buildSystemPrompt({
       nomAgence, multiplicateur, seuilAutopilote, tonDeVoix, instructions, prioriteProfils,
       heureDebut, heureFin, dureeVisite, etapeProcess, garantObligatoire,
-      prospect, bien, docsList, faqContext, multipleProperties, champsQualification,
+      prospect, bien, docsList, faqContext, multipleProperties, champsQualification, customQuestion,
     });
 
     const sender = (email as unknown as { sender: string | null }).sender ?? "Inconnu";

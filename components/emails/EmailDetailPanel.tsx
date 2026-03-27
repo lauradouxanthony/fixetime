@@ -171,10 +171,9 @@ function SolvabiliteWidget({ body, prospectData, propertyId }: {
           <input
             type="number"
             value={loyer}
-            onChange={(e) => setLoyer(e.target.value)}
-            placeholder="ex: 900"
-            className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none focus:ring-2"
-            style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+            readOnly
+            className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none"
+            style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)", background: "rgb(248 250 252)" }}
           />
         </div>
       </div>

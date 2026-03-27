@@ -129,13 +129,14 @@ function TabLocatif() {
   const [animaux, setAnimaux] = useState<"oui" | "non" | "selon">("selon");
   const [docs, setDocs] = useState({ fiches_paie: true, contrat: true, avis_imposition: true, piece_identite: true, rib: false });
   const [champsQualification, setChampsQualification] = useState<string[]>(DEFAULT_CHAMPS);
+  const [customQuestion, setCustomQuestion] = useState<string>("");
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
     loadSection("locatif", {
       nomAgence: "", typesBiens, multiplicateur: 3, profils,
-      garantObligatoire, animaux: "selon", docs, champsQualification: DEFAULT_CHAMPS,
+      garantObligatoire, animaux: "selon", docs, champsQualification: DEFAULT_CHAMPS, customQuestion: "",
     }).then((d: Record<string, unknown>) => {
       if (d.nomAgence !== undefined) setNomAgence(d.nomAgence as string);
       if (d.typesBiens) setTypesBiens(d.typesBiens as typeof typesBiens);
@@ -145,13 +146,14 @@ function TabLocatif() {
       if (d.animaux) setAnimaux(d.animaux as typeof animaux);
       if (d.docs) setDocs(d.docs as typeof docs);
       if (Array.isArray(d.champsQualification)) setChampsQualification(d.champsQualification as string[]);
+      if (typeof d.customQuestion === "string") setCustomQuestion(d.customQuestion);
     });
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   const save = async () => {
     setSaving(true);
-    const ok = await saveSection("locatif", { nomAgence, typesBiens, multiplicateur, profils, garantObligatoire, animaux, docs, champsQualification });
+    const ok = await saveSection("locatif", { nomAgence, typesBiens, multiplicateur, profils, garantObligatoire, animaux, docs, champsQualification, customQuestion });
     setSaving(false);
     if (ok) {
       setSaved(true);
@@ -327,6 +329,14 @@ function TabLocatif() {
               <span className="text-sm" style={{ color: "rgb(30 41 59)" }}>{c.label}</span>
             </label>
           ))}
+        </div>
+        <div className="pt-2">
+          <Label>Question personnalisée (optionnel)</Label>
+          <Input
+            value={customQuestion}
+            onChange={setCustomQuestion}
+            placeholder="Ex: Avez-vous un véhicule ?"
+          />
         </div>
       </Card>
 
