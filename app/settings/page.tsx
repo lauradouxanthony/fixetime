@@ -1056,7 +1056,7 @@ function TabIA() {
           value={blacklistText}
           onChange={(e) => setBlacklistText(e.target.value)}
           rows={4}
-          placeholder={"erwanndixit@gmail.com\n@newsletter.com\ninfo@"}
+          placeholder="Ex: spam@exemple.com, @newsletter.com"
           className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none resize-none font-mono"
           style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
         />
