@@ -889,8 +889,14 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
                 </div>
               </div>
 
+            </>);
+          })()}
+
+          {/* SOLVABILITÉ — indépendant de situation_pro */}
+          {(ratio !== null || revenus || loyer) && (
+            <div className="space-y-2">
               {ratio !== null ? (
-                <div className="space-y-2">
+                <>
                   {/* Détail chiffres */}
                   <div className="flex flex-wrap gap-x-4 text-xs" style={{ color: "rgb(100 116 139)" }}>
                     {revenus && <span>Revenus : <strong style={{ color: "rgb(30 41 59)" }}>{revenus.toLocaleString("fr-FR")} €/mois</strong></span>}
@@ -924,12 +930,12 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
                   }}>
                     {solvable ? "✓ Solvable (≥ 3x)" : "✗ Insuffisant (< 3x)"}
                   </div>
-                </div>
+                </>
               ) : (
                 <div className="text-xs py-2" style={{ color: "rgb(148 163 184)" }}>Revenus ou loyer non renseigné</div>
               )}
-            </>);
-          })()}
+            </div>
+          )}
 
           {/* BLOC DOSSIER LOCATAIRE */}
           {pd?.situation_pro && (
