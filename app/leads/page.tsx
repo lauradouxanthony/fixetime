@@ -748,6 +748,65 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
             </div>
           </div>
 
+          {/* BLOC QUALIFICATION */}
+          <div className="space-y-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wide" style={{ color: "rgb(100 116 139)" }}>📊 Qualification</h3>
+            <div className="rounded-xl border p-4" style={{ borderColor: "rgb(226 232 240)" }}>
+              <div className="grid grid-cols-2 gap-3">
+                {activeChamps.includes("revenus_mensuels") && (
+                  <div>
+                    <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Revenus</div>
+                    <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+                      {revenus ? `${revenus.toLocaleString("fr-FR")} €/mois` : "—"}
+                    </div>
+                  </div>
+                )}
+                {activeChamps.includes("garant") && (
+                  <div>
+                    <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Garant</div>
+                    <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+                      {pdAny?.garant === "OUI" ? "✅ Oui" : pdAny?.garant === "NON" ? "❌ Non" : pdAny?.garant === "A_CONFIRMER" ? "⚠ À confirmer" : "—"}
+                    </div>
+                  </div>
+                )}
+                {activeChamps.includes("animaux") && (
+                  <div>
+                    <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Animaux</div>
+                    <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+                      {String(pdAny?.animaux ?? "").toLowerCase() === "oui" ? "✅ Oui"
+                        : String(pdAny?.animaux ?? "").toLowerCase() === "non" ? "❌ Non"
+                        : pdAny?.animaux ? String(pdAny.animaux) : "—"}
+                    </div>
+                  </div>
+                )}
+                {activeChamps.includes("nb_personnes") && (
+                  <div>
+                    <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Personnes dans le foyer</div>
+                    <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+                      {pdAny?.nb_personnes ? String(pdAny.nb_personnes) : "—"}
+                    </div>
+                  </div>
+                )}
+                {activeChamps.includes("date_entree_souhaitee") && (
+                  <div className="col-span-2">
+                    <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Entrée souhaitée</div>
+                    <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+                      {pdAny?.date_entree_souhaitee ? String(pdAny.date_entree_souhaitee) : "—"}
+                    </div>
+                  </div>
+                )}
+                {propertyRent && (
+                  <div>
+                    <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Loyer du bien</div>
+                    <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+                      {propertyRent.toLocaleString("fr-FR")} €/mois
+                    </div>
+                  </div>
+                )}
+              </div>
+            </div>
+          </div>
+
           {/* DOCUMENTS REQUIS — selon situation_pro */}
           {pd?.situation_pro && (() => {
             type DocItem = { key: string; label: string };
@@ -828,24 +887,15 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
                     <span>{Math.round((receivedCount / Math.max(total, 1)) * 100)}%</span>
                   </div>
                 </div>
-                {propertyRent && (
-                  <div>
-                    <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Loyer du bien</div>
-                    <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
-                      {propertyRent.toLocaleString("fr-FR")} €/mois
-                    </div>
-                  </div>
-                )}
-                <div>
-                  <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Garant</div>
-                  <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
-                    {pd?.garant === "OUI" ? "✅ Oui" : pd?.garant === "NON" ? "❌ Non" : pd?.garant === "A_CONFIRMER" ? "⚠ À confirmer" : "—"}
-                  </div>
-                </div>
               </div>
 
               {ratio !== null ? (
                 <div className="space-y-2">
+                  {/* Détail chiffres */}
+                  <div className="flex flex-wrap gap-x-4 text-xs" style={{ color: "rgb(100 116 139)" }}>
+                    {revenus && <span>Revenus : <strong style={{ color: "rgb(30 41 59)" }}>{revenus.toLocaleString("fr-FR")} €/mois</strong></span>}
+                    {loyer && <span>Loyer : <strong style={{ color: "rgb(30 41 59)" }}>{loyer.toLocaleString("fr-FR")} €/mois</strong></span>}
+                  </div>
                   {/* Barre de progression colorée */}
                   <div>
                     <div className="flex justify-between text-xs mb-1" style={{ color: "rgb(100 116 139)" }}>
