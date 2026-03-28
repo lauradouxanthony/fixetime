@@ -120,8 +120,16 @@ export async function GET() {
         Object.entries((row.prospect_data as Record<string, unknown>) ?? {})
           .filter(([, v]) => v !== null && v !== undefined)
       );
+
+      // Merge property_id from group — the winner email may predate auto-assignment
+      const mergedPropertyId =
+        row.property_id ??
+        group.find((e) => e.property_id != null)?.property_id ??
+        null;
+
       return {
         ...row,
+        property_id: mergedPropertyId,
         prospect_data: { ...mergedPd, ...rowPdNonNull },
         thread_count: group.length,
       };
