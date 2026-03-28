@@ -482,6 +482,7 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
   const [exportingZip, setExportingZip] = useState(false);
   const [portalStatus, setPortalStatus] = useState<PortalStatus | null>(null);
   const [sendingPortal, setSendingPortal] = useState(false);
+  const [fetchedRent, setFetchedRent] = useState<number | null>(null);
   const { toast } = useToast();
 
   const [localAttachments, setLocalAttachments] = useState<AttachmentItem[]>(
@@ -511,6 +512,17 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
       .then(d => setPortalStatus(d as PortalStatus))
       .catch(() => {});
   }, [lead.id]);
+
+  const leadPropertyId = (lead as any).property_id as string | null | undefined;
+  useEffect(() => {
+    if (propertyRent != null || !leadPropertyId) { setFetchedRent(null); return; }
+    supabase.from("properties").select("rent").eq("id", leadPropertyId).single()
+      .then(({ data }) => { setFetchedRent((data as any)?.rent ?? null); });
+  }, [leadPropertyId, propertyRent]);
+
+  const effectiveLoyer = (propertyRent ?? fetchedRent) ?? null;
+  const effectiveRatio = revenus && effectiveLoyer ? (revenus / effectiveLoyer) : null;
+  const effectiveSolvable = effectiveRatio !== null ? effectiveRatio >= 3 : null;
 
   const saveNote = async () => {
     if (!noteText.trim() || savingNote) return;
@@ -795,11 +807,11 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
                     </div>
                   </div>
                 )}
-                {propertyRent && (
+                {effectiveLoyer && (
                   <div>
                     <div className="text-xs mb-0.5" style={{ color: "rgb(148 163 184)" }}>Loyer du bien</div>
                     <div className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
-                      {propertyRent.toLocaleString("fr-FR")} €/mois
+                      {effectiveLoyer.toLocaleString("fr-FR")} €/mois
                     </div>
                   </div>
                 )}
@@ -893,29 +905,29 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
           })()}
 
           {/* SOLVABILITÉ — indépendant de situation_pro */}
-          {(ratio !== null || revenus || loyer) && (
+          {(revenus || effectiveLoyer) ? (
             <div className="space-y-2">
-              {ratio !== null ? (
+              {effectiveRatio !== null ? (
                 <>
                   {/* Détail chiffres */}
                   <div className="flex flex-wrap gap-x-4 text-xs" style={{ color: "rgb(100 116 139)" }}>
                     {revenus && <span>Revenus : <strong style={{ color: "rgb(30 41 59)" }}>{revenus.toLocaleString("fr-FR")} €/mois</strong></span>}
-                    {loyer && <span>Loyer : <strong style={{ color: "rgb(30 41 59)" }}>{loyer.toLocaleString("fr-FR")} €/mois</strong></span>}
+                    {effectiveLoyer && <span>Loyer : <strong style={{ color: "rgb(30 41 59)" }}>{effectiveLoyer.toLocaleString("fr-FR")} €/mois</strong></span>}
                   </div>
                   {/* Barre de progression colorée */}
                   <div>
                     <div className="flex justify-between text-xs mb-1" style={{ color: "rgb(100 116 139)" }}>
                       <span>Ratio revenus / loyer</span>
                       <span className="font-semibold" style={{
-                        color: ratio >= 3 ? "rgb(22 163 74)" : ratio >= 2 ? "rgb(234 88 12)" : "rgb(220 38 38)"
+                        color: effectiveRatio >= 3 ? "rgb(22 163 74)" : effectiveRatio >= 2 ? "rgb(234 88 12)" : "rgb(220 38 38)"
                       }}>
-                        {ratio.toFixed(1)}x
+                        {effectiveRatio.toFixed(1)}x
                       </span>
                     </div>
                     <div className="relative h-2 rounded-full overflow-hidden" style={{ background: "rgb(226 232 240)" }}>
                       <div className="h-full rounded-full transition-all duration-500" style={{
-                        width: `${Math.min((ratio / 5) * 100, 100)}%`,
-                        background: ratio >= 3 ? "rgb(22,163,74)" : ratio >= 2 ? "rgb(234,88,12)" : "rgb(220,38,38)",
+                        width: `${Math.min((effectiveRatio / 5) * 100, 100)}%`,
+                        background: effectiveRatio >= 3 ? "rgb(22,163,74)" : effectiveRatio >= 2 ? "rgb(234,88,12)" : "rgb(220,38,38)",
                       }} />
                       <div className="absolute top-0 h-full w-0.5" style={{ left: "60%", background: "rgb(79 70 229)", opacity: 0.5 }} />
                     </div>
@@ -924,18 +936,22 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
                     </div>
                   </div>
                   <div className="flex items-center gap-2 rounded-lg px-3 py-2 font-medium" style={{
-                    background: solvable ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.08)",
-                    color: solvable ? "rgb(22 163 74)" : "rgb(220 38 38)",
+                    background: effectiveSolvable ? "rgba(22,163,74,0.08)" : "rgba(220,38,38,0.08)",
+                    color: effectiveSolvable ? "rgb(22 163 74)" : "rgb(220 38 38)",
                     fontSize: 13,
                   }}>
-                    {solvable ? "✓ Solvable (≥ 3x)" : "✗ Insuffisant (< 3x)"}
+                    {effectiveSolvable ? "✓ Solvable (≥ 3x)" : "✗ Insuffisant (< 3x)"}
                   </div>
                 </>
+              ) : revenus && !effectiveLoyer ? (
+                <div className="text-xs py-2" style={{ color: "rgb(148 163 184)" }}>
+                  Revenus : <strong style={{ color: "rgb(30 41 59)" }}>{revenus.toLocaleString("fr-FR")} €</strong> — Loyer du bien non associé
+                </div>
               ) : (
-                <div className="text-xs py-2" style={{ color: "rgb(148 163 184)" }}>Revenus ou loyer non renseigné</div>
+                <div className="text-xs py-2" style={{ color: "rgb(148 163 184)" }}>Revenus non renseignés</div>
               )}
             </div>
-          )}
+          ) : null}
 
           {/* BLOC DOSSIER LOCATAIRE */}
           {pd?.situation_pro && (
@@ -1317,7 +1333,7 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
   );
 }
 
-const DEFAULT_CHAMPS_QUALIFICATION = ["situation_pro", "revenus_mensuels", "garant", "animaux"];
+const DEFAULT_CHAMPS_QUALIFICATION = ["situation_pro", "revenus_mensuels", "garant", "animaux", "nb_personnes"];
 
 export default function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([]);
