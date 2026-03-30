@@ -1462,14 +1462,14 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
       .catch(() => {});
   }, [email]);
 
-  const generateReply = async () => {
+  const generateReply = async (force = false) => {
     if (!email || replyLoading) return;
     setReplyLoading(true);
     try {
       const res = await fetch("/api/ai/generate-reply", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ emailId: email.id }),
+        body: JSON.stringify({ emailId: email.id, force }),
       });
       const json = await res.json();
       if (json?.reply) { setAiReply(json.reply); setReplyOpen(true); }
@@ -1803,7 +1803,7 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
             </button>
             {aiReply && !replyLoading && (
               <button
-                onClick={generateReply}
+                onClick={() => generateReply(true)}
                 className="ml-2 text-xs px-2 py-1 rounded-md transition-colors"
                 style={{ background: "rgb(248 250 252)", color: "rgb(100 116 139)", border: "1px solid rgb(226 232 240)" }}
                 title="Regénérer le brouillon"

@@ -307,7 +307,8 @@ export async function POST(req: Request) {
     if (!user) return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
 
     // 2. Email
-    const { emailId } = await req.json();
+    const body = await req.json();
+    const { emailId, force } = body as { emailId: string; force?: boolean };
     if (!emailId) return NextResponse.json({ error: "EMAIL_ID_REQUIRED" }, { status: 400 });
 
     const { data: email, error } = await supabaseAdmin
@@ -336,13 +337,15 @@ export async function POST(req: Request) {
       } satisfies ParsedReply);
     }
 
-    // 4. Anti-coût : réponse JSON déjà générée et valide
-    const cachedReply = (email as unknown as { ai_reply: string | null }).ai_reply ?? "";
-    if (cachedReply.trim().startsWith("{")) {
-      try {
-        const cached = JSON.parse(cachedReply) as ParsedReply;
-        if (cached.reply && cached.mode) return NextResponse.json(cached);
-      } catch { /* régénérer */ }
+    // 4. Anti-coût : réponse JSON déjà générée et valide (ignoré si force=true)
+    if (!force) {
+      const cachedReply = (email as unknown as { ai_reply: string | null }).ai_reply ?? "";
+      if (cachedReply.trim().startsWith("{")) {
+        try {
+          const cached = JSON.parse(cachedReply) as ParsedReply;
+          if (cached.reply && cached.mode) return NextResponse.json(cached);
+        } catch { /* régénérer */ }
+      }
     }
 
     // 5. Charger les settings
