@@ -70,7 +70,22 @@ export async function POST(req: Request) {
     });
 
     // =========================
-    // 3) RÉPONSE IMMÉDIATE après sync
+    // 3) BACKFILL property_id — BACKGROUND : re-assigner les emails LOCATION sans bien
+    // =========================
+    fetch(`${baseUrl}/api/emails/backfill-property`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(cookie ? { cookie } : {}),
+      },
+      cache: "no-store",
+    }).then(async (r) => {
+      const j = await r.json().catch(() => ({}));
+      if ((j.updated ?? 0) > 0) console.log(`[ANALYZE-NOW] Backfill property_id: ${j.updated} email(s) mis à jour`);
+    }).catch(() => {});
+
+    // =========================
+    // 4) RÉPONSE IMMÉDIATE après sync
     // =========================
     return NextResponse.json({
       success: true,

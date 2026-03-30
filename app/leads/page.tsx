@@ -444,13 +444,14 @@ function LeadCard({
 }
 
 /* ─── ProspectDrawer ─── */
-function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVisiteAnnulee, propertyRent, champsQualification }: {
+function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVisiteAnnulee, propertyRent, propertyName, champsQualification }: {
   lead: Lead;
   onClose: () => void;
   onMoveToStage: (id: string, etape: EtapeProcess) => void;
   onVisiteEffectuee: (id: string) => void;
   onVisiteAnnulee: (id: string) => void;
   propertyRent?: number | null;
+  propertyName?: string | null;
   champsQualification?: string[];
 }) {
   const pd = lead.prospect_data;
@@ -483,6 +484,7 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
   const [portalStatus, setPortalStatus] = useState<PortalStatus | null>(null);
   const [sendingPortal, setSendingPortal] = useState(false);
   const [fetchedRent, setFetchedRent] = useState<number | null>(null);
+  const [fetchedTitle, setFetchedTitle] = useState<string | null>(null);
   const { toast } = useToast();
 
   const [localAttachments, setLocalAttachments] = useState<AttachmentItem[]>(
@@ -515,14 +517,19 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
 
   const leadPropertyId = (lead as any).property_id as string | null | undefined;
   useEffect(() => {
-    if (propertyRent != null || !leadPropertyId) { setFetchedRent(null); return; }
-    supabase.from("properties").select("rent").eq("id", leadPropertyId).single()
-      .then(({ data }) => { setFetchedRent((data as any)?.rent ?? null); });
+    if (!leadPropertyId) { setFetchedRent(null); setFetchedTitle(null); return; }
+    // Toujours fetch le titre ; fetch le loyer seulement si pas déjà dans les props
+    supabase.from("properties").select("rent, title").eq("id", leadPropertyId).single()
+      .then(({ data }) => {
+        if (propertyRent == null) setFetchedRent((data as any)?.rent ?? null);
+        setFetchedTitle((data as any)?.title ?? null);
+      });
   }, [leadPropertyId, propertyRent]);
 
   const effectiveLoyer = (propertyRent ?? fetchedRent) ?? null;
   const effectiveRatio = revenus && effectiveLoyer ? (revenus / effectiveLoyer) : null;
   const effectiveSolvable = effectiveRatio !== null ? effectiveRatio >= 3 : null;
+  const effectivePropertyName = propertyName ?? fetchedTitle ?? null;
 
   const saveNote = async () => {
     if (!noteText.trim() || savingNote) return;
@@ -693,7 +700,7 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
               <span style={{ display: "inline-block", width: 10, height: 10, borderRadius: "50%", background: tlCfg.dot, flexShrink: 0 }} />
               <div className="font-semibold text-base truncate" style={{ color: "rgb(30 41 59)" }}>{nom}</div>
             </div>
-            <div className="flex items-center gap-2">
+            <div className="flex items-center gap-2 flex-wrap">
               <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: config.bg, color: config.color, border: `1px solid ${config.border}` }}>
                 {config.label}
               </span>
@@ -707,6 +714,14 @@ function ProspectDrawer({ lead, onClose, onMoveToStage, onVisiteEffectuee, onVis
                 {qualifScore}/{qualifTotal} infos
               </span>
             </div>
+            {(effectivePropertyName || effectiveLoyer) && (
+              <div className="mt-1.5">
+                <span className="text-xs px-2.5 py-1 rounded-full font-medium inline-flex items-center gap-1"
+                  style={{ background: "rgba(79,70,229,0.08)", color: "rgb(79 70 229)" }}>
+                  🏠 {effectivePropertyName ?? "Bien associé"}{effectiveLoyer ? ` — ${effectiveLoyer.toLocaleString("fr-FR")}€/mois` : ""}
+                </span>
+              </div>
+            )}
           </div>
           <button onClick={onClose} className="text-gray-400 hover:text-gray-600 text-xl ml-4">✕</button>
         </div>
@@ -1887,6 +1902,7 @@ export default function LeadsPage() {
           onVisiteEffectuee={handleVisiteEffectuee}
           onVisiteAnnulee={handleVisiteAnnulee}
           propertyRent={properties.find(p => p.id === (selectedLead as any).property_id)?.rent ?? null}
+          propertyName={getPropertyName((selectedLead as any).property_id) ?? null}
           champsQualification={champsQualification}
         />
       )}
