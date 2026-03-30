@@ -126,7 +126,6 @@ function TabLocatif() {
   const [multiplicateur, setMultiplicateur] = useState(3);
   const [profils, setProfils] = useState({ cdi: true, cdd: true, auto: false, retraite: true, garant: true });
   const [garantObligatoire, setGarantObligatoire] = useState({ cdd: true, auto: true, etudiant: true, retraite: false });
-  const [animaux, setAnimaux] = useState<"oui" | "non" | "selon">("selon");
   const [docs, setDocs] = useState({ fiches_paie: true, contrat: true, avis_imposition: true, piece_identite: true, rib: false });
   const [champsQualification, setChampsQualification] = useState<string[]>(DEFAULT_CHAMPS);
   const [customQuestion, setCustomQuestion] = useState<string>("");
@@ -136,14 +135,13 @@ function TabLocatif() {
   useEffect(() => {
     loadSection("locatif", {
       nomAgence: "", typesBiens, multiplicateur: 3, profils,
-      garantObligatoire, animaux: "selon", docs, champsQualification: DEFAULT_CHAMPS, customQuestion: "",
+      garantObligatoire, docs, champsQualification: DEFAULT_CHAMPS, customQuestion: "",
     }).then((d: Record<string, unknown>) => {
       if (d.nomAgence !== undefined) setNomAgence(d.nomAgence as string);
       if (d.typesBiens) setTypesBiens(d.typesBiens as typeof typesBiens);
       if (d.multiplicateur) setMultiplicateur(d.multiplicateur as number);
       if (d.profils) setProfils(d.profils as typeof profils);
       if (d.garantObligatoire) setGarantObligatoire(d.garantObligatoire as typeof garantObligatoire);
-      if (d.animaux) setAnimaux(d.animaux as typeof animaux);
       if (d.docs) setDocs(d.docs as typeof docs);
       if (Array.isArray(d.champsQualification)) setChampsQualification(d.champsQualification as string[]);
       if (typeof d.customQuestion === "string") setCustomQuestion(d.customQuestion);
@@ -153,7 +151,7 @@ function TabLocatif() {
 
   const save = async () => {
     setSaving(true);
-    const ok = await saveSection("locatif", { nomAgence, typesBiens, multiplicateur, profils, garantObligatoire, animaux, docs, champsQualification, customQuestion });
+    const ok = await saveSection("locatif", { nomAgence, typesBiens, multiplicateur, profils, garantObligatoire, docs, champsQualification, customQuestion });
     setSaving(false);
     if (ok) {
       setSaved(true);
@@ -260,27 +258,6 @@ function TabLocatif() {
               />
               <span className="text-sm" style={{ color: "rgb(30 41 59)" }}>{p.label}</span>
             </label>
-          ))}
-        </div>
-      </Card>
-
-      <Card title="🐾 Animaux acceptés">
-        <div className="flex gap-2 flex-wrap">
-          {[
-            { key: "oui", label: "✅ Oui" },
-            { key: "non", label: "❌ Non" },
-            { key: "selon", label: "🤔 Selon le bailleur" },
-          ].map((opt) => (
-            <button
-              key={opt.key}
-              onClick={() => setAnimaux(opt.key as typeof animaux)}
-              className="px-4 py-2 rounded-lg text-sm font-medium transition-all"
-              style={animaux === opt.key
-                ? { background: "rgb(79 70 229)", color: "white" }
-                : { background: "rgb(248 250 252)", color: "rgb(71 85 105)", border: "1px solid rgb(226 232 240)" }}
-            >
-              {opt.label}
-            </button>
           ))}
         </div>
       </Card>
@@ -836,14 +813,12 @@ function TabCalendrier() {
 function buildPromptPreview(params: {
   nomAgence: string;
   multiplicateur: number;
-  animaux: string;
   garantObligatoire: Record<string, boolean>;
   typesBiens: Record<string, boolean>;
   instructions: string;
 }): string {
   const biens = Object.entries(params.typesBiens).filter(([, v]) => v).map(([k]) => k).join(", ") || "non spécifié";
   const garants = Object.entries(params.garantObligatoire).filter(([, v]) => v).map(([k]) => k).join(", ") || "aucun";
-  const animauxLabel = params.animaux === "oui" ? "Oui" : params.animaux === "non" ? "Non" : "Selon le bailleur";
 
   return `CONTEXTE AGENCE
 ───────────────
@@ -851,7 +826,7 @@ Agence : ${params.nomAgence || "Non renseignée"}
 Biens gérés : ${biens}
 Solvabilité : revenus ≥ ${params.multiplicateur}x le loyer
 Garant obligatoire pour : ${garants}
-Animaux : ${animauxLabel}
+ℹ️  Animaux/parking/meublé : configurés par bien dans "Mes biens"
 ${params.instructions ? `\nINSTRUCTIONS SPÉCIALES\n───────────────\n${params.instructions}` : ""}`.trim();
 }
 
@@ -872,7 +847,6 @@ function TabIA() {
   const [previewParams, setPreviewParams] = useState({
     nomAgence: "",
     multiplicateur: 3,
-    animaux: "selon",
     garantObligatoire: { cdd: true, auto: true, etudiant: true, retraite: false },
     typesBiens: { appartement: true, maison: false, studio: true, loft: false, parking: false },
     instructions: "",
@@ -895,7 +869,6 @@ function TabIA() {
         setPreviewParams({
           nomAgence: locatif.nomAgence || "",
           multiplicateur: locatif.multiplicateur || 3,
-          animaux: locatif.animaux || "selon",
           garantObligatoire: locatif.garantObligatoire || { cdd: true, auto: true, etudiant: true, retraite: false },
           typesBiens: locatif.typesBiens || { appartement: true, maison: false, studio: true, loft: false, parking: false },
           instructions: instrVal,
@@ -992,7 +965,7 @@ function TabIA() {
 
       <Card title="📝 Instructions spéciales pour l'IA">
         <p className="text-xs" style={{ color: "rgb(100 116 139)" }}>
-          L'IA en tiendra compte lors de l'analyse et de la rédaction des emails.
+          Ces instructions s'appliquent à TOUS vos biens et à tous les emails traités.
         </p>
         <textarea
           value={instructions}
@@ -1002,6 +975,9 @@ function TabIA() {
           className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none resize-none"
           style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
         />
+        <p className="text-xs mt-2 px-3 py-2 rounded-lg" style={{ background: "rgba(245,158,11,0.08)", color: "rgb(180,83,9)" }}>
+          ⚠️ N'indiquez pas ici les informations spécifiques à un bien (animaux, charges, parking, disponibilité) — configurez-les dans la fiche de chaque bien, elles seront utilisées automatiquement.
+        </p>
       </Card>
 
       <Card title="🎙 Ton de voix de l'IA">
