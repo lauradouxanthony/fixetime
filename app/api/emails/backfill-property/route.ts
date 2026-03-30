@@ -6,7 +6,6 @@ export const runtime = "nodejs";
 
 type PropRow = {
   id: string;
-  title: string | null;
   name: string | null;
   address: string | null;
   rent: number;
@@ -52,7 +51,7 @@ function matchProperty(
   let bestMatch: { id: string; count: number } | null = null;
 
   for (const prop of properties) {
-    const effectiveTitle = (prop.title || prop.name || "").trim();
+    const effectiveTitle = (prop.name || "").trim();
     const parts = [effectiveTitle, prop.address, prop.type].filter(
       (s): s is string => typeof s === "string" && s.length > 0
     );
@@ -89,7 +88,7 @@ export async function runBackfill(
   // 1. Biens actifs
   const { data: propsData, error: propsErr } = await supabaseAdmin
     .from("properties")
-    .select("id, title, name, address, rent, available, type")
+    .select("id, name, address, rent, available, type")
     .eq("user_id", userId);
 
   if (propsErr) {
@@ -102,10 +101,10 @@ export async function runBackfill(
 
   console.log(`[BACKFILL] Biens actifs trouvés: ${properties.length} / ${allProps.length} total`);
   properties.forEach((p) => {
-    const label = p.title || p.name || "(sans titre)";
+    const label = p.name || "(sans titre)";
     const kw = [
       ...new Set(
-        [p.title || p.name || "", p.address, p.type]
+        [p.name || "", p.address, p.type]
           .filter((s): s is string => typeof s === "string" && s.length > 0)
           .flatMap(extractKeywords)
       ),
