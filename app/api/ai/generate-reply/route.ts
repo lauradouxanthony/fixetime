@@ -142,12 +142,23 @@ function buildSystemPrompt(params: {
 - next_etape = QUALIFICATION si nom + situation_pro identifiés dans l'email, sinon NEW`,
 
     QUALIFICATION: `ÉTAT QUALIFICATION :
-- Demander ce qui manque parmi : ${champsQualification.join(", ")}
+- Champs à qualifier : ${champsQualification.join(", ")}
+- IMPORTANT : Ne demander QU'UNE SEULE information manquante par email. Ne pas envoyer plusieurs questions en même temps.
 - Calculer solvabilité : revenus / loyer, critère agence = ${multiplicateur}x, seuil autopilote = ${seuilAutopilote}x
-- Si solvable ET CDI avec revenus ≥ ${seuilAutopilote}x le loyer → proposer visite → mode AUTOPILOTE → next_etape = VISITE_PROPOSEE
-- Si profil atypique (AUTO_ENTREPRENEUR, CDD, ETUDIANT) ou solvabilité entre 2.5x et ${seuilAutopilote}x → mode DRAFT
-- Si non solvable (revenus < ${multiplicateur}x loyer) → expliquer poliment, ne pas proposer de visite → mode DRAFT → next_etape = REFUSE
-- next_etape = VISITE_PROPOSEE si solvabilité validée`,
+
+SI TOUS LES CHAMPS SONT REMPLIS ET PROSPECT SOLVABLE (revenus ≥ ${seuilAutopilote}x loyer${loyerBien ? ` = seuil ${(seuilAutopilote * loyerBien).toFixed(0)}€/mois` : ""}) :
+→ mode = AUTOPILOTE si CDI, DRAFT si profil atypique
+→ Proposer 2-3 créneaux de visite concrets (jours ouvrés, ${heureDebut}h-${heureFin}h, durée ${dureeVisite}min)
+→ Mentionner les documents à préparer : ${docsList.slice(0, 3).join(", ")}
+→ next_etape = VISITE_PROPOSEE
+
+SI QUALIFICATION INCOMPLÈTE :
+→ Identifier le premier champ manquant (dans l'ordre : ${champsQualification.join(" → ")})
+→ Demander UNIQUEMENT ce champ, pas les autres
+→ next_etape = QUALIFICATION
+
+SI NON SOLVABLE (revenus < ${multiplicateur}x loyer) :
+→ Expliquer poliment que le profil ne correspond pas aux critères → mode DRAFT → next_etape = REFUSE`,
 
     VISITE_PROPOSEE: `ÉTAT VISITE_PROPOSEE :
 - Proposer 3 créneaux concrets à court terme (jours ouvrés, ${heureDebut}h-${heureFin}h, durée ${dureeVisite}min)
@@ -203,7 +214,11 @@ RÈGLE HORS SUJET :
 Si l'email n'a manifestement aucun rapport avec la location immobilière (pub, spam, demande non liée) → reply = message poli indiquant que ce n'est pas le bon canal, mode = "DRAFT".
 
 RÈGLE PREMIER CONTACT :
-Si c'est le PREMIER email de ce prospect (etape_process = NEW), inclure dans ta réponse un résumé des informations clés du bien : loyer, charges, animaux, disponibilité, et toute autre info pertinente.
+Si c'est le PREMIER email de ce prospect (etape_process = NEW) ET qu'un bien est identifié, inclure dans ta réponse les informations essentielles suivantes :
+- Loyer : ${loyerBien ? `${loyerBien}€/mois` : "à confirmer"}${bien?.charges != null ? ` + charges : ${bien.charges}€/mois` : " + charges à confirmer"}
+- Disponible à partir du : ${bien?.disponible_a_partir_de ? String(bien.disponible_a_partir_de) : "à confirmer"}
+- Animaux : ${bien ? (bien.animaux_acceptes ? "Acceptés" : "Non acceptés") : "à confirmer"}
+- Meublé : ${bien ? (bien.meuble ? "Oui" : "Non") : "à confirmer"}
 Si ce n'est PAS le premier email (etape_process ≠ NEW), ne pas répéter ces informations sauf si le prospect pose une question spécifique à leur sujet.
 
 Tu dois analyser l'email reçu et retourner UNIQUEMENT un JSON valide, sans aucun texte autour, avec cette structure exacte :
@@ -262,6 +277,12 @@ RÈGLE ABSOLUE — QUESTIONS SPÉCIFIQUES AU BIEN :
 Pour toute question concernant les caractéristiques d'un bien (animaux, charges, ascenseur, superficie, disponibilité, parking, meublé, travaux, étage), réponds UNIQUEMENT avec les données du BIEN CONCERNÉ fournies ci-dessus dans la section "BIEN CONCERNÉ".
 N'utilise JAMAIS la FAQ agence pour répondre à ces questions spécifiques.
 La FAQ agence est réservée aux questions générales : processus de candidature, signature de bail, documents requis, fonctionnement de l'agence.
+
+PRIORITÉ ABSOLUE — CARACTÉRISTIQUES DU BIEN > PARAMÈTRES AGENCE :
+Les données du BIEN CONCERNÉ (animaux_acceptes, parking_inclus, meuble, disponible_a_partir_de) priment TOUJOURS sur les paramètres généraux de l'agence.
+- Si le bien accepte les animaux (animaux_acceptes = true) → répondre "OUI, les animaux sont acceptés pour ce bien"
+- Si le bien n'accepte pas les animaux (animaux_acceptes = false) → répondre "NON, les animaux ne sont pas acceptés pour ce bien"
+- Ne jamais utiliser une règle ou politique générale de l'agence pour répondre à une question spécifique aux caractéristiques du bien.
 
 FICHE PROSPECT (données déjà collectées — ne pas redemander ce qui est déjà renseigné) :
 ${JSON.stringify({
