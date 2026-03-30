@@ -1789,17 +1789,29 @@ export function EmailDetailPanel({ email, mode = "DRAFT" }: { email: Email | nul
         </Section>
       ) : (
         <Section title="Réponse générée par l'IA">
-          <button
-            onClick={() => { if (!aiReply) { generateReply(); } else { setReplyOpen((v) => !v); } }}
-            className="flex items-center justify-between w-full text-left"
-          >
-            <span className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
-              Brouillon de réponse
-            </span>
-            <span className="text-xs px-2 py-1 rounded-md" style={{ background: "rgb(248 250 252)", color: "rgb(100 116 139)" }}>
-              {replyLoading ? "Génération…" : replyOpen ? "Masquer" : aiReply ? "Afficher" : "Générer"}
-            </span>
-          </button>
+          <div className="flex items-center justify-between w-full">
+            <button
+              onClick={() => { if (!aiReply) { generateReply(); } else { setReplyOpen((v) => !v); } }}
+              className="flex items-center justify-between flex-1 text-left"
+            >
+              <span className="text-sm font-medium" style={{ color: "rgb(30 41 59)" }}>
+                Brouillon de réponse
+              </span>
+              <span className="text-xs px-2 py-1 rounded-md" style={{ background: "rgb(248 250 252)", color: "rgb(100 116 139)" }}>
+                {replyLoading ? "Génération…" : replyOpen ? "Masquer" : aiReply ? "Afficher" : "Générer"}
+              </span>
+            </button>
+            {aiReply && !replyLoading && (
+              <button
+                onClick={generateReply}
+                className="ml-2 text-xs px-2 py-1 rounded-md transition-colors"
+                style={{ background: "rgb(248 250 252)", color: "rgb(100 116 139)", border: "1px solid rgb(226 232 240)" }}
+                title="Regénérer le brouillon"
+              >
+                🔄 Regénérer
+              </button>
+            )}
+          </div>
 
           {replyOpen && aiReply && (
             <div className="mt-3 space-y-2">
