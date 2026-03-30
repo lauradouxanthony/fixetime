@@ -46,7 +46,9 @@ function PropertyForm({
   const [parkingInclus, setParkingInclus] = useState(initial?.parking_inclus ?? false);
   const [chargesMensuelles, setChargesMensuelles] = useState(String(initial?.charges_mensuelles ?? ""));
   const [meuble, setMeuble] = useState(initial?.meuble ?? false);
-  const [disponibleAPartirDe, setDisponibleAPartirDe] = useState(initial?.disponible_a_partir_de ?? "");
+  const [disponibleAPartirDe, setDisponibleAPartirDe] = useState(
+    initial?.disponible_a_partir_de ? initial.disponible_a_partir_de.slice(0, 10) : ""
+  );
   const [notesSpecifiques, setNotesSpecifiques] = useState(initial?.notes_specifiques ?? "");
   const [saving, setSaving] = useState(false);
 
@@ -183,7 +185,7 @@ function PropertyCard({
   if (editing) {
     return (
       <div className="bg-white rounded-2xl border p-5" style={{ borderColor: "rgb(199 210 254)" }}>
-        <PropertyForm initial={property} onSave={onSave} onCancel={onCancelEdit} />
+        <PropertyForm key={property.id} initial={property} onSave={onSave} onCancel={onCancelEdit} />
       </div>
     );
   }

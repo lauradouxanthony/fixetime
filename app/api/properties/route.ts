@@ -21,7 +21,7 @@ function normalize(row: Record<string, unknown>) {
     parking_inclus: row.parking_inclus != null ? Boolean(row.parking_inclus) : false,
     charges_mensuelles: (row.charges_mensuelles ?? null) as number | null,
     meuble: row.meuble != null ? Boolean(row.meuble) : false,
-    disponible_a_partir_de: (row.disponible_a_partir_de ?? null) as string | null,
+    disponible_a_partir_de: row.disponible_a_partir_de ? String(row.disponible_a_partir_de).slice(0, 10) : null,
     notes_specifiques: (row.notes_specifiques ?? null) as string | null,
   };
 }

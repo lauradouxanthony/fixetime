@@ -52,7 +52,10 @@ export async function PATCH(
       const safeUpdate: Record<string, unknown> = {};
       if ("title" in body) safeUpdate.name = body.title;
       if ("address" in body) safeUpdate.address = body.address;
+      if ("type" in body) safeUpdate.type = body.type;
       if ("rent" in body) safeUpdate.rent = parseInt(String(body.rent), 10);
+      if ("description" in body) safeUpdate.description = body.description;
+      if ("available" in body) safeUpdate.available = body.available;
       if ("animaux_acceptes" in body) safeUpdate.animaux_acceptes = Boolean(body.animaux_acceptes);
       if ("parking_inclus" in body) safeUpdate.parking_inclus = Boolean(body.parking_inclus);
       if ("charges_mensuelles" in body) safeUpdate.charges_mensuelles = body.charges_mensuelles ? parseInt(String(body.charges_mensuelles), 10) : null;
@@ -135,7 +138,7 @@ function normalizeRow(row: Record<string, unknown>) {
     parking_inclus: row.parking_inclus != null ? Boolean(row.parking_inclus) : false,
     charges_mensuelles: (row.charges_mensuelles ?? null) as number | null,
     meuble: row.meuble != null ? Boolean(row.meuble) : false,
-    disponible_a_partir_de: (row.disponible_a_partir_de ?? null) as string | null,
+    disponible_a_partir_de: row.disponible_a_partir_de ? String(row.disponible_a_partir_de).slice(0, 10) : null,
     notes_specifiques: (row.notes_specifiques ?? null) as string | null,
   };
 }
