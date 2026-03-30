@@ -2,6 +2,7 @@ import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { logActivity } from "@/lib/activity/logActivity";
+import { runBackfill } from "@/app/api/emails/backfill-property/route";
 
 export async function POST(req: Request) {
   const t0 = Date.now();
@@ -70,19 +71,13 @@ export async function POST(req: Request) {
     });
 
     // =========================
-    // 3) BACKFILL property_id — BACKGROUND : re-assigner les emails LOCATION sans bien
+    // 3) BACKFILL property_id — appel direct (pas de fetch HTTP → pas de problème auth)
     // =========================
-    fetch(`${baseUrl}/api/emails/backfill-property`, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        ...(cookie ? { cookie } : {}),
-      },
-      cache: "no-store",
-    }).then(async (r) => {
-      const j = await r.json().catch(() => ({}));
-      if ((j.updated ?? 0) > 0) console.log(`[ANALYZE-NOW] Backfill property_id: ${j.updated} email(s) mis à jour`);
-    }).catch(() => {});
+    runBackfill(user.id).then((r) => {
+      if (r.updated > 0) console.log(`[ANALYZE-NOW] Backfill: ${r.updated} email(s) mis à jour`);
+    }).catch((err) => {
+      console.error("[ANALYZE-NOW] Backfill erreur:", err);
+    });
 
     // =========================
     // 4) RÉPONSE IMMÉDIATE après sync
