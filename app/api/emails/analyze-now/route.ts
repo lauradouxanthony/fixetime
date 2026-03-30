@@ -73,11 +73,22 @@ export async function POST(req: Request) {
     // =========================
     // 3) BACKFILL property_id — appel direct (pas de fetch HTTP → pas de problème auth)
     // =========================
-    runBackfill(user.id).then((r) => {
-      if (r.updated > 0) console.log(`[ANALYZE-NOW] Backfill: ${r.updated} email(s) mis à jour`);
-    }).catch((err) => {
+    try {
+      const backfillResult = await runBackfill(user.id);
+      console.log("[ANALYZE-NOW] backfill result:", JSON.stringify(backfillResult));
+
+      // Diagnostic : emails LOCATION encore sans property_id après backfill
+      const { data: remainingEmails } = await supabaseAdmin
+        .from("emails")
+        .select("id, property_id, subject")
+        .eq("user_id", user.id)
+        .eq("category", "LOCATION")
+        .is("property_id", null)
+        .limit(5);
+      console.log("[BACKFILL-CHECK] emails sans property_id après backfill:", JSON.stringify(remainingEmails));
+    } catch (err) {
       console.error("[ANALYZE-NOW] Backfill erreur:", err);
-    });
+    }
 
     // =========================
     // 4) RÉPONSE IMMÉDIATE après sync
