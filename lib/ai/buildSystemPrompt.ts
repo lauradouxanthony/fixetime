@@ -140,12 +140,13 @@ Ne jamais envoyer un message sans suite claire.
 RÈGLE HORS SUJET :
 Si l'email n'a manifestement aucun rapport avec la location immobilière (pub, spam, demande non liée) → reply = message poli indiquant que ce n'est pas le bon canal, mode = "DRAFT".
 
-RÈGLE PREMIER CONTACT :
-Si c'est le PREMIER email de ce prospect (etape_process = NEW) ET qu'un bien est identifié, inclure dans ta réponse les informations essentielles suivantes :
+RÈGLE PREMIER CONTACT — ABSOLUMENT OBLIGATOIRE :
+Si c'est le PREMIER email (etape_process = NEW) ET qu'un bien est identifié, ta réponse DOIT OBLIGATOIREMENT présenter ces informations du bien AU DÉBUT, AVANT toute proposition de visite ou qualification :
 - Loyer : ${loyerBien ? `${loyerBien}€/mois` : "à confirmer"}${bien?.charges != null ? ` + charges : ${bien.charges}€/mois` : " + charges à confirmer"}
 - Disponible à partir du : ${bien?.disponible_a_partir_de ? String(bien.disponible_a_partir_de) : "à confirmer"}
 - Animaux : ${animauxLabel}
 - Meublé : ${bien ? (bien.meuble ? "Oui" : "Non") : "à confirmer"}
+Ces infos DOIVENT apparaître dans le reply même si tu proposes une visite ensuite. Ne JAMAIS sauter cette section lors d'un premier contact.
 Si ce n'est PAS le premier email (etape_process ≠ NEW), ne pas répéter ces informations sauf si le prospect pose une question spécifique à leur sujet.
 
 Tu dois analyser l'email reçu et retourner UNIQUEMENT un JSON valide, sans aucun texte autour, avec cette structure exacte :
@@ -168,12 +169,13 @@ RÈGLES DE CLASSIFICATION DU MODE :
 AUTOPILOTE (envoyer directement sans validation agent) :
 - Question FAQ simple : animaux, charges, ascenseur, parking, surface, étage, disponibilité
 - Confirmation de créneau de visite simple
-- Prospect CDI avec revenus ≥ ${seuilAutopilote}x le loyer${loyerBien ? ` (loyer = ${loyerBien}€, seuil = ${(seuilAutopilote * loyerBien).toFixed(0)}€/mois)` : ""}
+- Prospect CDI UNIQUEMENT avec revenus ≥ ${seuilAutopilote}x le loyer${loyerBien ? ` (loyer = ${loyerBien}€, seuil = ${(seuilAutopilote * loyerBien).toFixed(0)}€/mois)` : ""}
 - Relance standard sans réponse
+IMPORTANT : AUTOPILOTE s'applique SEULEMENT aux CDI. JAMAIS AUTOPILOTE pour CDD, ETUDIANT, AUTO_ENTREPRENEUR, RETRAITE.
 
 DRAFT (l'agent valide avant envoi) :
-- Première réponse à un nouveau prospect (étape NEW)
-- Profil atypique : AUTO_ENTREPRENEUR, CDD, garant étranger, revenus variables
+- Profil atypique : CDD, ETUDIANT, AUTO_ENTREPRENEUR, RETRAITE — TOUJOURS DRAFT sans exception, même avec garant
+- Première réponse CDI non solvable (revenus < ${seuilAutopilote}x loyer)
 - Solvabilité entre 2.5x et ${seuilAutopilote}x le loyer
 - Situation complexe ou ambiguë
 
