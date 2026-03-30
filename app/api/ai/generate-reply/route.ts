@@ -197,15 +197,18 @@ export async function POST(req: Request) {
     const propertyId = (email as unknown as { property_id: string | null }).property_id;
 
     if (propertyId) {
-      const { data: prop } = await supabaseAdmin
+      const { data: prop, error: propErr } = await supabaseAdmin
         .from("properties")
-        .select("id, title, address, rent, charges_mensuelles, type, animaux_acceptes, parking_inclus, meuble, disponible_a_partir_de, notes_specifiques, description")
+        .select("id, name, address, rent, charges_mensuelles, type, animaux_acceptes, parking_inclus, meuble, disponible_a_partir_de, notes_specifiques, description")
         .eq("id", propertyId)
         .maybeSingle();
-      // Normaliser rent → loyer pour compatibilité avec le prompt
+      if (propErr) {
+        console.error("[GENERATE] Erreur fetch bien:", propErr.message);
+      }
+      // Normaliser rent → loyer, name → title pour compatibilité avec le prompt
       if (prop) {
         const p = prop as Record<string, unknown>;
-        bien = { ...p, loyer: p.rent, charges: p.charges_mensuelles };
+        bien = { ...p, loyer: p.rent, charges: p.charges_mensuelles, title: p.name };
       }
     }
 
@@ -214,33 +217,28 @@ export async function POST(req: Request) {
     if (!propertyId) {
       const { data: allProps } = await supabaseAdmin
         .from("properties")
-        .select("id, title, address, rent, charges_mensuelles, type, animaux_acceptes, parking_inclus, meuble, disponible_a_partir_de, notes_specifiques, description")
+        .select("id, name, address, rent, charges_mensuelles, type, animaux_acceptes, parking_inclus, meuble, disponible_a_partir_de, notes_specifiques, description")
         .eq("user_id", user.id);
 
       if (allProps && allProps.length > 0) {
         const emailText = `${(email as unknown as { subject: string | null }).subject ?? ""} ${bodyText}`.toLowerCase();
 
-        // Chercher les biens mentionnés dans le sujet/corps
+        // Chercher les biens mentionnés dans le sujet/corps (utiliser name, pas title)
         const matched = (allProps as Array<Record<string, unknown>>).filter(
-          (p) => typeof p.title === "string" && p.title.length >= 4 &&
-            emailText.includes((p.title as string).toLowerCase().substring(0, Math.min(8, (p.title as string).length)))
+          (p) => typeof p.name === "string" && (p.name as string).length >= 4 &&
+            emailText.includes((p.name as string).toLowerCase().substring(0, Math.min(8, (p.name as string).length)))
         );
 
         if (matched.length === 1) {
-          // Un seul bien correspond → l'utiliser directement
           const p = matched[0];
-          bien = { ...p, loyer: p.rent, charges: p.charges_mensuelles };
+          bien = { ...p, loyer: p.rent, charges: p.charges_mensuelles, title: p.name };
         } else if (matched.length > 1) {
-          // Plusieurs correspondent → demander au prospect lequel
-          multipleProperties = matched.map((p) => ({ id: p.id as string, title: p.title as string }));
+          multipleProperties = matched.map((p) => ({ id: p.id as string, title: p.name as string }));
         } else if (allProps.length === 1) {
-          // Aucun mentionné mais l'agent n'a qu'un seul bien → l'utiliser par défaut
           const p = allProps[0] as Record<string, unknown>;
-          bien = { ...p, loyer: p.rent, charges: p.charges_mensuelles };
-        }
-        // Sinon (plusieurs biens, aucun mentionné) : bien reste null, l'IA pose la question
-        else if (allProps.length > 1) {
-          multipleProperties = (allProps as Array<Record<string, unknown>>).map((p) => ({ id: p.id as string, title: p.title as string }));
+          bien = { ...p, loyer: p.rent, charges: p.charges_mensuelles, title: p.name };
+        } else if (allProps.length > 1) {
+          multipleProperties = (allProps as Array<Record<string, unknown>>).map((p) => ({ id: p.id as string, title: p.name as string }));
         }
       }
     }
@@ -265,7 +263,16 @@ Expéditeur : ${sender}
 Sujet : ${subject}
 Message : ${bodyText.substring(0, 2000)}`;
 
-    // 11. Appel OpenAI (JSON mode)
+    // 11. Log diagnostic bien injecté
+    console.log("[GENERATE] bien injecté:", JSON.stringify({
+      id: bien?.id,
+      name: bien?.name,
+      animaux_acceptes: bien?.animaux_acceptes,
+      rent: bien?.rent,
+      property_id_email: propertyId,
+    }));
+
+    // 12. Appel OpenAI (JSON mode)
     const completion = await openai.chat.completions.create({
       model: "gpt-4o-mini",
       messages: [

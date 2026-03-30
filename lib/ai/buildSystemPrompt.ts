@@ -111,7 +111,7 @@ Mode = DRAFT, next_etape = NEW\n`
   const bienSection = bien ? `
 
 BIEN CONCERNÉ :
-- Titre : ${(bien.title as string) ?? "?"}
+- Titre : ${(bien.name as string ?? bien.title as string) ?? "?"}
 - Adresse : ${(bien.address as string) ?? "Non précisée"}
 - Loyer : ${(bien.loyer as number) ?? "?"}€ + charges : ${bien.charges != null ? `${bien.charges}€/mois` : "inconnues (à confirmer — ne pas inventer de montant)"}
 - Type : ${(bien.type as string) ?? "?"}${bien.meuble ? " — Meublé" : " — Non meublé"}
