@@ -1,10 +1,31 @@
 "use client";
 
 import { ReactNode, useEffect, useRef } from "react";
+import { usePathname } from "next/navigation";
 import { Sidebar } from "./Sidebar";
 import { supabaseBrowser } from "@/lib/supabaseBrowser";
 import { useToast } from "@/components/ui/Toast";
 import GlobalSearch from "./GlobalSearch";
+
+/* ── Sync silencieuse toutes les 5min sur les pages hors /emails ─────────── */
+/* /emails a déjà son propre polling 60s — éviter le double-déclenchement   */
+function BackgroundSync() {
+  const pathname = usePathname();
+  useEffect(() => {
+    if (pathname.startsWith("/emails")) return; // /emails gère son propre polling
+    const interval = setInterval(async () => {
+      try {
+        await fetch("/api/emails/analyze-now", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ trigger: "background" }),
+        });
+      } catch { /* silencieux */ }
+    }, 5 * 60 * 1000); // 5 minutes
+    return () => clearInterval(interval);
+  }, [pathname]);
+  return null;
+}
 
 /* ── Realtime watcher pour notifications autopilote ── */
 function RealtimeWatcher() {
@@ -84,6 +105,7 @@ export default function AppShell({ children }: { children: ReactNode }) {
       <Sidebar />
       <RealtimeWatcher />
       <SessionKeepAlive />
+      <BackgroundSync />
       <GlobalSearch />
       <main className="flex-1 flex flex-col min-w-0 overflow-hidden">
         {children}

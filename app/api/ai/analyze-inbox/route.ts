@@ -1204,7 +1204,7 @@ JSON attendu (TOUS les champs, null si absent) :
         // Filtrer uniquement les biens actifs (available !== false)
         const activeProperties = userProperties.filter((p: any) => p.available !== false);
         const propertyMatch = matchPropertyFromEmail(content, email.subject ?? null, activeProperties);
-        let matchedPropertyId: string | null = null;
+        // NOTE: matchedPropertyId uses the outer variable declared at line 1081 — do NOT redeclare here
         let matchedRent: number | null = null;
 
         if (propertyMatch) {
