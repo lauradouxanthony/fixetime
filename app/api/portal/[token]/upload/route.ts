@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { logActivity } from "@/lib/activity/logActivity";
 
 export const runtime = "nodejs";
 
@@ -238,6 +239,45 @@ export async function POST(
         storage_path: storagePath,
       },
     });
+
+    // Log DOCUMENTS_UPLOADES dans activity_log
+    if (emailRow?.user_id) {
+      void logActivity({
+        userId: emailRow.user_id as string,
+        actor: "system",
+        type: "DOCUMENTS_UPLOADES",
+        title: `Document reçu via portail — ${classification.label}`,
+        emailId: tokenRow.email_id,
+        meta: {
+          filename: file.name,
+          docType: classification.docType,
+          confidence: classification.confidence,
+          storagePath,
+        },
+      });
+
+      // Vérifier si dossier complet (tous les docs requis reçus)
+      const newAttachmentList = [...currentAttachments, newAttachment];
+      const portalDocs = (newAttachmentList as Record<string, unknown>[]).filter((a) => a.source === "portal");
+      const situationPro = (existingPd.situation_pro as string) ?? "CDI";
+      const DOC_PROFILES_COUNT: Record<string, number> = {
+        CDI: 4, CDD: 4, ETUDIANT: 6, AUTO_ENTREPRENEUR: 4, RETRAITE: 3,
+      };
+      const requiredCount = DOC_PROFILES_COUNT[situationPro] ?? 4;
+      if (portalDocs.length >= requiredCount) {
+        void logActivity({
+          userId: emailRow.user_id as string,
+          actor: "system",
+          type: "DOSSIER_COMPLET",
+          title: `Dossier complet — ${(existingPd.nom as string) ?? "Prospect inconnu"}`,
+          emailId: tokenRow.email_id,
+          meta: {
+            situation_pro: situationPro,
+            nb_docs: portalDocs.length,
+          },
+        });
+      }
+    }
 
     // Mark token as used (first upload only)
     await supabaseAdmin

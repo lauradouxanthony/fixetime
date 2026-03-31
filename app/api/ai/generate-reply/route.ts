@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { supabaseServer } from "@/lib/supabaseServer";
 import OpenAI from "openai";
 import { buildSystemPrompt } from "@/lib/ai/buildSystemPrompt";
+import { logActivity } from "@/lib/activity/logActivity";
 
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY! });
 
@@ -330,6 +331,39 @@ Message : ${bodyText.substring(0, 2000)}`;
     }).eq("id", email.id);
 
     console.log(`[generate-reply] emailId=${emailId} mode=${parsed.mode} etape=${pd.etape_process ?? "null"}→${parsed.next_etape}`);
+
+    // ── Activity logs ────────────────────────────────────────────
+    // NOUVEAU_PROSPECT_QUALIFIE : prospect vient d'être qualifié (revenus + situation_pro connus)
+    const wasQualified = (pd.etape_process ?? "NEW") !== "QUALIFICATION" && parsed.next_etape === "VISITE_PROPOSEE";
+    if (wasQualified && updatedPd.revenus_mensuels && updatedPd.situation_pro) {
+      void logActivity({
+        userId: user.id,
+        actor: "ai",
+        type: "NOUVEAU_PROSPECT_QUALIFIE",
+        title: `Prospect qualifié — ${updatedPd.nom ?? (email as unknown as { sender: string }).sender ?? "Inconnu"}`,
+        emailId: email.id,
+        meta: {
+          situation_pro: updatedPd.situation_pro,
+          revenus_mensuels: updatedPd.revenus_mensuels,
+          next_etape: parsed.next_etape,
+        },
+      });
+    }
+
+    // VISITE_CONFIRMEE : prospect vient de confirmer un créneau
+    if (parsed.next_etape === "VISITE_CONFIRMEE" && (pd.etape_process ?? "") !== "VISITE_CONFIRMEE") {
+      void logActivity({
+        userId: user.id,
+        actor: "ai",
+        type: "VISITE_CONFIRMEE",
+        title: `Visite confirmée — ${updatedPd.nom ?? (email as unknown as { sender: string }).sender ?? "Inconnu"}`,
+        emailId: email.id,
+        meta: {
+          situation_pro: updatedPd.situation_pro,
+          mode: parsed.mode,
+        },
+      });
+    }
 
     return NextResponse.json(parsed);
   } catch (err) {

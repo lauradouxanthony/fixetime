@@ -1,5 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
+import { supabaseServer } from "@/lib/supabaseServer";
 import OpenAI from "openai";
 
 const openai = new OpenAI({
@@ -8,17 +9,23 @@ const openai = new OpenAI({
 
 export async function POST(req: NextRequest) {
   try {
+    // Auth check
+    const supabase = await supabaseServer();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user) return NextResponse.json({ error: "UNAUTHORIZED" }, { status: 401 });
+
     const { email_id } = await req.json();
 
     if (!email_id) {
       return NextResponse.json({ error: "NO_EMAIL_ID" }, { status: 400 });
     }
 
-    // 1️⃣ Récupérer l’email
+    // 1️⃣ Récupérer l’email (scoped to user)
     const { data: email } = await supabaseAdmin
       .from("emails")
       .select("id, sender, subject, body")
       .eq("id", email_id)
+      .eq("user_id", user.id)
       .single();
 
     if (!email) {
