@@ -98,12 +98,13 @@ export async function POST(req: NextRequest) {
       // Charger le pipeline_mode de l'utilisateur
       const { data: settingsRow } = await supabaseAdmin
         .from("settings_v1")
-        .select("email_rules, pipeline_mode")
+        .select("email_rules")
         .eq("user_id", userId)
         .maybeSingle();
 
-      const pipelineMode: string = (settingsRow as Record<string, unknown>)?.pipeline_mode as string ?? "DRAFT";
       const rules = ((settingsRow as Record<string, unknown>)?.email_rules as Record<string, unknown>) ?? {};
+      // pipeline_mode n'est pas une colonne dédiée — il est stocké dans email_rules.pipeline_mode
+      const pipelineMode: string = (rules.pipeline_mode as string) ?? "DRAFT";
       const nomAgence = ((rules.ft_locatif as Record<string, unknown>)?.nomAgence as string) ?? "l'agence";
 
       for (const [etape, delayMs] of Object.entries(RELANCE_DELAYS_MS)) {
@@ -118,7 +119,7 @@ export async function POST(req: NextRequest) {
           .eq("is_archived", false)
           .lt("received_at", cutoff)
           .lt("relance_count", 3)
-          .filter("prospect_data->etape_process", "eq", etape);
+          .filter("prospect_data->>etape_process", "eq", etape);
 
         if (!staleLeads || staleLeads.length === 0) continue;
 
