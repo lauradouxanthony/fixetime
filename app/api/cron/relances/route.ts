@@ -15,6 +15,18 @@ const RELANCE_DELAYS_MS: Record<string, number> = {
   DOSSIER_DEMANDE: 72 * 3600 * 1000,  // 72h
 };
 
+/** Rappels visite J-2 (48h avant) et J-1 (24h avant) */
+const RAPPEL_MESSAGES = {
+  j2: (nom: string, date: string, heure: string, bien: string, adresse: string) =>
+    `Bonjour ${nom},\n\nNous vous rappelons votre visite du ${date} à ${heure} pour le ${bien}.\nAdresse : ${adresse}\n\nÀ bientôt !\n\nCordialement,\nL'équipe de l'agence`,
+
+  j1: (nom: string, heure: string, bien: string, adresse: string) =>
+    `Bonjour ${nom},\n\nVotre visite est demain à ${heure} pour ${bien} situé au ${adresse}.\nN'hésitez pas à nous contacter si besoin.\n\nCordialement,\nL'équipe de l'agence`,
+
+  portail: (nom: string, portalUrl: string) =>
+    `Bonjour ${nom},\n\nMerci pour votre visite ! Pour finaliser votre candidature, veuillez déposer votre dossier via ce lien sécurisé :\n${portalUrl}\n\nCe lien est valable 7 jours.\n\nCordialement,\nL'équipe de l'agence`,
+};
+
 /** Messages de relance par étape */
 const RELANCE_MESSAGES: Record<string, (nom: string) => string> = {
   QUALIFICATION: (nom) =>
@@ -228,6 +240,242 @@ export async function POST(req: NextRequest) {
   } catch (err) {
     console.error("[CRON RELANCES] Erreur globale:", err);
     return NextResponse.json({ error: "INTERNAL_ERROR" }, { status: 500 });
+  }
+
+  // === RAPPELS VISITE J-2 / J-1 + PORTAIL APRÈS VISITE ===
+  try {
+    const nowTs = Date.now();
+    const j1End   = new Date(nowTs + 24 * 3600 * 1000).toISOString();   // dans 24h
+    const j2Start = new Date(nowTs + 24 * 3600 * 1000).toISOString();   // dans 24h
+    const j2End   = new Date(nowTs + 48 * 3600 * 1000).toISOString();   // dans 48h
+    const pastStart = new Date(nowTs - 48 * 3600 * 1000).toISOString(); // passé depuis max 48h
+
+    // Récupérer les users avec Gmail connecté (même liste que le cron principal)
+    const { data: usersWithGmail } = await supabaseAdmin
+      .from("gmail_tokens")
+      .select("user_id")
+      .not("refresh_token", "is", null);
+
+    for (const { user_id: userId } of (usersWithGmail ?? [])) {
+      // pipeline_mode pour cet utilisateur
+      const { data: sRow } = await supabaseAdmin
+        .from("settings_v1")
+        .select("email_rules")
+        .eq("user_id", userId)
+        .maybeSingle();
+      const rules = ((sRow as Record<string, unknown>)?.email_rules as Record<string, unknown>) ?? {};
+      const pMode: string = (rules.pipeline_mode as string) ?? "DRAFT";
+      const nomAgence = ((rules.ft_locatif as Record<string, unknown>)?.nomAgence as string) ?? "l'agence";
+
+      // ── 1. Rappels J-1 (visite dans 0-24h) ──────────────────────────────
+      const { data: evtsJ1 } = await supabaseAdmin
+        .from("calendar_events")
+        .select("id, title, start_time, location, prospect_email, property_name")
+        .eq("user_id", userId)
+        .gt("start_time", new Date(nowTs).toISOString())
+        .lt("start_time", j1End);
+
+      for (const evt of (evtsJ1 ?? [])) {
+        const e = evt as Record<string, unknown>;
+        if (!e.prospect_email) continue;
+        // Vérifier si rappel J-1 déjà envoyé via prospect_timeline
+        const { count: alreadySent } = await supabaseAdmin
+          .from("prospect_timeline")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", userId)
+          .eq("action_type", "RAPPEL_J1")
+          .filter("metadata->calendar_event_id", "eq", `"${e.id}"`);
+        if ((alreadySent ?? 0) > 0) continue;
+
+        // Trouver l'email prospect correspondant
+        const { data: matchEmail } = await supabaseAdmin
+          .from("emails")
+          .select("id, sender, subject, prospect_data")
+          .eq("user_id", userId)
+          .ilike("sender", `%${e.prospect_email}%`)
+          .filter("prospect_data->>etape_process", "eq", "VISITE_CONFIRMEE")
+          .maybeSingle();
+
+        const pd = ((matchEmail as Record<string, unknown>)?.prospect_data as Record<string, unknown>) ?? {};
+        const nom = (pd.nom as string) ?? "Madame, Monsieur";
+        const startDt = new Date(e.start_time as string);
+        const heure = startDt.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+        const adresse = (e.location as string) ?? (e.property_name as string) ?? "notre agence";
+        const bien = (e.property_name as string) ?? (e.title as string) ?? "le bien";
+
+        const body = RAPPEL_MESSAGES.j1(nom, heure, bien, adresse)
+          .replace("L'équipe de l'agence", `L'équipe ${nomAgence}`);
+
+        if (pMode === "AUTOPILOTE" && matchEmail) {
+          await sendGmailReply({ userId, to: e.prospect_email as string, subject: `Rappel visite demain — ${bien}`, body });
+          sent++;
+        } else if (matchEmail) {
+          await supabaseAdmin.from("emails").update({ ai_reply: body }).eq("id", (matchEmail as Record<string, unknown>).id);
+          drafted++;
+        }
+
+        // Marquer comme envoyé dans la timeline
+        try {
+          await supabaseAdmin.from("prospect_timeline").insert({
+            user_id: userId,
+            email_id: (matchEmail as Record<string, unknown>)?.id ?? null,
+            action_type: "RAPPEL_J1",
+            description: `Rappel J-1 visite — ${bien} à ${heure}`,
+            metadata: { calendar_event_id: e.id, mode: pMode },
+          });
+          processed++;
+        } catch { /* silencieux */ }
+      }
+
+      // ── 2. Rappels J-2 (visite dans 24-48h) ─────────────────────────────
+      const { data: evtsJ2 } = await supabaseAdmin
+        .from("calendar_events")
+        .select("id, title, start_time, location, prospect_email, property_name")
+        .eq("user_id", userId)
+        .gt("start_time", j2Start)
+        .lt("start_time", j2End);
+
+      for (const evt of (evtsJ2 ?? [])) {
+        const e = evt as Record<string, unknown>;
+        if (!e.prospect_email) continue;
+        const { count: alreadySent } = await supabaseAdmin
+          .from("prospect_timeline")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", userId)
+          .eq("action_type", "RAPPEL_J2")
+          .filter("metadata->calendar_event_id", "eq", `"${e.id}"`);
+        if ((alreadySent ?? 0) > 0) continue;
+
+        const { data: matchEmail } = await supabaseAdmin
+          .from("emails")
+          .select("id, sender, subject, prospect_data")
+          .eq("user_id", userId)
+          .ilike("sender", `%${e.prospect_email}%`)
+          .filter("prospect_data->>etape_process", "eq", "VISITE_CONFIRMEE")
+          .maybeSingle();
+
+        const pd = ((matchEmail as Record<string, unknown>)?.prospect_data as Record<string, unknown>) ?? {};
+        const nom = (pd.nom as string) ?? "Madame, Monsieur";
+        const startDt = new Date(e.start_time as string);
+        const dateStr = startDt.toLocaleDateString("fr-FR", { weekday: "long", day: "numeric", month: "long" });
+        const heure = startDt.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
+        const adresse = (e.location as string) ?? (e.property_name as string) ?? "notre agence";
+        const bien = (e.property_name as string) ?? (e.title as string) ?? "le bien";
+
+        const body = RAPPEL_MESSAGES.j2(nom, dateStr, heure, bien, adresse)
+          .replace("L'équipe de l'agence", `L'équipe ${nomAgence}`);
+
+        if (pMode === "AUTOPILOTE" && matchEmail) {
+          await sendGmailReply({ userId, to: e.prospect_email as string, subject: `Rappel visite dans 2 jours — ${bien}`, body });
+          sent++;
+        } else if (matchEmail) {
+          await supabaseAdmin.from("emails").update({ ai_reply: body }).eq("id", (matchEmail as Record<string, unknown>).id);
+          drafted++;
+        }
+
+        try {
+          await supabaseAdmin.from("prospect_timeline").insert({
+            user_id: userId,
+            email_id: (matchEmail as Record<string, unknown>)?.id ?? null,
+            action_type: "RAPPEL_J2",
+            description: `Rappel J-2 visite — ${bien} le ${dateStr} à ${heure}`,
+            metadata: { calendar_event_id: e.id, mode: pMode },
+          });
+          processed++;
+        } catch { /* silencieux */ }
+      }
+
+      // ── 3. Après visite → envoi portail documents ────────────────────────
+      const { data: pastEvts } = await supabaseAdmin
+        .from("calendar_events")
+        .select("id, title, start_time, location, prospect_email, property_name")
+        .eq("user_id", userId)
+        .gt("start_time", pastStart)
+        .lt("start_time", new Date(nowTs).toISOString());
+
+      for (const evt of (pastEvts ?? [])) {
+        const e = evt as Record<string, unknown>;
+        if (!e.prospect_email) continue;
+        // Vérifier si portail déjà envoyé
+        const { count: alreadySent } = await supabaseAdmin
+          .from("prospect_timeline")
+          .select("id", { count: "exact", head: true })
+          .eq("user_id", userId)
+          .eq("action_type", "PORTAIL_APRES_VISITE")
+          .filter("metadata->calendar_event_id", "eq", `"${e.id}"`);
+        if ((alreadySent ?? 0) > 0) continue;
+
+        // Trouver email VISITE_CONFIRMEE correspondant
+        const { data: matchEmail } = await supabaseAdmin
+          .from("emails")
+          .select("id, sender, subject, prospect_data")
+          .eq("user_id", userId)
+          .ilike("sender", `%${e.prospect_email}%`)
+          .filter("prospect_data->>etape_process", "eq", "VISITE_CONFIRMEE")
+          .maybeSingle();
+
+        if (!matchEmail) continue;
+        const eId = (matchEmail as Record<string, unknown>).id as string;
+        const pd = ((matchEmail as Record<string, unknown>).prospect_data as Record<string, unknown>) ?? {};
+        const nom = (pd.nom as string) ?? "Madame, Monsieur";
+
+        // Créer ou récupérer le token portail
+        const { data: existingToken } = await supabaseAdmin
+          .from("document_portal_tokens")
+          .select("token, expires_at")
+          .eq("email_id", eId)
+          .gt("expires_at", new Date().toISOString())
+          .maybeSingle();
+
+        let portalToken: string;
+        if (existingToken) {
+          portalToken = (existingToken as Record<string, unknown>).token as string;
+        } else {
+          portalToken = crypto.randomUUID();
+          await supabaseAdmin.from("document_portal_tokens").insert({
+            token: portalToken,
+            email_id: eId,
+            user_id: userId,
+            prospect_email: e.prospect_email,
+            prospect_name: nom,
+            expires_at: new Date(nowTs + 7 * 24 * 3600 * 1000).toISOString(),
+          });
+        }
+
+        const portalUrl = `${SITE_URL}/portal/${portalToken}`;
+        const body = RAPPEL_MESSAGES.portail(nom, portalUrl)
+          .replace("L'équipe de l'agence", `L'équipe ${nomAgence}`);
+
+        // Mettre à jour l'étape → DOSSIER_DEMANDE
+        await supabaseAdmin.from("emails").update({
+          ai_reply: body,
+          prospect_data: { ...pd, etape_process: "DOSSIER_DEMANDE" },
+        }).eq("id", eId);
+
+        if (pMode === "AUTOPILOTE") {
+          await sendGmailReply({ userId, to: e.prospect_email as string, subject: "Dépôt de votre dossier de location", body });
+          sent++;
+        } else {
+          drafted++;
+        }
+
+        try {
+          await supabaseAdmin.from("prospect_timeline").insert({
+            user_id: userId,
+            email_id: eId,
+            action_type: "PORTAIL_APRES_VISITE",
+            description: `Lien portail envoyé après visite — étape → DOSSIER_DEMANDE`,
+            metadata: { calendar_event_id: e.id, portal_url: portalUrl, mode: pMode },
+          });
+          processed++;
+        } catch { /* silencieux */ }
+
+        console.log(`[CRON RELANCES] PORTAIL_APRES_VISITE email=${eId} portail=${portalUrl}`);
+      }
+    }
+  } catch (err) {
+    console.error("[CRON RELANCES] Erreur rappels visite:", err);
+    errors.push(`rappels_visite:${(err as Error).message?.substring(0, 50)}`);
   }
 
   return NextResponse.json({ processed, sent, drafted, errors: errors.length > 0 ? errors : undefined });

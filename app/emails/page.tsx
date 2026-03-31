@@ -237,10 +237,16 @@ export default function PipelinePage() {
   const toggleMode = async () => {
     const newMode: PipelineMode = mode === "DRAFT" ? "AUTOPILOTE" : "DRAFT";
     setMode(newMode);
+    const isAutopilote = newMode === "AUTOPILOTE";
+    // Synchroniser pipeline_mode (relances cron) + automation_level + assistant_enabled (autopilot-dispatch)
     await fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ pipeline_mode: newMode }),
+      body: JSON.stringify({
+        pipeline_mode: newMode,
+        automation_level: isAutopilote ? "autopilot" : "draft",
+        assistant_enabled: isAutopilote,
+      }),
     }).catch(() => {});
   };
 
