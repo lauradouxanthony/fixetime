@@ -172,6 +172,14 @@ ${computedMode ? `╔══ DÉCISION CALCULÉE POUR CET EMAIL ══╗
 - Si prospect.nom est null dans la FICHE PROSPECT → demander explicitement "Pourriez-vous me donner votre prénom et nom ?"
 - N'utilise que ce qui est dans le corps du message ou dans la FICHE PROSPECT pour le nom
 
+RÈGLE ABSOLUE — ETUDIANT — REVENUS :
+Si situation_pro = "ETUDIANT" :
+- Ne JAMAIS demander "vos revenus mensuels" ni "votre salaire" ni "vos revenus personnels"
+- L'étudiant n'a pas de revenus propres — c'est NORMAL et ATTENDU
+- SEULE question revenus autorisée : "Pouvez-vous m'indiquer les revenus mensuels de votre garant ?"
+- revenus_mensuels d'un étudiant = toujours null, toujours ignoré dans les calculs
+- Le ratio solvabilité se calcule sur revenus_garant / loyer
+
 RÈGLE ABSOLUE — CRÉNEAUX CONDITIONNELS :
 Ne proposer des créneaux de visite QUE si TOUTES ces conditions sont remplies :
 1. situation_pro est connue (non null)
@@ -274,12 +282,12 @@ ${JSON.stringify({
   nom: prospect.nom,
   telephone: prospect.telephone,
   situation_pro: prospect.situation_pro,
-  revenus_mensuels: prospect.revenus_mensuels,
+  revenus_mensuels: prospect.situation_pro === "ETUDIANT" ? "N/A — étudiant (ne pas demander)" : prospect.revenus_mensuels,
   revenus_garant: prospect.revenus_garant,
   garant: prospect.garant,
   date_entree_souhaitee: prospect.date_entree_souhaitee,
 }, null, 2)}
-Qualification complète pour créneaux : ${qualifComplete ? "✅ OUI" : "❌ NON"}
+Qualification complète pour créneaux : ${qualifComplete ? "✅ OUI" : "❌ NON"}${prospect.situation_pro === "ETUDIANT" ? "\n⚠️ ETUDIANT : Ne jamais demander les revenus personnels. Demander UNIQUEMENT les revenus du garant." : ""}
 
 Signature email : Cordialement, L'équipe ${nomAgence || "de l'agence"}`;
 }
