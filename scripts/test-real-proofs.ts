@@ -63,6 +63,7 @@ async function genReply(params: {
     telephone: null,
     situation_pro: (params.pd.situation_pro as string | null) ?? null,
     revenus_mensuels: typeof params.pd.revenus_mensuels === "number" ? params.pd.revenus_mensuels : null,
+    revenus_garant: typeof params.pd.revenus_garant === "number" ? params.pd.revenus_garant : null,
     loyer_max: null,
     garant: (params.pd.garant as string | null) ?? null,
     date_entree_souhaitee: null,

@@ -76,7 +76,7 @@ async function main() {
     subject: "Demande visite T2 rue des Fleurs",
     body: "Bonjour, je suis intéressé par votre T2. Je suis en CDI, je gagne 3200€ net. Cordialement, Paul Martin 06 11 22 33 44",
     property_id: PROP_T2_FLEURS,
-    prospect: { nom: "Paul Martin", telephone: null, situation_pro: "CDI", revenus_mensuels: 3200, loyer_max: null, garant: null, date_entree_souhaitee: null },
+    prospect: { nom: "Paul Martin", telephone: null, situation_pro: "CDI", revenus_mensuels: 3200, revenus_garant: null, loyer_max: null, garant: null, date_entree_souhaitee: null },
     etape: "NEW",
   });
   console.log("MODE:", r1.mode, "| NEXT:", r1.next_etape);
@@ -90,7 +90,7 @@ async function main() {
     subject: "Studio rue de Rivoli pour étudiant",
     body: "Bonjour, je suis étudiant en L3. Mon père est garant, CDI 4000€/mois. Cordialement, Lucas Petit",
     property_id: PROP_STUDIO_RIVOLI,
-    prospect: { nom: "Lucas Petit", telephone: null, situation_pro: "ETUDIANT", revenus_mensuels: null, loyer_max: null, garant: "OUI", date_entree_souhaitee: null },
+    prospect: { nom: "Lucas Petit", telephone: null, situation_pro: "ETUDIANT", revenus_mensuels: null, revenus_garant: null, loyer_max: null, garant: "OUI", date_entree_souhaitee: null },
     etape: "NEW",
   });
   console.log("MODE:", r2.mode, "| NEXT:", r2.next_etape);

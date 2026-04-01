@@ -18,6 +18,7 @@ const BASE_PARAMS: BuildSystemPromptParams = {
     telephone: null,
     situation_pro: null,
     revenus_mensuels: null,
+    revenus_garant: null,
     loyer_max: null,
     garant: null,
     date_entree_souhaitee: null,
@@ -123,11 +124,16 @@ describe("Test 4 — CDI solvable, workflow QUALIFICATION", () => {
     expect(prompt).toContain("2975");
   });
 
-  it("le prompt doit lister les documents à préparer", () => {
+  it("le prompt doit lister les documents à préparer si qualification complète", () => {
     const prompt = buildSystemPrompt({
       ...BASE_PARAMS,
       etapeProcess: "QUALIFICATION",
       bien: BIEN_RIVOLI,
+      prospect: {
+        ...BASE_PARAMS.prospect,
+        situation_pro: "CDI",
+        revenus_mensuels: 3500,
+      },
     });
     expect(prompt).toContain("Fiches de paie");
   });

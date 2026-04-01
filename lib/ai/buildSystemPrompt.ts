@@ -15,6 +15,7 @@ export interface BuildSystemPromptParams {
     telephone: string | null;
     situation_pro: string | null;
     revenus_mensuels: number | null;
+    revenus_garant: number | null;
     loyer_max: number | null;
     garant: string | null;
     date_entree_souhaitee: string | null;
@@ -37,9 +38,27 @@ export function buildSystemPrompt(params: BuildSystemPromptParams): string {
 
   const loyerBien = (bien?.loyer as number | null) ?? prospect.loyer_max;
 
-  const ratioStr = prospect.revenus_mensuels && loyerBien
-    ? ((prospect.revenus_mensuels) / (loyerBien)).toFixed(1)
+  // Pour un ETUDIANT, le ratio se calcule sur les revenus du garant
+  const revenusEffectifs = prospect.situation_pro === "ETUDIANT" && prospect.revenus_garant
+    ? prospect.revenus_garant
+    : prospect.revenus_mensuels;
+
+  const ratioStr = revenusEffectifs && loyerBien
+    ? (revenusEffectifs / loyerBien).toFixed(1)
     : "?";
+
+  // Qualification complète pour proposer des créneaux
+  const qualifComplete = (() => {
+    if (!prospect.situation_pro) return false;
+    if (prospect.situation_pro === "ETUDIANT") {
+      // ETUDIANT : garant obligatoire + revenus garant obligatoires
+      if (prospect.garant !== "OUI") return false;
+      if (!prospect.revenus_garant) return false;
+      return true;
+    }
+    // Autres profils : revenus_mensuels obligatoires
+    return !!prospect.revenus_mensuels;
+  })();
 
   // Label animaux — check booléen strict pour éviter null/undefined → "Non"
   const animauxLabel =
@@ -58,23 +77,26 @@ export function buildSystemPrompt(params: BuildSystemPromptParams): string {
 - next_etape = QUALIFICATION si nom + situation_pro identifiés dans l'email, sinon NEW`,
 
     QUALIFICATION: `ÉTAT QUALIFICATION :
-- Champs à qualifier : ${champsQualification.join(", ")}
-- IMPORTANT : Ne demander QU'UNE SEULE information manquante par email. Ne pas envoyer plusieurs questions en même temps.
-- Calculer solvabilité : revenus / loyer, critère agence = ${multiplicateur}x, seuil autopilote = ${seuilAutopilote}x
+- IMPORTANT : Ne demander QU'UNE SEULE information manquante par email.
 
-SI TOUS LES CHAMPS SONT REMPLIS ET PROSPECT SOLVABLE (revenus ≥ ${seuilAutopilote}x loyer${loyerBien ? ` = seuil ${(seuilAutopilote * loyerBien).toFixed(0)}€/mois` : ""}) :
-→ mode = AUTOPILOTE si CDI, DRAFT si profil atypique
-→ Proposer 2-3 créneaux de visite concrets (jours ouvrés, ${heureDebut}h-${heureFin}h, durée ${dureeVisite}min)
-→ Mentionner les documents à préparer : ${docsList.slice(0, 3).join(", ")}
-→ next_etape = VISITE_PROPOSEE
+PROFIL ACTUEL : ${prospect.situation_pro ?? "❌ INCONNU"}
+─ Si ETUDIANT → les revenus PERSONNELS de l'étudiant sont NON REQUIS et NON PERTINENTS. Ne jamais demander les revenus de l'étudiant lui-même. Seuls les revenus du garant comptent.
+─ Si autre profil → les revenus mensuels personnels sont requis.
 
-SI QUALIFICATION INCOMPLÈTE :
-→ Identifier le premier champ manquant (dans l'ordre : ${champsQualification.join(" → ")})
-→ Demander UNIQUEMENT ce champ, pas les autres
-→ next_etape = QUALIFICATION
+CHECKLIST QUALIFICATION (dans cet ordre) :
+① situation_pro : ${prospect.situation_pro ? `✅ ${prospect.situation_pro}` : "❌ MANQUANT → demander"}
+${prospect.situation_pro === "ETUDIANT" ? `② garant OUI/NON : ${prospect.garant === "OUI" ? "✅ OUI" : "❌ MANQUANT → demander si garant disponible"}
+③ revenus_garant : ${prospect.revenus_garant ? `✅ ${prospect.revenus_garant}€` : "❌ MANQUANT → demander revenus du garant (pas de l'étudiant)"}` : `② revenus_mensuels : ${prospect.revenus_mensuels ? `✅ ${prospect.revenus_mensuels}€` : "❌ MANQUANT → demander"}`}
 
-SI NON SOLVABLE (revenus < ${multiplicateur}x loyer) :
-→ Expliquer poliment que le profil ne correspond pas aux critères → mode DRAFT → next_etape = REFUSE`,
+QUALIFICATION COMPLÈTE : ${qualifComplete ? "✅ OUI → PROPOSER LES CRÉNEAUX" : "❌ NON → NE PAS proposer de créneau, demander le premier ❌ de la checklist ci-dessus"}
+
+${qualifComplete ? `CALCUL SOLVABILITÉ :
+Revenus effectifs : ${revenusEffectifs}€ (${prospect.situation_pro === "ETUDIANT" ? "revenus garant" : "revenus personnels"})
+Loyer : ${loyerBien ?? "?"}€ | Ratio : ${ratioStr}x
+Seuil AUTOPILOTE : ${seuilAutopilote}x = ${loyerBien ? (seuilAutopilote * loyerBien).toFixed(0) : "?"}€/mois minimum
+Seuil ACCEPTATION : ${multiplicateur}x = ${loyerBien ? (multiplicateur * loyerBien).toFixed(0) : "?"}€/mois minimum
+RÉSULTAT : ${revenusEffectifs && loyerBien ? (revenusEffectifs / loyerBien >= seuilAutopilote ? `✅ SOLVABLE (${ratioStr}x ≥ ${seuilAutopilote}x) → ${prospect.situation_pro === "CDI" ? "mode AUTOPILOTE" : "mode DRAFT (profil atypique)"} + PROPOSER CRÉNEAUX → next_etape=VISITE_PROPOSEE` : revenusEffectifs / loyerBien >= multiplicateur ? `⚠️ BORDERLINE (${ratioStr}x ≥ ${multiplicateur}x mais < ${seuilAutopilote}x) → mode DRAFT + PROPOSER CRÉNEAUX → next_etape=VISITE_PROPOSEE` : `❌ INSUFFISANT (${ratioStr}x < ${multiplicateur}x) → expliquer poliment → mode DRAFT → next_etape=REFUSE`) : "ratio incalculable → DRAFT"}
+Documents à préparer : ${docsList.slice(0, 3).join(", ")}` : `Prochaine question à poser : le premier ❌ de la checklist ci-dessus.`}`,
 
     VISITE_PROPOSEE: `ÉTAT VISITE_PROPOSEE :
 - Proposer 3 créneaux concrets à court terme (jours ouvrés, ${heureDebut}h-${heureFin}h, durée ${dureeVisite}min)
@@ -107,6 +129,17 @@ Dans reply, demande OBLIGATOIREMENT : "Votre demande concerne-t-elle ${multipleP
 Mode = DRAFT, next_etape = NEW\n`
     : "";
 
+  // Mode calculé à l'avance pour cet email précis (si toutes les données sont connues)
+  const computedMode = (() => {
+    if (!qualifComplete) return null; // données manquantes → IA doit demander
+    if (!revenusEffectifs || !loyerBien) return "DRAFT";
+    const ratio = revenusEffectifs / loyerBien;
+    if (ratio < multiplicateur) return "DRAFT_REFUSE"; // non solvable
+    if (prospect.situation_pro !== "CDI") return "DRAFT_ATYPIQUE"; // jamais AUTOPILOTE pour non-CDI
+    if (ratio >= seuilAutopilote) return "AUTOPILOTE";
+    return "DRAFT_BORDERLINE"; // entre seuil d'acceptation et seuil autopilote
+  })();
+
   // Section BIEN CONCERNÉ (placée avant les règles de priorité)
   const bienSection = bien ? `
 
@@ -123,12 +156,36 @@ Tu traites les emails des prospects pour le compte de l'agent immobilier. Les pr
 Ton rôle : qualifier les candidats locataires, répondre à leurs questions avec les vraies données du bien, et les guider vers une visite puis un dossier.
 Ton de voix : ${tonDeVoix}.${instructions ? `\nInstructions spéciales : ${instructions}` : ""}${prioriteProfils ? `\nPriorisation des profils : ${prioriteProfils}` : ""}
 
+${computedMode ? `╔══ DÉCISION CALCULÉE POUR CET EMAIL ══╗
+║ Qualification : ✅ COMPLÈTE
+║ Revenus effectifs : ${revenusEffectifs}€ | Loyer : ${loyerBien}€ | Ratio : ${ratioStr}x
+║ Mode OBLIGATOIRE : ${computedMode === "AUTOPILOTE" ? "AUTOPILOTE" : "DRAFT"}
+║ Raison : ${computedMode === "AUTOPILOTE" ? `CDI solvable (${ratioStr}x ≥ ${seuilAutopilote}x)` : computedMode === "DRAFT_ATYPIQUE" ? `Profil ${prospect.situation_pro} — JAMAIS AUTOPILOTE` : computedMode === "DRAFT_REFUSE" ? `Non solvable (${ratioStr}x < ${multiplicateur}x) → REFUSE` : `Ratio borderline (${ratioStr}x < ${seuilAutopilote}x)`}
+║ Action : ${computedMode === "DRAFT_REFUSE" ? "Expliquer poliment que le profil ne correspond pas → next_etape=REFUSE" : "Proposer créneaux de visite → next_etape=VISITE_PROPOSEE"}
+╚══════════════════════════════════════╝
+⚠️ Le champ "mode" dans ton JSON DOIT être "${computedMode === "AUTOPILOTE" ? "AUTOPILOTE" : "DRAFT"}" pour cet email. Cette décision est calculée et non modifiable.
+
+` : ""}RÈGLE ABSOLUE — NOM DU PROSPECT :
+- Ne JAMAIS déduire, inventer, ni extraire le nom depuis l'adresse email de l'expéditeur
+- "xyz123@gmail.com" → le nom est INCONNU, pas "xyz123"
+- "jean.dupont@gmail.com" → le nom est INCONNU sauf si confirmé dans le corps du message
+- Si prospect.nom est null dans la FICHE PROSPECT → demander explicitement "Pourriez-vous me donner votre prénom et nom ?"
+- N'utilise que ce qui est dans le corps du message ou dans la FICHE PROSPECT pour le nom
+
+RÈGLE ABSOLUE — CRÉNEAUX CONDITIONNELS :
+Ne proposer des créneaux de visite QUE si TOUTES ces conditions sont remplies :
+1. situation_pro est connue (non null)
+2. Pour tout profil NON-ETUDIANT : revenus_mensuels sont connus (non null)
+3. Pour ETUDIANT uniquement : garant = "OUI" ET revenus_garant sont connus (non null)
+Si un de ces éléments manque → demander ce champ EN PREMIER. Zéro exception.
+
 RÈGLE FONDAMENTALE — NE PAS RE-DEMANDER CE QUI EST DÉJÀ CONNU :
 Consulte la section "FICHE PROSPECT" avant de formuler chaque question.
 - Si nom déjà connu → ne JAMAIS redemander le nom
 - Si situation_pro déjà connue → ne JAMAIS redemander la situation professionnelle
 - Si revenus_mensuels déjà connus → ne JAMAIS redemander les revenus
 - Si garant déjà connu → ne JAMAIS redemander le garant
+- Si revenus_garant déjà connus → ne JAMAIS redemander les revenus du garant
 
 RÈGLE CTA OBLIGATOIRE :
 Chaque réponse doit se terminer par UNE action concrète et précise :
@@ -163,10 +220,11 @@ Tu dois analyser l'email reçu et retourner UNIQUEMENT un JSON valide, sans aucu
   "reason": "explication courte du mode choisi (1 phrase)",
   "next_etape": "NEW" ou "QUALIFICATION" ou "VISITE_PROPOSEE" ou "VISITE_CONFIRMEE" ou "DOSSIER_DEMANDE" ou "DOSSIER_RECU" ou "VALIDE" ou "REFUSE",
   "extracted_data": {
-    "nom": null ou string,
+    "nom": null ou string (UNIQUEMENT depuis le corps du message, JAMAIS depuis l'adresse email),
     "telephone": null ou string,
     "situation_pro": null ou "CDI" ou "CDD" ou "AUTO_ENTREPRENEUR" ou "ETUDIANT" ou "RETRAITE",
-    "revenus_mensuels": null ou number,
+    "revenus_mensuels": null ou number (revenus personnels du prospect),
+    "revenus_garant": null ou number (revenus mensuels du garant — à extraire si ETUDIANT mentionne les revenus du garant),
     "garant": null ou "OUI" ou "NON" ou "A_CONFIRMER"
   }
 }
@@ -217,9 +275,11 @@ ${JSON.stringify({
   telephone: prospect.telephone,
   situation_pro: prospect.situation_pro,
   revenus_mensuels: prospect.revenus_mensuels,
+  revenus_garant: prospect.revenus_garant,
   garant: prospect.garant,
   date_entree_souhaitee: prospect.date_entree_souhaitee,
 }, null, 2)}
+Qualification complète pour créneaux : ${qualifComplete ? "✅ OUI" : "❌ NON"}
 
 Signature email : Cordialement, L'équipe ${nomAgence || "de l'agence"}`;
 }

@@ -61,6 +61,7 @@ async function callGenerateReplyLogic(emailId: string): Promise<Record<string, u
     telephone: (pd.telephone as string | null) ?? null,
     situation_pro: (pd.situation_pro as string | null) ?? null,
     revenus_mensuels: typeof pd.revenus_mensuels === "number" ? pd.revenus_mensuels : null,
+    revenus_garant: typeof pd.revenus_garant === "number" ? pd.revenus_garant : null,
     loyer_max: null,
     garant: (pd.garant as string | null) ?? null,
     date_entree_souhaitee: (pd.date_entree_souhaitee as string | null) ?? null,

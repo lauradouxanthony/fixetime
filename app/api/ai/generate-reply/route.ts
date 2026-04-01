@@ -88,6 +88,7 @@ interface ParsedReply {
     telephone: string | null;
     situation_pro: string | null;
     revenus_mensuels: number | null;
+    revenus_garant: number | null;
     garant: string | null;
   };
 }
@@ -128,7 +129,7 @@ export async function POST(req: Request) {
         mode: "ALERTE",
         reason: "Message à caractère juridique ou agressif détecté — intervention humaine requise",
         next_etape: (existingPdAlerte.etape_process as EtapeProcess) ?? "NEW",
-        extracted_data: { nom: null, telephone: null, situation_pro: null, revenus_mensuels: null, garant: null },
+        extracted_data: { nom: null, telephone: null, situation_pro: null, revenus_mensuels: null, revenus_garant: null, garant: null },
       } satisfies ParsedReply);
     }
 
@@ -185,6 +186,7 @@ export async function POST(req: Request) {
       telephone:             (pd.telephone        as string | null) ?? null,
       situation_pro:         (pd.situation_pro    as string | null) ?? situationFallback,
       revenus_mensuels:      (typeof pd.revenus_mensuels === "number" ? pd.revenus_mensuels : null) ?? bodyRevenus,
+      revenus_garant:        (typeof pd.revenus_garant === "number" ? pd.revenus_garant : null),
       loyer_max:             (typeof pd.loyer_max === "number" ? pd.loyer_max : null) ?? bodyLoyer,
       garant:                (pd.garant           as string | null) ?? null,
       date_entree_souhaitee: (pd.date_entree_souhaitee as string | null) ?? null,
@@ -306,6 +308,7 @@ Message : ${bodyText.substring(0, 2000)}`;
     if (ext.telephone      && !pd.telephone)        updatedPd.telephone = ext.telephone;
     if (ext.situation_pro  && !pd.situation_pro)    updatedPd.situation_pro = ext.situation_pro;
     if (ext.revenus_mensuels != null && !pd.revenus_mensuels) updatedPd.revenus_mensuels = ext.revenus_mensuels;
+    if (ext.revenus_garant  != null && !pd.revenus_garant)    updatedPd.revenus_garant = ext.revenus_garant;
     if (ext.garant         && !pd.garant)           updatedPd.garant = ext.garant;
 
     // Avancer l'étape si différente
