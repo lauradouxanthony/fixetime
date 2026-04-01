@@ -33,6 +33,8 @@ export function isAlreadySent(leadJson: { last_outbound?: LastOutbound } | null,
   const type = leadJson?.last_outbound?.type;
   if (type && SENT_TYPES.includes(type as any)) return true;
   if (leadLastAction === "reply_sent" || leadLastAction === "proposal_slots_sent") return true;
+  // Couvre les labels autopilote ("Réponse auto-envoyée", "Réponse FAQ auto-envoyée")
+  if (leadLastAction && leadLastAction.includes("auto-envoyée")) return true;
   return false;
 }
 
@@ -43,6 +45,8 @@ export function isReplyAlreadySent(leadJson: { last_outbound?: LastOutbound } | 
   const type = leadJson?.last_outbound?.type;
   if (type === "reply_sent" || type === "ai_reply" || type === "info_reply") return true;
   if (leadLastAction === "reply_sent") return true;
+  // Couvre les labels autopilote ("Réponse auto-envoyée", "Réponse FAQ auto-envoyée")
+  if (leadLastAction && leadLastAction.includes("auto-envoyée")) return true;
   return false;
 }
 

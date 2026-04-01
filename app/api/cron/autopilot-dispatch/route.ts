@@ -146,10 +146,12 @@ export async function POST(req: Request) {
 
     const { data: emails, error: emailsError } = await supabaseAdmin
       .from("emails")
-      .select("id, user_id, lead_status, decision, ai_reply, lead_json, lead_missing_fields, property_id, received_at")
+      .select("id, user_id, lead_status, decision, ai_reply, lead_json, lead_missing_fields, property_id, received_at, lead_last_action")
       .eq("user_id", userId)
       .in("lead_status", ["qualifying", "unqualified", "slots_proposed", "other"])
       .eq("decision", "traiter")
+      // Filtre DB anti-doublon : exclure les emails déjà envoyés (NULLs = pas encore envoyé, donc inclus)
+      .or("lead_last_action.is.null,lead_last_action.not.like.%auto-envoyée%")
       .order("received_at", { ascending: false })
       .limit(25);
 
