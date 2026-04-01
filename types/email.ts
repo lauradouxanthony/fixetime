@@ -68,6 +68,8 @@ export type Email = {
 
   // Legacy pipeline fields (optional, kept for backward compat with utils)
   lead_status?: string | null;
+  lead_last_action?: string | null;
+  lead_last_action_at?: string | null;
   lead_json?: Record<string, unknown> | null;
   lead_profile?: Record<string, unknown> | null;
   lead_property_address?: string | null;

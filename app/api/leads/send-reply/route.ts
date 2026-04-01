@@ -146,7 +146,9 @@ export async function POST(req: Request) {
     const providerMessageId = sent?.id ?? sent?.messageId ?? null;
     const isInfoReply = (leadJson?.intent as string) === "INFORMATION";
     const outboundType = isInfoReply ? "info_reply" : "reply_sent";
-    const lastActionLabel = isInfoReply ? "Réponse FAQ envoyée" : "Réponse envoyée";
+    const lastActionLabel = trigger === "autopilot"
+      ? (isInfoReply ? "Réponse FAQ auto-envoyée" : "Réponse auto-envoyée")
+      : (isInfoReply ? "Réponse FAQ envoyée" : "Réponse envoyée");
     const nextLeadJson = {
       ...leadJson,
       last_outbound: {

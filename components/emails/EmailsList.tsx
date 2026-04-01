@@ -15,6 +15,8 @@ type Email = {
   classification_reason?: string | null;
   prospect_data?: Record<string, unknown> | null;
   attachments?: unknown[] | null;
+  lead_last_action?: string | null;
+  lead_last_action_at?: string | null;
 };
 
 /* ────────────────────────── HELPERS ────────────────────────── */
@@ -273,6 +275,30 @@ function EtapeBadge({ etape }: { etape: string | null | undefined }) {
   );
 }
 
+/* ────────────────── AUTO-SENT BADGE ──────────────────── */
+
+function isAutoSent(email: Email): boolean {
+  const a = email.lead_last_action ?? "";
+  return a.includes("auto-envoyée") || a.includes("auto-envoyé");
+}
+
+function AutoSentBadge({ email }: { email: Email }) {
+  if (!isAutoSent(email)) return null;
+  const at = email.lead_last_action_at;
+  const timeStr = at
+    ? new Date(at).toLocaleString("fr-FR", { day: "numeric", month: "short", hour: "2-digit", minute: "2-digit" })
+    : null;
+  return (
+    <span
+      className="text-xs px-2 py-0.5 rounded-full font-medium"
+      style={{ background: "rgba(22,163,74,0.12)", color: "rgb(22,163,74)" }}
+      title={timeStr ? `Envoyé automatiquement le ${timeStr}` : "Envoyé automatiquement"}
+    >
+      ✅ Auto-envoyé{timeStr ? ` · ${timeStr}` : ""}
+    </span>
+  );
+}
+
 /* ────────────────── STATUS PILL ──────────────────── */
 
 function StatusPill({ email }: { email: Email }) {
@@ -407,6 +433,7 @@ export function EmailsList({ emails, selectedEmailId, onSelect, loading }: Email
         const isRdvConfirme = email.classification_reason === "RDV_CONFIRMÉ";
         const isHorsSujet = intention === "HORS_SUJET";
         const isUnanalyzed = !email.decision && !email.category;
+        const autoSent = isAutoSent(email);
 
         return (
           <div key={email.id}>
@@ -466,9 +493,15 @@ export function EmailsList({ emails, selectedEmailId, onSelect, loading }: Email
                       ) : (
                         <>
                           <IntentionBadge intention={intention} />
-                          {!isHorsSujet && <StatusPill email={email} />}
-                          {/* BLOC 7 : badge étape_process depuis prospect_data */}
-                          <EtapeBadge etape={email.prospect_data?.etape_process as string | null | undefined} />
+                          {autoSent ? (
+                            <AutoSentBadge email={email} />
+                          ) : (
+                            <>
+                              {!isHorsSujet && <StatusPill email={email} />}
+                              {/* BLOC 7 : badge étape_process depuis prospect_data */}
+                              <EtapeBadge etape={email.prospect_data?.etape_process as string | null | undefined} />
+                            </>
+                          )}
                         </>
                       )}
                       {email.is_urgent && !isRdvConfirme && (
