@@ -80,7 +80,8 @@ export default function PipelinePage() {
       .order("received_at", { ascending: false });
 
     if (fromDate) query = query.gte("received_at", fromDate.toISOString());
-    if (intentionFilter !== "all") query = query.eq("category", intentionFilter);
+    // AUTO_SENT n'est pas une catégorie DB — filtrage client-side dans filteredEmails
+    if (intentionFilter !== "all" && intentionFilter !== "AUTO_SENT") query = query.eq("category", intentionFilter);
 
     const { data, error } = await query;
     if (error) { console.error("FETCH_EMAILS_ERROR", error); setLoading(false); return; }
@@ -113,7 +114,7 @@ export default function PipelinePage() {
       .order("received_at", { ascending: false });
 
     if (fromDate) query = query.gte("received_at", fromDate.toISOString());
-    if (intentionFilter !== "all") query = query.eq("category", intentionFilter);
+    if (intentionFilter !== "all" && intentionFilter !== "AUTO_SENT") query = query.eq("category", intentionFilter);
 
     const { data, error: silentErr } = await query;
     if (silentErr) { console.error("[FETCH_SILENT] SUPABASE_ERROR:", silentErr); return; }

@@ -11,6 +11,7 @@ import { fetchWithTimeout } from "@/lib/fetchWithTimeout";
 import { isSystemEmail } from "@/lib/email/ignoreFilter";
 import { matchFaq, type FaqItem } from "@/lib/faq/matchFaq";
 import { setLastAction } from "@/lib/lead/lastAction";
+import { buildSystemPrompt, type BuildSystemPromptParams } from "@/lib/ai/buildSystemPrompt";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -1479,119 +1480,90 @@ JSON attendu (TOUS les champs, null si absent) :
             });
             autoReply = faqCompletion.choices[0]?.message?.content ?? null;
           } else if (intention === "LOCATION" && prospectData) {
-            // ── Logique par étape (BLOC 2) ────────────────────────────────
-            const locatif = emailRules.ft_locatif ?? {};
-            const docsSection = emailRules.ft_documents ?? {};
-            const calSection = emailRules.ft_calendrier ?? {};
-            const nomAgence = locatif.nomAgence ?? "l'agence";
-            const mult = locatif.multiplicateur ?? 3;
-            const garantObligatoire = locatif.garantObligatoire ?? { cdd: true, auto: true, etudiant: true, retraite: false };
-            const heureDebut = calSection.heureDebut ?? 9;
-            const heureFin = calSection.heureFin ?? 18;
-            const dureeVisite = calSection.dureeVisite ?? 60;
-            const docsProfiles: Record<string, string[]> = {
-              cdi:     (docsSection.cdi     as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail", "Avis d'imposition", "Pièce d'identité"],
-              cdd:     (docsSection.cdd     as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail (durée + date de fin)", "Avis d'imposition", "Pièce d'identité"],
-              etudiant:(docsSection.etudiant as string[]) ?? ["Carte étudiante", "Certificat de scolarité", "Justificatif de garant", "Pièce d'identité"],
-              auto:    (docsSection.auto    as string[]) ?? ["Extrait Kbis", "Bilans comptables (2 dernières années)", "Avis d'imposition", "Pièce d'identité"],
-              retraite:(docsSection.retraite as string[]) ?? ["Relevés de pension (3 derniers mois)", "Avis d'imposition", "Pièce d'identité"],
+            // ── Même logique que le bouton "Générer" DRAFT — buildSystemPrompt ─
+            const locatif2 = emailRules.ft_locatif ?? {};
+            const docsSection2 = emailRules.ft_documents ?? {};
+            const calSection2 = emailRules.ft_calendrier ?? {};
+            const iaSection2 = emailRules.ft_ia ?? {};
+            const faqSection2: { question: string; reponse: string }[] = emailRules.ft_faq ?? [];
+
+            const parseNumAuto = (v: unknown): number | null => {
+              if (v === null || v === undefined || v === "") return null;
+              const n = Number(v); return isNaN(n) ? null : n;
             };
 
-            const etapeActuelle = (prospectData.etape_process as string) ?? "NEW";
-            const nom = (prospectData.nom as string | null) ?? "Madame, Monsieur";
-            const situationPro = prospectData.situation_pro as string | null;
-            const revenus = (prospectData.revenus_mensuels as number | null) ?? null;
-            const loyer = (prospectData.loyer_max as number | null) ?? null;
+            const sitPro2 = (prospectData.situation_pro as string) ?? null;
+            const docsProfiles2: Record<string, string[]> = {
+              CDI:              (docsSection2.cdi      as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail", "Avis d'imposition", "Pièce d'identité"],
+              CDD:              (docsSection2.cdd      as string[]) ?? ["Fiches de paie (3 mois)", "Contrat de travail (durée + date de fin)", "Avis d'imposition", "Pièce d'identité"],
+              ETUDIANT:         (docsSection2.etudiant as string[]) ?? ["Carte étudiante", "Certificat de scolarité", "Justificatif de garant", "Pièce d'identité"],
+              AUTO_ENTREPRENEUR:(docsSection2.auto     as string[]) ?? ["Extrait Kbis", "Bilans comptables (2 dernières années)", "Avis d'imposition", "Pièce d'identité"],
+              RETRAITE:         (docsSection2.retraite as string[]) ?? ["Relevés de pension (3 derniers mois)", "Avis d'imposition", "Pièce d'identité"],
+            };
+            const docsList2 = sitPro2 && docsProfiles2[sitPro2] ? docsProfiles2[sitPro2] : docsProfiles2.CDI;
 
-            const spMap: Record<string, string> = { CDI: "cdi", CDD: "cdd", AUTO_ENTREPRENEUR: "auto", ETUDIANT: "etudiant", RETRAITE: "retraite" };
-            const situation = situationPro ? (spMap[situationPro] ?? null) : null;
-            const ratio = revenus && loyer ? (revenus / loyer).toFixed(1) : null;
-            const sig = `Cordialement, L'équipe ${nomAgence}`;
-
-            let autopilotePrompt = "";
-
-            // BLOC 3 : Si plusieurs biens et aucun match → demander lequel intéresse
-            const pluralBiens = (prospectData.plusieurs_biens_disponibles as boolean | undefined) === true;
-            const biensList = (prospectData.biens_disponibles as string[] | undefined) ?? [];
-
-            if (pluralBiens && biensList.length > 1 && etapeActuelle !== "VISITE_CONFIRMEE" && etapeActuelle !== "DOSSIER_DEMANDE" && etapeActuelle !== "DOSSIER_RECU") {
-              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email court pour ${nom}.
-- Remercier pour l'intérêt
-- Indiquer que vous avez plusieurs biens disponibles
-- Demander lequel les intéresse, en listant les biens :
-${biensList.map((b, i) => `  ${i + 1}. ${b}`).join("\n")}
-- Ton : chaleureux, professionnel
-- Signature : ${sig}
-Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}`;
-            } else if (etapeActuelle === "DOSSIER_RECU") {
-              // Étape 3 : accusé réception documents
-              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email bref pour accuser réception du dossier de ${nom}.
-- Remercier chaleureusement pour l'envoi des pièces jointes
-- Confirmer la bonne réception du dossier complet
-- Indiquer qu'un retour sera communiqué rapidement
-- Signature : ${sig}
-Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}`;
-
-            } else if (etapeActuelle === "VISITE_CONFIRMEE") {
-              // Étape 2 : confirmation reçue, on confirme + préparer pour visite
-              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email de confirmation de visite pour ${nom}.
-- Confirmer chaleureusement la visite (date/heure depuis l'email reçu)
-- Mentionner qu'un retour sera communiqué après la visite
-- Signature : ${sig}
-Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}, Contenu: ${email.body ?? ""}`;
-
-            } else if (etapeActuelle === "VISITE_PROPOSEE" && situation === "etudiant") {
-              // Étudiant : proposer visite + garant obligatoire, PAS de docs
-              const needsGarant = garantObligatoire["etudiant"] !== false;
-              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email pour ${nom} (étudiant).
-- Remercier pour l'intérêt
-- Expliquer qu'un garant est ${needsGarant ? "obligatoire" : "recommandé"} (revenus ≥ ${mult}x le loyer)
-- Si l'email mentionne un garant : proposer 3 créneaux de visite (jours ouvrés ${heureDebut}h-${heureFin}h, durée ${dureeVisite}min)
-- Si pas de garant mentionné : demander si un garant est disponible
-- NE PAS demander de documents à ce stade
-- Signature : ${sig}
-Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}, Contenu: ${email.body ?? ""}`;
-
-            } else if (etapeActuelle === "VISITE_PROPOSEE") {
-              // Solvable : proposer visite, PAS de docs
-              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email enthousiaste pour ${nom} (profil solvable, ratio ${ratio ?? "bon"}x).
-- Confirmer que le profil correspond aux critères
-- Proposer 3 créneaux de visite concrets (jours ouvrés à court terme, entre ${heureDebut}h et ${heureFin}h, durée ${dureeVisite}min)
-- Demander de confirmer un créneau
-- NE PAS demander de documents — ils seront demandés après la visite
-- Signature : ${sig}
-Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}, Contenu: ${email.body ?? ""}`;
-
-            } else if (etapeActuelle === "REFUSE") {
-              // Insolvable
-              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email poli pour décliner la candidature de ${nom}.
-- Remercier pour sa candidature
-- Expliquer poliment que les revenus sont insuffisants (critère: ${mult}x le loyer, ratio actuel: ${ratio ?? "insuffisant"}x)
-- Suggérer la possibilité d'un garant solide (revenus ≥ ${mult}x le loyer)
-- Signature : ${sig}
-Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}, Contenu: ${email.body ?? ""}`;
-
-            } else {
-              // QUALIFICATION (infos manquantes) : demander SEULEMENT situation + revenus
-              const missing: string[] = [];
-              if (!situationPro) missing.push("votre situation professionnelle (CDI, CDD, étudiant, indépendant…)");
-              if (!revenus) missing.push("vos revenus nets mensuels (€)");
-              autopilotePrompt = `Tu es l'assistant de l'agence ${nomAgence}. Rédige un email pour demander les informations manquantes à ${nom}.
-- Remercier pour l'intérêt
-- Demander uniquement :
-${missing.map((m, i) => `${i + 1}. ${m}`).join("\n")}
-- NE PAS demander de documents à ce stade
-- Rester encourageant
-- Signature : ${sig}
-Email reçu : Expéditeur: ${email.sender}, Sujet: ${email.subject}, Contenu: ${email.body ?? ""}`;
+            // Fetch bien si property_id matché
+            let bienAuto: Record<string, unknown> | null = null;
+            const multiPropsAuto: { title: string }[] = [];
+            if (matchedPropertyId) {
+              const { data: propAuto } = await supabaseAdmin
+                .from("properties")
+                .select("id, name, address, rent, charges_mensuelles, type, animaux_acceptes, parking_inclus, meuble, disponible_a_partir_de, notes_specifiques, description")
+                .eq("id", matchedPropertyId).maybeSingle();
+              if (propAuto) {
+                const p2 = propAuto as Record<string, unknown>;
+                bienAuto = { ...p2, loyer: p2.rent, charges: p2.charges_mensuelles, title: p2.name };
+              }
             }
+
+            const prospectForAuto: BuildSystemPromptParams["prospect"] = {
+              nom:                   (prospectData.nom as string | null) ?? null,
+              telephone:             (prospectData.telephone as string | null) ?? null,
+              situation_pro:         sitPro2,
+              revenus_mensuels:      parseNumAuto(prospectData.revenus_mensuels),
+              revenus_garant:        parseNumAuto(prospectData.revenus_garant),
+              loyer_max:             parseNumAuto(prospectData.loyer_max),
+              garant:                (prospectData.garant as string | null) ?? null,
+              date_entree_souhaitee: (prospectData.date_entree_souhaitee as string | null) ?? null,
+            };
+
+            const systemPromptAuto = buildSystemPrompt({
+              nomAgence:        (locatif2.nomAgence as string) ?? "",
+              multiplicateur:   (locatif2.multiplicateur as number) ?? 3,
+              seuilAutopilote:  (iaSection2.seuil_autopilote as number) ?? 3.5,
+              tonDeVoix:        (iaSection2.ton_de_voix as string) ?? "Professionnel et formel",
+              instructions:     (iaSection2.instructions as string) ?? "",
+              prioriteProfils:  (iaSection2.priorite_profils as string) ?? "",
+              heureDebut:       (calSection2.heureDebut as number) ?? 9,
+              heureFin:         (calSection2.heureFin as number) ?? 18,
+              dureeVisite:      (calSection2.dureeVisite as number) ?? 60,
+              etapeProcess:     (prospectData.etape_process as string) ?? "NEW",
+              garantObligatoire:(locatif2.garantObligatoire as Record<string, boolean>) ?? { CDD: true, ETUDIANT: true },
+              prospect:         prospectForAuto,
+              bien:             bienAuto,
+              docsList:         docsList2,
+              multipleProperties: multiPropsAuto,
+              faqContext:       faqSection2.slice(0, 5).map((f) => `Q: ${f.question}\nR: ${f.reponse}`).join("\n\n"),
+              champsQualification: ["situation_pro", "revenus_mensuels", "garant"],
+              customQuestion:   typeof locatif2.customQuestion === "string" ? locatif2.customQuestion.trim() : "",
+            });
 
             const locationCompletion = await openai.chat.completions.create({
               model: "gpt-4o-mini",
-              messages: [{ role: "user", content: autopilotePrompt }],
-              temperature: 0.3,
+              messages: [
+                { role: "system", content: systemPromptAuto },
+                { role: "user",   content: `Email reçu :\nExpéditeur : ${email.sender}\nSujet : ${email.subject}\nMessage : ${content.substring(0, 2000)}` },
+              ],
+              temperature: 0.2,
+              response_format: { type: "json_object" },
             });
-            autoReply = locationCompletion.choices[0]?.message?.content ?? null;
+            try {
+              const parsedAuto = JSON.parse(locationCompletion.choices[0]?.message?.content ?? "{}");
+              autoReply = (parsedAuto.reply as string | null) ?? null;
+              console.log(`[AUTOPILOTE][LOCATION] emailId=${email.id} mode=${parsedAuto.mode} next_etape=${parsedAuto.next_etape}`);
+            } catch {
+              autoReply = null;
+            }
           }
 
           if (autoReply && email.gmail_message_id) {

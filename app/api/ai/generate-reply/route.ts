@@ -181,12 +181,19 @@ export async function POST(req: Request) {
     const situationFallback = detectSituation(bodyText);
     const nomFallback = extractNom(bodyText);
 
+    // Coerce revenus depuis JSONB (l'IA extraction peut stocker des strings "3800")
+    const parseNum = (v: unknown): number | null => {
+      if (v === null || v === undefined || v === "") return null;
+      const n = Number(v);
+      return isNaN(n) ? null : n;
+    };
+
     const prospect = {
       nom:                   (pd.nom             as string | null) ?? nomFallback,
       telephone:             (pd.telephone        as string | null) ?? null,
       situation_pro:         (pd.situation_pro    as string | null) ?? situationFallback,
-      revenus_mensuels:      (typeof pd.revenus_mensuels === "number" ? pd.revenus_mensuels : null) ?? bodyRevenus,
-      revenus_garant:        (typeof pd.revenus_garant === "number" ? pd.revenus_garant : null),
+      revenus_mensuels:      parseNum(pd.revenus_mensuels) ?? bodyRevenus,
+      revenus_garant:        parseNum(pd.revenus_garant),
       loyer_max:             (typeof pd.loyer_max === "number" ? pd.loyer_max : null) ?? bodyLoyer,
       garant:                (pd.garant           as string | null) ?? null,
       date_entree_souhaitee: (pd.date_entree_souhaitee as string | null) ?? null,

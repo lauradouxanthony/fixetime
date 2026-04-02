@@ -70,12 +70,17 @@ async function callGenerateReply(emailId: string): Promise<Record<string, unknow
   };
   const docsList = sitPro && docsProfiles[sitPro] ? docsProfiles[sitPro] : docsProfiles.CDI;
 
+  const parseNum = (v: unknown): number | null => {
+    if (v === null || v === undefined || v === "") return null;
+    const n = Number(v); return isNaN(n) ? null : n;
+  };
+
   const prospect: BuildSystemPromptParams["prospect"] = {
     nom:                   (pd.nom as string | null) ?? null,
     telephone:             null,
     situation_pro:         sitPro,
-    revenus_mensuels:      typeof pd.revenus_mensuels === "number" ? pd.revenus_mensuels : null,
-    revenus_garant:        typeof pd.revenus_garant   === "number" ? pd.revenus_garant   : null,
+    revenus_mensuels:      parseNum(pd.revenus_mensuels),
+    revenus_garant:        parseNum(pd.revenus_garant),
     loyer_max:             null,
     garant:                (pd.garant as string | null) ?? null,
     date_entree_souhaitee: null,
