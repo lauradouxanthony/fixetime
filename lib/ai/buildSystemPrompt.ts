@@ -195,7 +195,7 @@ Biens disponibles : ${multipleProperties.map((p) => p.title).join(", ")}
 - Disponible à partir du : ${bien?.disponible_a_partir_de ? String(bien.disponible_a_partir_de) : "à confirmer"}
 - Animaux : ${animauxLabel}
 - Meublé : ${bien.meuble ? "Oui" : "Non"}
-Ces infos doivent apparaître AVANT toute proposition de visite ou question de qualification.\n`
+Ces infos doivent figurer dans la réponse. Si la DÉCISION CALCULÉE requiert des créneaux, les proposer également dans la même réponse.\n`
       : "";
 
   return `Tu es l'assistant IA de l'agence immobilière "${nomAgence || "FixTime"}", spécialisé en gestion locative.

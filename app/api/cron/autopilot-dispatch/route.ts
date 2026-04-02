@@ -3,6 +3,7 @@ import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { logActivity } from "@/lib/activity/logActivity";
 import { isInQuietHours } from "@/lib/autopilot/guardrails";
 import { setLastAction } from "@/lib/lead/lastAction";
+import { isSystemEmail } from "@/lib/email/ignoreFilter";
 
 export const runtime = "nodejs";
 export const maxDuration = 60;
@@ -193,6 +194,11 @@ export async function POST(req: Request) {
     };
 
     for (const email of emails) {
+      // Ignorer les emails système (banques, noreply, newsletters…)
+      const emailSender = (email as Record<string, unknown>).sender as string ?? "";
+      const emailSubject = (email as Record<string, unknown>).subject as string ?? "";
+      if (isSystemEmail(emailSender, emailSubject)) continue;
+
       const leadJson = (email.lead_json as any) ?? {};
       // Ne traiter que les leads explicitement flagués par l'analyse IA (Phase 4)
       if (leadJson?.autopilot_pending !== true) continue;

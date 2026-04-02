@@ -839,6 +839,7 @@ function TabIA() {
   const [prioriteProfils, setPrioriteProfils] = useState("");
   const [seuilAutopilote, setSeuilAutopilote] = useState(3.5);
   const [blacklistText, setBlacklistText] = useState("");
+  const [prioritySendersText, setPrioritySendersText] = useState("");
   const [saved, setSaved] = useState(false);
   const [saving, setSaving] = useState(false);
   const [testLoading, setTestLoading] = useState(false);
@@ -866,6 +867,7 @@ function TabIA() {
         if (ia.priorite_profils) setPrioriteProfils(ia.priorite_profils as string);
         if (typeof ia.seuil_autopilote === "number") setSeuilAutopilote(ia.seuil_autopilote);
         if (Array.isArray(ia.blacklist_senders)) setBlacklistText((ia.blacklist_senders as string[]).join("\n"));
+        if (Array.isArray(ia.priority_senders)) setPrioritySendersText((ia.priority_senders as string[]).join("\n"));
         setPreviewParams({
           nomAgence: locatif.nomAgence || "",
           multiplicateur: locatif.multiplicateur || 3,
@@ -891,7 +893,7 @@ function TabIA() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ pipeline_mode: mode }),
     });
-    const iaOk = await saveSection("ia", { instructions, ton_de_voix: tonDeVoix, priorite_profils: prioriteProfils, seuil_autopilote: seuilAutopilote, blacklist_senders: blacklistText.split("\n").map(s => s.trim()).filter(Boolean) });
+    const iaOk = await saveSection("ia", { instructions, ton_de_voix: tonDeVoix, priorite_profils: prioriteProfils, seuil_autopilote: seuilAutopilote, blacklist_senders: blacklistText.split("\n").map((s: string) => s.trim()).filter(Boolean), priority_senders: prioritySendersText.split("\n").map((s: string) => s.trim()).filter(Boolean) });
     setSaving(false);
     const modeOk = modeRes.ok;
     if (modeOk && iaOk) {
@@ -1032,6 +1034,23 @@ function TabIA() {
           onChange={(e) => setBlacklistText(e.target.value)}
           rows={4}
           placeholder="Ex: spam@exemple.com, @newsletter.com"
+          className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none resize-none font-mono"
+          style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
+        />
+      </Card>
+
+      <Card title="📌 Expéditeurs prioritaires">
+        <p className="text-xs mb-2" style={{ color: "rgb(100 116 139)" }}>
+          Ces expéditeurs sont classés <strong>INFO urgent</strong> sans appel IA et ne reçoivent jamais de réponse automatique. Un email ou domaine par ligne.
+        </p>
+        <p className="text-xs mb-2" style={{ color: "rgb(100 116 139)" }}>
+          Exemples : notaire@cabinet.fr, @syndic-immo.fr
+        </p>
+        <textarea
+          value={prioritySendersText}
+          onChange={(e) => setPrioritySendersText(e.target.value)}
+          rows={4}
+          placeholder="Ex: notaire@cabinet.fr&#10;@syndic-immo.fr&#10;proprietaire@gmail.com"
           className="w-full rounded-lg border px-3 py-2 text-sm focus:outline-none resize-none font-mono"
           style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
         />

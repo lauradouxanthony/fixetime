@@ -3,8 +3,8 @@
   "configurations": [
     {
       "name": "fixetime-dev",
-      "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "--", "-p", "3001"],
+      "runtimeExecutable": "/bin/bash",
+      "runtimeArgs": ["-c", "export PATH=/opt/homebrew/bin:/usr/local/bin:$PATH && exec /opt/homebrew/bin/node node_modules/.bin/next dev -p 3001"],
       "port": 3001
     }
   ]

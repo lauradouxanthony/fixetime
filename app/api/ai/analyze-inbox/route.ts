@@ -8,6 +8,7 @@ import { sendGmailEmail as sendGoogleEmail } from "@/lib/google/sendEmail";
 import { sendOutlookEmail as sendMicrosoftEmail } from "@/lib/microsoft/sendEmail";
 import { logActivity } from "@/lib/activity/logActivity";
 import { fetchWithTimeout } from "@/lib/fetchWithTimeout";
+import { isSystemEmail } from "@/lib/email/ignoreFilter";
 import { matchFaq, type FaqItem } from "@/lib/faq/matchFaq";
 import { setLastAction } from "@/lib/lead/lastAction";
 
@@ -573,9 +574,9 @@ function detectEtapeProcess(params: {
 }): EtapeProcess {
   const { hasAttachments, rdvConfirmed, isFollowUp, bodyText, situation, revenus, loyer, multiplicateur, currentEtape } = params;
 
-  // ÉTAPE DOSSIER_RECU : pièces jointes reçues (quelle que soit l'étape actuelle)
-  // RÈGLE ABSOLUE : email avec PJ → toujours traiter comme envoi de documents
-  if (hasAttachments && currentEtape !== "VALIDE" && currentEtape !== "REFUSE") {
+  // ÉTAPE DOSSIER_RECU : pièces jointes reçues SEULEMENT si le prospect est déjà dans le process
+  // (VISITE_CONFIRMEE ou DOSSIER_DEMANDE) — évite de traiter les emails bancaires/PJ comme des dossiers
+  if (hasAttachments && (currentEtape === "VISITE_CONFIRMEE" || currentEtape === "DOSSIER_DEMANDE")) {
     return "DOSSIER_RECU";
   }
 
@@ -824,6 +825,43 @@ export async function POST(req: Request) {
         }).eq("id", email.id);
         analyzed++;
         console.log(`[BLACKLIST] ${email.sender} → HORS_SUJET`);
+        continue;
+      }
+
+      // ── Filtre système : emails automatiques non immobiliers ─────────────
+      if (isSystemEmail(email.sender ?? "", email.subject ?? "")) {
+        await supabaseAdmin.from("emails").update({
+          category: "HORS_SUJET",
+          classification_reason: "Email système automatique",
+          decision: "ignorer",
+          estimated_time: 0,
+          recommended_action: "archive",
+          summary: "Email système (noreply, banque, newsletter…) — ignoré automatiquement.",
+        }).eq("id", email.id);
+        analyzed++;
+        console.log(`[SYSTEM_FILTER] ${email.sender} → HORS_SUJET`);
+        continue;
+      }
+
+      // ── Expéditeurs prioritaires (notaires, syndics, partenaires) ─────────
+      const prioritySenders: string[] = Array.isArray(ftIa.priority_senders) ? ftIa.priority_senders as string[] : [];
+      const isPriority = prioritySenders.some((entry: string) => {
+        const e = entry.trim().toLowerCase();
+        return e.length > 0 && senderLower.includes(e);
+      });
+      if (isPriority) {
+        await supabaseAdmin.from("emails").update({
+          category: "INFO",
+          classification_reason: "Expéditeur prioritaire",
+          decision: "planifier",
+          is_urgent: true,
+          is_important: true,
+          estimated_time: 10,
+          recommended_action: "reply",
+          summary: "Expéditeur prioritaire (notaire, syndic ou partenaire) — traiter en priorité.",
+        }).eq("id", email.id);
+        analyzed++;
+        console.log(`[PRIORITY_SENDER] ${email.sender} → INFO urgent`);
         continue;
       }
 

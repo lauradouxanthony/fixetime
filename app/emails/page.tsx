@@ -10,7 +10,7 @@ import AppShell from "@/components/layout/AppShell";
 
 type Period = "today" | "7d" | "30d" | "all";
 type PipelineMode = "DRAFT" | "AUTOPILOTE";
-type IntentionFilter = "all" | "LOCATION" | "INFO" | "HORS_SUJET";
+type IntentionFilter = "all" | "LOCATION" | "INFO" | "HORS_SUJET" | "AUTO_SENT";
 
 function normalizeDecision(decision?: string | null): "traiter" | "planifier" | "ignorer" | null {
   if (!decision) return null;
@@ -254,7 +254,11 @@ export default function PipelinePage() {
     const location = emails.filter((e) => e.category === "LOCATION").length;
     const info = emails.filter((e) => e.category === "INFO").length;
     const horssujet = emails.filter((e) => e.category === "HORS_SUJET").length;
-    return { location, info, horssujet, total: emails.length };
+    const autoSent = emails.filter((e) => {
+      const a = e.lead_last_action ?? "";
+      return a.includes("auto-envoyée") || a.includes("auto-envoyé");
+    }).length;
+    return { location, info, horssujet, autoSent, total: emails.length };
   }, [emails]);
 
   // Mots-clés immobiliers pour qualification des emails LOCATION
@@ -277,12 +281,25 @@ export default function PipelinePage() {
 
   const filteredEmails = useMemo(() => {
     let list = emails;
+
+    // Filtre "Envoyés auto"
+    if (intentionFilter === "AUTO_SENT") {
+      list = list.filter((e) => {
+        const a = e.lead_last_action ?? "";
+        return a.includes("auto-envoyée") || a.includes("auto-envoyé");
+      });
+      if (!search.trim()) return list;
+      const q = search.toLowerCase();
+      return list.filter(
+        (e) => e.subject?.toLowerCase().includes(q) || e.sender?.toLowerCase().includes(q)
+      );
+    }
+
     // Masquer HORS_SUJET par défaut (sauf si filtre explicite ou showHorsSujet)
     if (!showHorsSujet && intentionFilter === "all") {
       list = list.filter((e) => e.category !== "HORS_SUJET");
     }
     // Masquer les emails LOCATION sans qualification prospect
-    // (pubs, webinaires, commandes mal classifiées comme LOCATION)
     if (intentionFilter !== "INFO" && intentionFilter !== "HORS_SUJET") {
       list = list.filter((e) => {
         if ((e.category ?? "").toUpperCase() !== "LOCATION") return true;
@@ -416,13 +433,14 @@ export default function PipelinePage() {
 
           {/* Filtres intention */}
           <div className="flex items-center gap-1.5">
-            {(["all", "LOCATION", "INFO", "HORS_SUJET"] as const).map((f) => {
-              const labels = { all: "Tous", LOCATION: "Location", INFO: "Info", HORS_SUJET: "Hors sujet" };
+            {(["all", "LOCATION", "INFO", "HORS_SUJET", "AUTO_SENT"] as const).map((f) => {
+              const labels = { all: "Tous", LOCATION: "Location", INFO: "Info", HORS_SUJET: "Hors sujet", AUTO_SENT: "📤 Envoyés auto" };
               const counts = {
                 all: stats.total,
                 LOCATION: stats.location,
                 INFO: stats.info,
                 HORS_SUJET: stats.horssujet,
+                AUTO_SENT: stats.autoSent,
               };
               const isActive = intentionFilter === f;
               return (
