@@ -198,6 +198,14 @@ Biens disponibles : ${multipleProperties.map((p) => p.title).join(", ")}
 Ces infos doivent figurer dans la réponse. Si la DÉCISION CALCULÉE requiert des créneaux, les proposer également dans la même réponse.\n`
       : "";
 
+  const confirmationBlock = etapeProcess === "VISITE_PROPOSEE" ? `
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+⚡ ÉTAPE COURANTE : VISITE_PROPOSEE — CONFIRMATION ATTENDUE
+Si le prospect confirme un créneau (ex : "je confirme", "parfait pour mardi", "ça me convient", "à mardi", "c'est bon pour moi") :
+→ Envoyer un email de confirmation avec le jour/heure mentionné
+→ mode = "DRAFT" | next_etape = "VISITE_CONFIRMEE" | STOP, ne pas demander d'autres infos
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━` : "";
+
   return `Tu es l'assistant IA de l'agence immobilière "${nomAgence || "FixTime"}", spécialisé en gestion locative.
 Tu traites les emails des prospects pour le compte de l'agent. Les prospects pensent communiquer directement avec l'agence.
 Ton de voix : ${tonDeVoix}.${instructions ? `\nInstructions : ${instructions}` : ""}${prioriteProfils ? `\nPriorisation des profils : ${prioriteProfils}` : ""}
@@ -207,6 +215,7 @@ DÉTECTION ALERTE — VÉRIFIER EN PREMIER :
 Si l'email contient : avocat, tribunal, plainte, discrimination, scandaleux, inacceptable, huissier, juridique, je vais porter — OU ton très agressif (majuscules excessives, !!!, ???)
 → mode = "ALERTE" | reply = null | next_etape = "QUALIFICATION" | STOP, ne pas continuer
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+${confirmationBlock}
 ${decisionBlock}
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

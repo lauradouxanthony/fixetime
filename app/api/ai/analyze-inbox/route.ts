@@ -1461,7 +1461,7 @@ JSON attendu (TOUS les champs, null si absent) :
       const emailRules = (settings as any)?.email_rules ?? {};
       const intention = intentionMap[result.intention] ?? "INFO";
 
-      if (pipelineMode === "AUTOPILOTE" && !rdvConfirmed && email.gmail_message_id) {
+      if (pipelineMode === "AUTOPILOTE" && email.gmail_message_id) {
         try {
           const accessToken = await getValidGoogleAccessToken(email.user_id);
           let autoReply: string | null = null;
@@ -1479,7 +1479,7 @@ JSON attendu (TOUS les champs, null si absent) :
               temperature: 0.3,
             });
             autoReply = faqCompletion.choices[0]?.message?.content ?? null;
-          } else if (intention === "LOCATION" && prospectData) {
+          } else if ((intention === "LOCATION" || rdvConfirmed) && prospectData) {
             // ── Même logique que le bouton "Générer" DRAFT — buildSystemPrompt ─
             const locatif2 = emailRules.ft_locatif ?? {};
             const docsSection2 = emailRules.ft_documents ?? {};
@@ -1595,16 +1595,29 @@ JSON attendu (TOUS les champs, null si absent) :
             const payload: any = { raw: rawMsg };
             if (threadId) payload.threadId = threadId;
 
-            await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
+            const gmailSendRes = await fetch("https://gmail.googleapis.com/gmail/v1/users/me/messages/send", {
               method: "POST",
               headers: { Authorization: `Bearer ${accessToken}`, "Content-Type": "application/json" },
               body: JSON.stringify(payload),
             });
 
+            const nowAutoIso = new Date().toISOString();
+            const autoLeadJson = {
+              ...(((email as any).lead_json as Record<string, unknown>) ?? {}),
+              autopilot_pending: false,
+              last_outbound: { type: "reply_sent", at: nowAutoIso, trigger: "autopilot" },
+              last_action: { type: "reply_sent", at: nowAutoIso, label: "Réponse auto-envoyée" },
+            };
+
             await supabaseAdmin.from("emails").update({
               ai_reply: autoReply,
-              is_archived: true,
+              lead_last_action: "Réponse auto-envoyée",
+              lead_last_action_at: nowAutoIso,
+              lead_json: autoLeadJson,
+              // Ne pas archiver — l'email doit rester visible dans l'onglet "Envoyés auto"
             }).eq("id", email.id);
+
+            console.log(`[AUTOPILOTE][SENT] emailId=${email.id} gmail_ok=${gmailSendRes.ok}`);
 
             // Log timeline IA_REPONDU
             try {
