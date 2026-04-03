@@ -598,14 +598,21 @@ export async function POST(req: Request) {
 export async function GET(req: Request) {
   const auth = req.headers.get("authorization");
   const key = auth?.startsWith("Bearer ") ? auth.slice(7) : null;
+  // Vercel Cron envoie CRON_SECRET — vérifier d'abord CRON_SECRET
   const expected =
-    process.env.FIXETIME_INTERNAL_CRON_KEY ||
     process.env.CRON_SECRET ||
+    process.env.FIXETIME_INTERNAL_CRON_KEY ||
     "dev123";
   if (key !== expected) {
     return NextResponse.json({ success: false, error: "unauthorized" }, { status: 401 });
   }
-  // Crée une requête POST synthétique et délègue
-  const postReq = new Request(req.url, { method: "POST", headers: req.headers });
+  // Injecter la clé interne pour que POST puisse s'authentifier
+  const internalKey =
+    process.env.FIXETIME_INTERNAL_CRON_KEY ||
+    process.env.CRON_SECRET ||
+    "dev123";
+  const newHeaders = new Headers(req.headers);
+  newHeaders.set("x-fixetime-cron-key", internalKey);
+  const postReq = new Request(req.url, { method: "POST", headers: newHeaders });
   return POST(postReq);
 }
