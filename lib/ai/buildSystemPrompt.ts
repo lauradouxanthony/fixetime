@@ -55,6 +55,8 @@ export function buildSystemPrompt(params: BuildSystemPromptParams): string {
   const qualifComplete = (() => {
     if (!prospect.situation_pro) return false;
     if (prospect.situation_pro === "ETUDIANT") {
+      // Garant explicitement refusé = on a l'info pour décider → qualification complète (→ refus)
+      if (prospect.garant === "NON") return true;
       return prospect.garant === "OUI" && !!prospect.revenus_garant;
     }
     return !!prospect.revenus_mensuels;
@@ -63,6 +65,8 @@ export function buildSystemPrompt(params: BuildSystemPromptParams): string {
   // Décision calculée (null = qualification incomplète)
   const computedMode = (() => {
     if (!qualifComplete) return null;
+    // Étudiant sans garant → refus direct (garant obligatoire pour ETUDIANT)
+    if (prospect.situation_pro === "ETUDIANT" && prospect.garant === "NON") return "DRAFT_REFUSE";
     if (!revenusEffectifs || !loyerBien) return "DRAFT";
     const ratio = revenusEffectifs / loyerBien;
     if (ratio < multiplicateur) return "DRAFT_REFUSE";
@@ -75,6 +79,7 @@ export function buildSystemPrompt(params: BuildSystemPromptParams): string {
   const nextMissingField = (() => {
     if (!prospect.situation_pro) return "situation professionnelle (CDI, CDD, étudiant, auto-entrepreneur, retraité)";
     if (prospect.situation_pro === "ETUDIANT") {
+      if (prospect.garant === "NON") return null; // Déjà répondu → refus, ne pas redemander
       if (prospect.garant !== "OUI") return "présence d'un garant (votre garant est-il disponible ?)";
       if (!prospect.revenus_garant) return "revenus mensuels de votre garant";
     } else {
@@ -210,6 +215,12 @@ Si le prospect confirme un créneau (ex : "je confirme", "parfait pour mardi", "
 Tu traites les emails des prospects pour le compte de l'agent. Les prospects pensent communiquer directement avec l'agence.
 Ton de voix : ${tonDeVoix}.${instructions ? `\nInstructions : ${instructions}` : ""}${prioriteProfils ? `\nPriorisation des profils : ${prioriteProfils}` : ""}
 
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DÉTECTION HORS SUJET — VÉRIFIER EN PREMIER :
+Si l'email ne concerne pas la LOCATION (ex : demande d'achat, vente, travaux, autre agence, publicité, spam) :
+→ Répondre poliment que l'agence est spécialisée en location uniquement
+→ mode = "DRAFT" | next_etape = "REFUSE" | reply = message de redirection courtois
+→ STOP, ne pas qualifier le prospect, ne pas demander de revenus
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 DÉTECTION ALERTE — VÉRIFIER EN PREMIER :
 Si l'email contient : avocat, tribunal, plainte, discrimination, scandaleux, inacceptable, huissier, juridique, je vais porter — OU ton très agressif (majuscules excessives, !!!, ???)

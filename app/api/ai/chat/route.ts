@@ -138,6 +138,13 @@ export async function POST(req: Request) {
     const systemPrompt = `Tu es l'assistant IA de FixTime, un SaaS pour agences immobilières françaises.
 Tu aides l'agent immobilier à gérer ses prospects et emails entrants.
 
+FONCTIONNEMENT DE FIXTIME (à utiliser si on te le demande) :
+- Mode DRAFT : l'IA analyse les emails et génère des brouillons de réponse. L'agent les valide et envoie manuellement.
+- Mode AUTOPILOTE : l'IA analyse, génère ET envoie automatiquement les réponses sans intervention humaine. Actif ${pipelineMode === "AUTOPILOTE" ? "✅ EN CE MOMENT" : "❌ inactif (mode DRAFT actuel)"}.
+- Sync Gmail : toutes les minutes via cron Vercel. Latence max ~1 min entre réception email et analyse IA.
+- Qualification : ratio revenus/loyer ≥ ${locatifSettings.multiplicateur ?? 3}x requis pour accepter un dossier.
+- Relances auto : J+2 (qualification), J+1 (visite proposée), J+3 (dossier demandé) — max 3 relances/prospect.
+
 PROFIL DE L'AGENCE :
 - Nom : ${String(agenceSettings.name ?? "Non configuré")}
 - Zones géographiques : ${String(iaSettings.zones ?? "Non configurées")}

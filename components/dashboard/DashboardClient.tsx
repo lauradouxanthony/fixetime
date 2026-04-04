@@ -142,6 +142,7 @@ export default function DashboardClient() {
   const [data, setData] = useState<DashboardData | null>(null);
   const [loading, setLoading] = useState(true);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
+  const [syncing, setSyncing] = useState(false);
   const { toast } = useToast();
 
   const fetchData = useCallback(async () => {
@@ -159,7 +160,13 @@ export default function DashboardClient() {
   }, [toast]);
 
   useEffect(() => {
-    fetchData();
+    // Sync Gmail immédiatement au chargement de la page (sans bloquer l'affichage)
+    setSyncing(true);
+    fetch("/api/gmail/sync", { method: "POST" })
+      .then(() => fetchData())
+      .catch(() => fetchData())
+      .finally(() => setSyncing(false));
+
     const interval = setInterval(fetchData, 30_000);
     return () => clearInterval(interval);
   }, [fetchData]);
@@ -215,11 +222,17 @@ export default function DashboardClient() {
           <div>
             <h1 className="text-xl font-semibold" style={{ color: "rgb(30 41 59)" }}>Tableau de bord</h1>
             <p className="text-sm mt-0.5" style={{ color: "rgb(100 116 139)" }}>
-              30 derniers jours
-              {lastUpdated && (
-                <span className="ml-2" style={{ color: "rgb(148 163 184)" }}>
-                  · Mis à jour {lastUpdated.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
-                </span>
+              {syncing ? (
+                <span style={{ color: "rgb(79 70 229)" }}>⟳ Synchronisation en cours...</span>
+              ) : (
+                <>
+                  30 derniers jours
+                  {lastUpdated && (
+                    <span className="ml-2" style={{ color: "rgb(148 163 184)" }}>
+                      · Mis à jour {lastUpdated.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}
+                    </span>
+                  )}
+                </>
               )}
             </p>
           </div>

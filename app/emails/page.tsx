@@ -239,8 +239,8 @@ export default function PipelinePage() {
     const newMode: PipelineMode = mode === "DRAFT" ? "AUTOPILOTE" : "DRAFT";
     setMode(newMode);
     const isAutopilote = newMode === "AUTOPILOTE";
-    // Synchroniser pipeline_mode (relances cron) + automation_level + assistant_enabled (autopilot-dispatch)
-    await fetch("/api/settings", {
+    // Synchroniser pipeline_mode (relances cron) + automation_level + assistant_enabled
+    const res = await fetch("/api/settings", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -248,7 +248,11 @@ export default function PipelinePage() {
         automation_level: isAutopilote ? "autopilot" : "draft",
         assistant_enabled: isAutopilote,
       }),
-    }).catch(() => {});
+    }).catch(() => null);
+    // Si la sauvegarde échoue, annuler le changement visuel pour éviter désynchronisation UI/BDD
+    if (!res || !res.ok) {
+      setMode(mode);
+    }
   };
 
   const stats = useMemo(() => {

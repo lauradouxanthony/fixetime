@@ -1601,6 +1601,17 @@ JSON attendu (TOUS les champs, null si absent) :
               body: JSON.stringify(payload),
             });
 
+            console.log(`[AUTOPILOTE][SENT] emailId=${email.id} gmail_ok=${gmailSendRes.ok}`);
+
+            // Ne mettre à jour la DB qu'en cas de succès réel de l'envoi Gmail
+            if (!gmailSendRes.ok) {
+              const errBody = await gmailSendRes.text().catch(() => "");
+              console.error(`[AUTOPILOTE][SEND_FAIL] emailId=${email.id} status=${gmailSendRes.status} body=${errBody.slice(0, 200)}`);
+              // Sauvegarder le brouillon sans marquer comme envoyé
+              await supabaseAdmin.from("emails").update({ ai_reply: autoReply }).eq("id", email.id);
+              continue;
+            }
+
             const nowAutoIso = new Date().toISOString();
             const autoLeadJson = {
               ...(((email as any).lead_json as Record<string, unknown>) ?? {}),
@@ -1616,8 +1627,6 @@ JSON attendu (TOUS les champs, null si absent) :
               lead_json: autoLeadJson,
               // Ne pas archiver — l'email doit rester visible dans l'onglet "Envoyés auto"
             }).eq("id", email.id);
-
-            console.log(`[AUTOPILOTE][SENT] emailId=${email.id} gmail_ok=${gmailSendRes.ok}`);
 
             // Log timeline IA_REPONDU
             try {

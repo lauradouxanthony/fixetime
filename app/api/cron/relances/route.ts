@@ -79,10 +79,11 @@ export async function POST(req: NextRequest) {
   // Vérification clé CRON (accept Bearer token ou header dédié)
   const auth = req.headers.get("authorization");
   const cronHeader = req.headers.get("x-fixetime-cron-key");
+  const isDev = process.env.NODE_ENV !== "production";
   const isAuthorized =
     auth === `Bearer ${CRON_KEY}` ||
     cronHeader === CRON_KEY ||
-    CRON_KEY === ""; // dev sans clé
+    (isDev && CRON_KEY === ""); // dev local uniquement, jamais en production
 
   if (!isAuthorized) {
     return NextResponse.json({ error: "unauthorized" }, { status: 401 });

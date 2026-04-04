@@ -1,3 +1,12 @@
+/**
+ * NOTE : Ce fichier n'est PLUS un cron Vercel (supprimé de vercel.json).
+ * Il est appelé uniquement par /api/autopilot/tick (déclenchement côté client)
+ * et /api/health/smoke (tests dry-run).
+ *
+ * Le Système A d'autopilote (inline dans analyze-inbox) est l'unique path de
+ * production. Ce dispatcher (Système B) est conservé pour le dry-run/smoke.
+ * autopilot_pending: true n'est posé nulle part en prod → il ne traite rien.
+ */
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { logActivity } from "@/lib/activity/logActivity";

@@ -5,10 +5,6 @@
       "schedule": "* * * * *"
     },
     {
-      "path": "/api/cron/autopilot-dispatch",
-      "schedule": "* * * * *"
-    },
-    {
       "path": "/api/cron/relances",
       "schedule": "0 9 * * *"
     }

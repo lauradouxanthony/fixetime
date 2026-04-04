@@ -66,7 +66,10 @@ export async function GET(req: Request) {
     try {
       const syncRes = await fetch(`${BASE_URL}/api/gmail/sync`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          "x-fixetime-cron-key": CRON_KEY,
+        },
         body: JSON.stringify({ user_id: userId, mode: "quick" }),
       });
       if (syncRes.ok) {

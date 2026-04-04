@@ -387,36 +387,31 @@ export default function OnboardingClient() {
                 <span style={{ color: "rgb(79 70 229)" }}>→</span>
               </a>
 
-              {/* Outlook */}
-              <a
-                href="/api/auth/microsoft"
-                className="flex items-center gap-4 w-full px-4 py-4 rounded-xl border text-sm font-medium transition-all"
-                style={{ borderColor: "rgb(226 232 240)", color: "rgb(30 41 59)" }}
-                onMouseEnter={(e) => {
-                  (e.currentTarget as HTMLElement).style.borderColor = "rgb(79 70 229)";
-                  (e.currentTarget as HTMLElement).style.background = "rgb(248 249 255)";
-                }}
-                onMouseLeave={(e) => {
-                  (e.currentTarget as HTMLElement).style.borderColor = "rgb(226 232 240)";
-                  (e.currentTarget as HTMLElement).style.background = "white";
-                }}
+              {/* Outlook — Prochainement (sync non disponible) */}
+              <div
+                className="flex items-center gap-4 w-full px-4 py-4 rounded-xl border text-sm font-medium cursor-not-allowed opacity-60"
+                style={{ borderColor: "rgb(226 232 240)", color: "rgb(100 116 139)", background: "rgb(248 250 252)" }}
               >
                 <div
                   className="w-10 h-10 rounded-lg flex items-center justify-center flex-shrink-0"
-                  style={{ background: "rgb(0 120 212)" }}
+                  style={{ background: "rgb(148 163 184)" }}
                 >
                   <svg viewBox="0 0 24 24" className="w-5 h-5" fill="white">
                     <path d="M21.5 8.5v9c0 1.1-.9 2-2 2h-15c-1.1 0-2-.9-2-2v-9l9.5 5.5 9.5-5.5zm0-2l-9.5 5.5L2.5 6.5c0-1.1.9-2 2-2h15c1.1 0 2 .9 2 2z" />
                   </svg>
                 </div>
                 <div className="flex-1">
-                  <div className="font-semibold text-sm" style={{ color: "rgb(30 41 59)" }}>Outlook / Microsoft 365</div>
-                  <div className="text-xs mt-0.5" style={{ color: "rgb(100 116 139)" }}>
-                    Connexion sécurisée OAuth 2.0
+                  <div className="font-semibold text-sm flex items-center gap-2" style={{ color: "rgb(71 85 105)" }}>
+                    Outlook / Microsoft 365
+                    <span className="text-xs px-2 py-0.5 rounded-full font-medium" style={{ background: "rgb(241 245 249)", color: "rgb(100 116 139)" }}>
+                      Prochainement
+                    </span>
+                  </div>
+                  <div className="text-xs mt-0.5" style={{ color: "rgb(148 163 184)" }}>
+                    La synchronisation Outlook sera disponible prochainement
                   </div>
                 </div>
-                <span style={{ color: "rgb(79 70 229)" }}>→</span>
-              </a>
+              </div>
             </div>
 
             <div className="flex items-center justify-between pt-1">

@@ -70,19 +70,19 @@ export async function GET(req: NextRequest) {
     }
 
     // 4) UPSERT dans gmail_tokens
-    await supabaseAdmin.from("gmail_tokens").upsert(
-      {
-        user_id: userId,
-        user_email: userInfo.email,
-        access_token: tokenData.access_token,
-        refresh_token: tokenData.refresh_token,
-        expires_at: new Date(
-          Date.now() + tokenData.expires_in * 1000
-        ).toISOString(),
-        last_history_id: null,
-      },
-      { onConflict: "user_id" }
-    );
+    // Ne jamais écraser un refresh_token existant avec undefined/null
+    // (Google ne renvoie refresh_token qu'à la première autorisation)
+    const upsertPayload: Record<string, unknown> = {
+      user_id: userId,
+      user_email: userInfo.email,
+      access_token: tokenData.access_token,
+      expires_at: new Date(Date.now() + tokenData.expires_in * 1000).toISOString(),
+      last_history_id: null,
+    };
+    if (tokenData.refresh_token) {
+      upsertPayload.refresh_token = tokenData.refresh_token;
+    }
+    await supabaseAdmin.from("gmail_tokens").upsert(upsertPayload, { onConflict: "user_id" });
 
     // 5) Déclencher gmail/sync en arrière-plan (fire & forget)
     //    → On n'attend pas la réponse pour ne pas bloquer la redirection

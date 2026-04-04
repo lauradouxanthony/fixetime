@@ -247,12 +247,19 @@ export async function POST(req: NextRequest) {
       if (data?.user?.id) userId = data.user.id;
     } catch {}
 
-    // fallback body JSON (pour tests curl / cron)
+    // fallback body JSON (pour cron interne uniquement — nécessite FIXETIME_INTERNAL_CRON_KEY)
     let bodyJson: any = null;
     try {
       bodyJson = await req.json();
-      if (bodyJson?.user_id) userId = bodyJson.user_id;
       if (bodyJson?.mode === "quick") quickMode = true;
+      // Autoriser user_id depuis le body uniquement si la cron key est présente et valide
+      if (bodyJson?.user_id && !userId) {
+        const cronKey = process.env.FIXETIME_INTERNAL_CRON_KEY ?? "";
+        const reqCronKey = req.headers.get("x-fixetime-cron-key") ?? "";
+        if (cronKey && cronKey === reqCronKey) {
+          userId = bodyJson.user_id;
+        }
+      }
     } catch {}
 
     if (!userId) {
