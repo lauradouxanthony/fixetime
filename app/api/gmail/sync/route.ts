@@ -272,8 +272,8 @@ export async function POST(req: NextRequest) {
     let accessToken = await getValidGoogleAccessToken(userId);
 
     // ── Paramètres selon le mode ──────────────────────────────────────────
-    const MAX_MESSAGES = quickMode ? 50 : 200;
-    const PAGE_SIZE = quickMode ? 50 : 100;
+    const MAX_MESSAGES = quickMode ? 200 : 500;
+    const PAGE_SIZE = quickMode ? 100 : 100;
     const THIRTY_DAYS = 30 * 24 * 60 * 60 * 1000;
 
     const callList = (token: string, pageToken?: string) => {

@@ -645,11 +645,13 @@ export async function POST(req: Request) {
     const sinceISO = new Date(Date.now() - THIRTY_DAYS).toISOString();
 
     // ── Sélectionner aussi attachments pour détecter les dossiers envoyés ──
+    // Exclure les emails déjà traités par autopilote (anti-doublon)
     let q = supabaseAdmin
       .from("emails")
-      .select("id, user_id, sender, subject, body, received_at, gmail_message_id, thread_id, attachments")
+      .select("id, user_id, sender, subject, body, received_at, gmail_message_id, thread_id, attachments, lead_last_action")
       .gte("received_at", sinceISO)
       .or("category.is.null,decision.is.null,summary.is.null")
+      .neq("lead_last_action", "Réponse auto-envoyée")
       .order("received_at", { ascending: false })
       .limit(200);
 
@@ -1567,6 +1569,22 @@ JSON attendu (TOUS les champs, null si absent) :
           }
 
           if (autoReply && email.gmail_message_id) {
+            // ── Verrou atomique anti-doublon ─────────────────────────────────
+            // Tente de revendiquer cet email de manière atomique.
+            // Si une autre instance du cron a déjà marqué cet email, data = [] → skip.
+            const { data: lockData } = await supabaseAdmin
+              .from("emails")
+              .update({ lead_last_action: "En traitement autopilote..." })
+              .eq("id", email.id)
+              .neq("lead_last_action", "Réponse auto-envoyée")
+              .neq("lead_last_action", "En traitement autopilote...")
+              .select("id");
+            if (!lockData || lockData.length === 0) {
+              console.log(`[AUTOPILOTE][SKIP] emailId=${email.id} — déjà traité par une autre instance`);
+              continue;
+            }
+            // ─────────────────────────────────────────────────────────────────
+
             const subjectEncoded = `=?UTF-8?B?${Buffer.from(`Re: ${email.subject ?? ""}`, "utf-8").toString("base64")}?=`;
             const mime = [
               `MIME-Version: 1.0`,

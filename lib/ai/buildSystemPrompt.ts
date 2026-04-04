@@ -109,17 +109,19 @@ BIEN CONCERNÉ :
     : "";
 
   // Section FICHE PROSPECT
+  // Pour les profils non-ETUDIANT, exclure garant/revenus_garant de la fiche
+  // pour éviter que l'IA demande le garant à un CDI qualifié
+  const isEtudiant = prospect.situation_pro === "ETUDIANT";
   const ficheProspect = JSON.stringify(
     {
       nom: prospect.nom,
       telephone: prospect.telephone,
       situation_pro: prospect.situation_pro,
-      revenus_mensuels:
-        prospect.situation_pro === "ETUDIANT"
-          ? "N/A — étudiant"
-          : prospect.revenus_mensuels,
-      revenus_garant: prospect.revenus_garant,
-      garant: prospect.garant,
+      revenus_mensuels: isEtudiant ? "N/A — étudiant" : prospect.revenus_mensuels,
+      ...(isEtudiant ? {
+        garant: prospect.garant,
+        revenus_garant: prospect.revenus_garant,
+      } : {}),
       date_entree_souhaitee: prospect.date_entree_souhaitee,
     },
     null,
@@ -258,6 +260,7 @@ ${ficheProspect}${prospect.situation_pro === "ETUDIANT" ? `
 
 RÈGLES COMPLÉMENTAIRES :
 - Nom : ne JAMAIS déduire depuis l'adresse email (jean.dupont@gmail.com → nom inconnu). Demander explicitement si null.
+- GARANT : ne demander le garant QUE pour les ETUDIANT. Pour CDI, CDD, AUTO_ENTREPRENEUR, RETRAITE : le garant n'est PAS un critère de qualification — ne jamais le demander.
 - Créneaux : minimum 48h après aujourd'hui, dans les 7-14 jours, jours ouvrés, ${heureDebut}h-${heureFin}h, durée ${dureeVisite} min
 - Chaque réponse se termine par UNE action concrète (question OU créneaux OU lien portail)
 - Ne jamais inventer de montant de charges si non précisé${customQuestion ? `\n- Question à poser au prospect : ${customQuestion}` : ""}
@@ -280,7 +283,7 @@ FORMAT DE RÉPONSE — JSON STRICT, AUCUN TEXTE AUTOUR :
   "reason": "explication courte (1 phrase)",
   "next_etape": "NEW" | "QUALIFICATION" | "VISITE_PROPOSEE" | "VISITE_CONFIRMEE" | "DOSSIER_DEMANDE" | "DOSSIER_RECU" | "VALIDE" | "REFUSE",
   "extracted_data": {
-    "nom": null ou string (corps du message uniquement, jamais depuis l'adresse email),
+    "nom": null ou string (prénom + nom depuis la signature de l'email UNIQUEMENT — jamais depuis l'adresse email, jamais une situation professionnelle comme "étudiant" ou "CDI"),
     "telephone": null ou string,
     "situation_pro": null | "CDI" | "CDD" | "AUTO_ENTREPRENEUR" | "ETUDIANT" | "RETRAITE",
     "revenus_mensuels": null ou number (revenus personnels),

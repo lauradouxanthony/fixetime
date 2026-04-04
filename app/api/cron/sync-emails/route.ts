@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import { supabaseAdmin } from "@/lib/supabaseAdmin";
 import { getValidGoogleAccessToken } from "@/lib/google/getValidAccessToken";
+import { graphFetch } from "@/lib/microsoft/graph";
 import OpenAI from "openai";
 
 export const runtime = "nodejs";
@@ -114,18 +115,130 @@ export async function GET(req: Request) {
     }
   }
 
+  // ── Microsoft / Outlook sync ────────────────────────────────────────────
+  const { data: msUsers } = await supabaseAdmin
+    .from("microsoft_tokens")
+    .select("user_id")
+    .not("refresh_token", "is", null);
+
+  let msSynced = 0;
+  for (const msRow of msUsers ?? []) {
+    try {
+      const inserted = await syncMicrosoftInbox(msRow.user_id);
+      msSynced++;
+      console.log(`[CRON SYNC][MS] user=${msRow.user_id} OK — nouveaux=${inserted}`);
+
+      // Analyse IA pour les emails Microsoft nouvellement insérés
+      try {
+        const analyzeRes = await fetch(`${BASE_URL}/api/ai/analyze-inbox`, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+            "x-fixetime-cron-key": CRON_KEY,
+          },
+          body: JSON.stringify({ user_id: msRow.user_id, period: "7d" }),
+        });
+        if (!analyzeRes.ok) {
+          errors.push(`analyze-ms:${msRow.user_id}:${analyzeRes.status}`);
+        }
+      } catch {
+        errors.push(`analyze-ms:${msRow.user_id}:exception`);
+      }
+    } catch (e: any) {
+      console.warn(`[CRON SYNC][MS] user=${msRow.user_id} erreur:`, e?.message);
+      errors.push(`ms-sync:${msRow.user_id}:${e?.message ?? "exception"}`);
+    }
+  }
+
   const durationMs = Date.now() - cronStart;
-  console.log(`[CRON SYNC] ✅ Terminé en ${durationMs}ms — synced=${synced} analyzed=${analyzed} relances=${relances} errors=${errors.length}`);
+  console.log(`[CRON SYNC] ✅ Terminé en ${durationMs}ms — gmail=${synced} ms=${msSynced} analyzed=${analyzed} relances=${relances} errors=${errors.length}`);
 
   return NextResponse.json({
     success: true,
-    users: users.length,
+    gmail_users: users.length,
+    ms_users: (msUsers ?? []).length,
     synced,
+    ms_synced: msSynced,
     analyzed,
     relances,
     errors: errors.length > 0 ? errors : undefined,
     durationMs,
   });
+}
+
+/**
+ * Sync Microsoft/Outlook INBOX via Graph API — même logique que Gmail sync.
+ * Fetche les 200 derniers messages de l'INBOX des 30 derniers jours,
+ * insère les nouveaux dans la table `emails`.
+ */
+async function syncMicrosoftInbox(userId: string): Promise<number> {
+  const THIRTY_DAYS_MS = 30 * 24 * 60 * 60 * 1000;
+  const since = new Date(Date.now() - THIRTY_DAYS_MS).toISOString();
+
+  // Récupérer les message IDs déjà connus pour cet user (provider=microsoft)
+  const { data: existingRows } = await supabaseAdmin
+    .from("emails")
+    .select("gmail_message_id")
+    .eq("user_id", userId)
+    .eq("provider", "microsoft")
+    .not("gmail_message_id", "is", null);
+  const knownIds = new Set((existingRows ?? []).map((r: any) => r.gmail_message_id));
+
+  // Appel Microsoft Graph — INBOX, 30 derniers jours, triés par date desc, max 200
+  const url =
+    `https://graph.microsoft.com/v1.0/me/mailFolders/inbox/messages` +
+    `?$top=200` +
+    `&$orderby=receivedDateTime desc` +
+    `&$filter=receivedDateTime ge ${since}` +
+    `&$select=id,subject,from,receivedDateTime,bodyPreview,body,isRead`;
+
+  const res = await graphFetch(userId, url);
+  if (!res.ok) {
+    const txt = await res.text();
+    throw new Error(`GRAPH_LIST_ERROR ${res.status}: ${txt.slice(0, 200)}`);
+  }
+
+  const json = await res.json();
+  const messages: any[] = json.value ?? [];
+
+  let inserted = 0;
+  for (const msg of messages) {
+    const msgId: string = msg.id;
+    if (knownIds.has(msgId)) continue;
+
+    const sender = msg.from?.emailAddress
+      ? `${msg.from.emailAddress.name ?? ""} <${msg.from.emailAddress.address}>`.trim()
+      : "Inconnu";
+    const subject = msg.subject ?? "(Sans objet)";
+    const receivedAt = msg.receivedDateTime ?? new Date().toISOString();
+    // Préférer le corps HTML → text/plain (bodyPreview en fallback)
+    const body: string =
+      msg.body?.contentType === "text"
+        ? (msg.body.content ?? msg.bodyPreview ?? "")
+        : (msg.bodyPreview ?? "");
+
+    const { error } = await supabaseAdmin.from("emails").upsert(
+      {
+        user_id: userId,
+        provider: "microsoft",
+        gmail_message_id: msgId, // réutilise la colonne pour stocker l'ID Graph
+        received_at: receivedAt,
+        sender,
+        subject,
+        body: body || null,
+        is_archived: false,
+        attachments: [],
+      },
+      { onConflict: "gmail_message_id", ignoreDuplicates: true }
+    );
+
+    if (!error) {
+      inserted++;
+      knownIds.add(msgId);
+    }
+  }
+
+  return inserted;
 }
 
 /** Envoie les relances automatiques pour un user */
