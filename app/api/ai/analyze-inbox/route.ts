@@ -651,7 +651,7 @@ export async function POST(req: Request) {
       .select("id, user_id, sender, subject, body, received_at, gmail_message_id, thread_id, attachments, lead_last_action")
       .gte("received_at", sinceISO)
       .or("category.is.null,decision.is.null,summary.is.null")
-      .neq("lead_last_action", "Réponse auto-envoyée")
+      .or("lead_last_action.is.null,lead_last_action.neq.Réponse auto-envoyée")
       .order("received_at", { ascending: false })
       .limit(200);
 
