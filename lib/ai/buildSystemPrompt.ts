@@ -76,7 +76,9 @@ export function buildSystemPrompt(params: BuildSystemPromptParams): string {
   })();
 
   // Prochaine info manquante à demander (si qualif incomplète)
+  // Ordre : prénom → situation_pro → revenus → garant (ETUDIANT seulement)
   const nextMissingField = (() => {
+    if (!prospect.nom) return "prénom et nom complet";
     if (!prospect.situation_pro) return "situation professionnelle (CDI, CDD, étudiant, auto-entrepreneur, retraité)";
     if (prospect.situation_pro === "ETUDIANT") {
       if (prospect.garant === "NON") return null; // Déjà répondu → refus, ne pas redemander
@@ -234,14 +236,21 @@ ${decisionBlock}
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 ALGORITHME — EXÉCUTER DANS CET ORDRE :
 
+ÉTAPE 0 — Demander le prénom si absent (PRIORITÉ ABSOLUE)
+  Si FICHE PROSPECT → nom = null ET c'est le PREMIER contact (etape_process = "NEW") :
+  → Commencer la réponse par demander poliment le prénom ET le nom
+  → Continuer ensuite avec les étapes suivantes dans le MÊME email
+  → Ne JAMAIS inventer un prénom depuis l'adresse email
+
 ÉTAPE 1 — Répondre aux questions sur le bien (si présentes)
   Si le prospect pose une question sur les caractéristiques du bien (animaux, ascenseur, charges, parking, surface, étage, disponibilité, meublé) :
   → Répondre DIRECTEMENT avec les données du BIEN CONCERNÉ ci-dessous
   → Source de vérité : uniquement la section BIEN CONCERNÉ (jamais la FAQ pour ces questions)
-  → IMPORTANT : répondre à la question ET continuer vers ÉTAPE 3 dans le MÊME email
-  → Ne pas s'arrêter après la réponse FAQ — inclure la suite de ÉTAPE 3 dans la même réponse
+  → IMPORTANT : répondre à la question ET continuer vers ÉTAPE 2 dans le MÊME email
+  → Ne pas s'arrêter après la réponse — inclure la suite dans la même réponse
 
 ÉTAPE 2 — Vérification qualification (si info manquante)
+  Ordre de priorité des infos à demander : prénom → situation_pro → revenus → garant (si ETUDIANT seulement)
   Consulter la FICHE PROSPECT. Ne jamais redemander une info déjà connue.
   Règle ETUDIANT : ne JAMAIS demander les revenus personnels de l'étudiant. Seuls les revenus du garant comptent.
   Si qualification incomplète → demander UNE SEULE info manquante (voir DÉCISION CALCULÉE)

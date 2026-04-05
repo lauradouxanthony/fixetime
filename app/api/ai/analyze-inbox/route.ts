@@ -942,16 +942,34 @@ Contenu: ${content}
 
 IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
 
-      // ── 1er appel IA : classification ─────────────────────────────────────
+      // ── 1er appel IA : classification (timeout 15s) ───────────────────────
       let raw = "";
       try {
-        const completion = await openai.chat.completions.create({
-          model: "gpt-4o-mini",
-          messages: [{ role: "user", content: classificationPrompt }],
-          temperature: 0,
-        });
-        raw = completion.choices[0]?.message?.content || "";
-      } catch (e) {
+        const classifyResult = await Promise.race([
+          openai.chat.completions.create({
+            model: "gpt-4o-mini",
+            messages: [{ role: "user", content: classificationPrompt }],
+            temperature: 0,
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => reject(new Error("AI_CLASSIFY_TIMEOUT")), 15_000)
+          ),
+        ]);
+        raw = classifyResult.choices[0]?.message?.content || "";
+      } catch (e: any) {
+        if (e?.message === "AI_CLASSIFY_TIMEOUT") {
+          console.warn(`[ANALYZE-INBOX][TIMEOUT] emailId=${email.id} — classification IA timeout, HORS_SUJET par défaut`);
+          await supabaseAdmin.from("emails").update({
+            category: "HORS_SUJET",
+            classification_reason: "Timeout IA — classé automatiquement",
+            decision: "ignorer",
+            estimated_time: 0,
+            recommended_action: "archive",
+            summary: "Analyse IA expirée — classé hors sujet par sécurité.",
+          }).eq("id", email.id);
+          analyzed++;
+          continue;
+        }
         raw = "";
       }
 
@@ -1126,8 +1144,9 @@ IMPORTANT : réponds UNIQUEMENT avec le JSON, rien d'autre.`;
 
       if (isLocationEmail && content && content.length > 10) {
         try {
-          // BLOC 1 FIX : response_format json_object + system/user split
-          const extractionCompletion = await openai.chat.completions.create({
+          // BLOC 1 FIX : response_format json_object + system/user split + timeout 15s
+          const extractionCompletion = await Promise.race([
+            openai.chat.completions.create({
             model: "gpt-4o-mini",
             temperature: 0,
             response_format: { type: "json_object" },
@@ -1165,7 +1184,11 @@ JSON attendu (TOUS les champs, null si absent) :
 }`,
               },
             ],
-          });
+          }),
+            new Promise<never>((_, reject) =>
+              setTimeout(() => reject(new Error("AI_EXTRACT_TIMEOUT")), 15_000)
+            ),
+          ]) as import("openai").OpenAI.Chat.ChatCompletion;
 
           const extractionRaw = extractionCompletion.choices[0]?.message?.content || "";
           console.log(`[BLOC1 EXTRACTION] emailId=${email.id} raw=${extractionRaw.slice(0, 200)}`);
@@ -1184,8 +1207,12 @@ JSON attendu (TOUS les champs, null si absent) :
             prospectData = parsed;
             console.log(`[BLOC1 EXTRACTION] Résultat OK: nom=${parsed.nom} tel=${parsed.telephone} situation=${parsed.situation_pro} revenus=${parsed.revenus_mensuels} loyer=${parsed.loyer_max} date_entree=${parsed.date_entree_souhaitee}`);
           }
-        } catch (e) {
-          console.warn("[ANALYZE-INBOX] Extraction prospect échouée:", e);
+        } catch (e: any) {
+          if (e?.message === "AI_EXTRACT_TIMEOUT") {
+            console.warn(`[ANALYZE-INBOX][TIMEOUT] emailId=${email.id} — extraction prospect timeout, on continue sans données`);
+          } else {
+            console.warn("[ANALYZE-INBOX] Extraction prospect échouée:", e);
+          }
         }
 
         // Merge thread cumulatif
